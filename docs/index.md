@@ -26,12 +26,12 @@ lists and its own cache, then assemble the shards once:
 
 ```bash
 # Region stems go to stdout; pin the source revision for a reproducible list.
-SOURCE_REVISION=fec858b679f5ee7e87f0ecfaaa6b7223b2a7f5e2
-uv run owc regions --source description --revision "$SOURCE_REVISION" > regions.txt
+SOURCE_REVISION=5c8e56a50b5679118a28aef057af002209f80a5e
+uv run owc regions --source website --revision "$SOURCE_REVISION" > regions.txt
 
-uv run owc build --source website --regions-file regions-a.txt --cache data/w0 --out data/w0/out
-uv run owc build --source website --regions-file regions-b.txt --cache data/w1 --out data/w1/out
-uv run owc assemble data/w0/shards data/w1/shards --source website --out data/out
+uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file regions-a.txt --cache data/w0 --out data/w0/out
+uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file regions-b.txt --cache data/w1 --out data/w1/out
+uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
 ```
 
 Without `--revision`, `owc regions` resolves the current Hub commit and prints
