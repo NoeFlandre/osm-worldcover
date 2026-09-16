@@ -11,9 +11,13 @@ workflow, and its shard-combining step was not safe to rerun. Region discovery,
 split builds, and assembly now have supported paths:
 
 ```bash
-uv run owc regions --source description --revision "$SOURCE_REVISION" > regions.txt
-uv run owc build --source description --regions-file regions-a.txt --cache data/w0 --out data/w0/out
-uv run owc assemble data/w0/shards data/w1/shards --source description --out data/out
+SOURCE_REVISION=5c8e56a50b5679118a28aef057af002209f80a5e
+uv run owc regions --source website --revision "$SOURCE_REVISION" > regions.txt
+# Deterministically partition the pinned listing into the two worker files.
+awk 'NF { output = "regions-" ((count++ % 2) ? "b" : "a") ".txt"; print > output }' regions.txt
+uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file regions-a.txt --cache data/w0 --out data/w0/out
+uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file regions-b.txt --cache data/w1 --out data/w1/out
+uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
 ```
 
 The retained ignored release scratch at
