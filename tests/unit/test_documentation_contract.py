@@ -3,7 +3,14 @@
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).parents[2]
+
+def _repository_root(test_path: Path) -> Path:
+    """Resolve the checkout root for regular and mutmut-copied test paths."""
+    test_root = test_path.resolve().parents[2]
+    return test_root.parent if test_root.name == "mutants" else test_root
+
+
+ROOT = _repository_root(Path(__file__))
 WEBSITE_REVISION = "5c8e56a50b5679118a28aef057af002209f80a5e"
 WORKFLOW_DOCS = (
     ROOT / "README.md",
@@ -21,6 +28,12 @@ def _workflow(path: Path) -> str:
     """Return the bash block that drives the split global workflow."""
     blocks = re.findall(r"```bash\n(.*?)```", path.read_text(), flags=re.DOTALL)
     return next(block for block in blocks if "regions-a.txt" in block)
+
+
+def test_documentation_root_escapes_mutmut_staging_directory() -> None:
+    """Copied tests must read documentation from the real checkout."""
+    staged_test = Path("/checkout/mutants/tests/unit/test_documentation_contract.py")
+    assert _repository_root(staged_test) == Path("/checkout")
 
 
 def test_split_workflow_creates_region_files_before_consuming_them() -> None:
