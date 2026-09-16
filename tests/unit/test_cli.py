@@ -313,3 +313,35 @@ def test_assemble_combines_directories_that_share_a_leaf_name(tmp_path) -> None:
     assert outcome.exit_code == 0, outcome.output
     manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
     assert manifest["rejections"] == {"too_large": 2}
+
+
+def test_regions_lists_the_pinned_sources_region_stems(monkeypatch) -> None:
+    """Step one of a split run: learn which regions the pinned source has."""
+    seen: dict[str, object] = {}
+
+    def fake_list(repo_id, revision, source):
+        seen["args"] = (repo_id, revision, source.name)
+        return ["alpha-latest", "beta-latest"]
+
+    monkeypatch.setattr(cli.hub, "list_region_stems", fake_list)
+    outcome = runner.invoke(cli.app, ["regions", "--source", "description", "--revision", "abc"])
+    assert outcome.exit_code == 0, outcome.output
+    assert outcome.stdout.splitlines() == ["alpha-latest", "beta-latest"]
+    assert seen["args"] == ("NoeFlandre/osm-polygon-description-tag", "abc", "description")
+
+
+def test_regions_resolves_the_head_revision_when_none_is_pinned(monkeypatch) -> None:
+    """An unpinned listing must still name the commit it described."""
+    monkeypatch.setattr(cli.hub, "resolve_revision", lambda repo_id: "resolved-sha")
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a, **k: ["alpha-latest"])
+    outcome = runner.invoke(cli.app, ["regions", "--source", "website"])
+    assert outcome.exit_code == 0, outcome.output
+    assert outcome.stdout.splitlines() == ["alpha-latest"]
+    # The sha goes to stderr, so a redirected listing stays a clean region file.
+    assert "resolved-sha" in outcome.stderr
+
+
+def test_regions_refuses_an_unknown_source() -> None:
+    outcome = runner.invoke(cli.app, ["regions", "--source", "nonsense"])
+    assert outcome.exit_code == 1
+    assert "unknown source" in outcome.output

@@ -6,11 +6,12 @@ from typing import Annotated
 
 import typer
 
+from osm_worldcover.adapters import hub
 from osm_worldcover.adapters.writer import read_manifest
 from osm_worldcover.build import ShardStore, run_build
 from osm_worldcover.config import Config
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
-from osm_worldcover.sources import DEFAULT_SOURCE
+from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -64,6 +65,27 @@ def _read_regions(path: Path | None) -> list[str]:
         return []
     lines = (line.split("#", 1)[0].strip() for line in path.read_text().splitlines())
     return [line for line in lines if line]
+
+
+@app.command()
+def regions(
+    source: Annotated[
+        str, typer.Option(help="Named input source: wikidata, description, or website.")
+    ] = DEFAULT_SOURCE,
+    revision: Annotated[
+        str | None, typer.Option(help="Source commit to list; resolve the current head if omitted.")
+    ] = None,
+) -> None:
+    """List the source's region stems, one per line."""
+    try:
+        recipe = recipe_for(source)
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+    resolved_revision = revision or hub.resolve_revision(recipe.source_dataset)
+    typer.echo(f"revision: {resolved_revision}", err=True)
+    for stem in hub.list_region_stems(recipe.source_dataset, resolved_revision, recipe):
+        typer.echo(stem)
 
 
 @app.command()
