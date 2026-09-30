@@ -72,18 +72,20 @@ one wrong:
 
 1. Geofabrik extracts overlap, so one OSM object appears under several
    `polygon_id`s. One region is chosen per object.
-2. Distinct objects can carry byte-identical text under the same label.
+2. Repeated rows are removed only when stable polygon identity, normalized text
+   and WorldCover label all match. Different polygons with identical text and
+   labels remain separate examples.
 3. One article can describe several distant places, which fall in different
    cells and so different splits. The split holding most of that document's
    rows keeps them; the rest are dropped, because moving them would break the
    geographic blocking.
 
-Exact text-label duplicates are collapsed globally after geographic split
-assignment. This can remove useful repeated short descriptions on distinct
-polygons; retaining them could place identical text and labels in multiple
-splits. The manifest and generated card report duplicate groups crossing
-splits and removed rows by text length so the data loss is visible before a
-release is approved.
+The manifest and generated card report exact same-polygon record removals and
+their word counts. They also report repeated normalized text across polygons
+and splits as diagnostics. Identical text on distinct polygons is retained;
+cross-split text collisions do not trigger broad row deletion. The audit warns
+when those collisions span splits, while polygon, document and H3 leakage
+remain failures.
 
 ### Nothing is held whole
 

@@ -1,4 +1,4 @@
-"""Text eligibility and exact-duplicate identity.
+"""Text eligibility and normalized text-label identity.
 
 Normalisation is deliberately conservative: whitespace only. The articles are
 multilingual, so case folding, punctuation stripping or unicode normalisation
@@ -33,10 +33,10 @@ def is_usable(text: str, min_words: int = DEFAULT_MIN_WORDS) -> bool:
 
 
 def dedup_key(text: str, label: str) -> str:
-    """Return a stable identity for an ``(text, label)`` example.
+    """Return a stable normalized-text and label key.
 
-    Two examples share a key exactly when their normalised text and label are
-    equal, which is the notion of "exact duplicate" the dataset removes.
+    The release adds the stable polygon identity to this key before removing a
+    record, so equal text and labels on different polygons remain distinct.
     """
     digest = hashlib.sha256()
     digest.update(normalise(text).encode("utf-8"))

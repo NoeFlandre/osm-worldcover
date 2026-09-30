@@ -43,7 +43,7 @@ jobs:
         run: uv run pytest --cov --cov-report=json -q
 
       - name: CRAP score
-        run: uv run python scripts/crap.py src
+        run: uv run python scripts/crap.py src scripts
 
       - name: Docs build
         run: uv run mkdocs build --strict

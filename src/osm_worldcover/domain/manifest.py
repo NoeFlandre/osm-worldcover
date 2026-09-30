@@ -97,8 +97,8 @@ def _copy_deduplication_analysis(analysis: Mapping[str, Any]) -> dict[str, Any]:
         return {}
     return {
         **analysis,
-        "duplicate_rows_removed_by_text_words": dict(
-            sorted(analysis.get("duplicate_rows_removed_by_text_words", {}).items())
+        "duplicate_records_removed_by_text_words": dict(
+            sorted(analysis.get("duplicate_records_removed_by_text_words", {}).items())
         ),
     }
 
