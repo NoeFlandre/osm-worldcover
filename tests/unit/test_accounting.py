@@ -243,6 +243,78 @@ def test_full_ledger_accounts_for_every_region_and_all_counters(context, outcome
     assert outcome_from_record(ledger["regions"][0]) == outcome
 
 
+def test_processing_ledger_groups_exact_region_code_revisions(context, outcome):
+    outcomes = [replace(outcome, stem="beta"), outcome]
+    ledger = processing_ledger(
+        ["alpha", "beta"],
+        ["alpha", "beta"],
+        outcomes,
+        context,
+        region_code_revisions={"alpha": "a" * 40, "beta": "b" * 40},
+        assembly_code_revision="c" * 40,
+    )
+    assert ledger["schema_version"] == 2
+    assert ledger["code_provenance"] == [
+        {
+            "repository": context.document["settings"]["code_repository"],
+            "revision": "a" * 40,
+            "regions": ["alpha"],
+        },
+        {
+            "repository": context.document["settings"]["code_repository"],
+            "revision": "b" * 40,
+            "regions": ["beta"],
+        },
+    ]
+    assert ledger["assembly_code_revision"] == "c" * 40
+
+
+def test_processing_ledger_requires_code_pin_for_every_processed_region(context, outcome):
+    with pytest.raises(ValueError, match="match processed regions exactly"):
+        processing_ledger(
+            ["alpha"],
+            ["alpha"],
+            [outcome],
+            context,
+            region_code_revisions={},
+            assembly_code_revision="c" * 40,
+        )
+
+
+def test_legacy_context_keeps_schema_one_ledger(context, outcome):
+    document = context.as_dict()
+    document["code_revision"] = None
+    legacy_context = BuildContext.from_document(document)
+    ledger = processing_ledger(["alpha"], ["alpha"], [outcome], legacy_context)
+    assert ledger["schema_version"] == 1
+    assert "code_provenance" not in ledger
+
+
+def test_processing_ledger_rejects_invalid_assembly_revision(context, outcome):
+    with pytest.raises(ValueError, match="assembly code revision"):
+        processing_ledger(
+            ["alpha"],
+            ["alpha"],
+            [outcome],
+            context,
+            assembly_code_revision="not-a-commit",
+        )
+
+
+def test_version_two_ledger_requires_assembly_revision(context, outcome):
+    document = context.as_dict()
+    document["code_revision"] = None
+    legacy_context = BuildContext.from_document(document)
+    with pytest.raises(ValueError, match="require an assembly code revision"):
+        processing_ledger(
+            ["alpha"],
+            ["alpha"],
+            [outcome],
+            legacy_context,
+            region_code_revisions={"alpha": "a" * 40},
+        )
+
+
 def test_selected_regions_not_yet_completed_are_explicit(context, outcome):
     ledger = processing_ledger(["alpha", "beta"], ["alpha", "beta"], [outcome], context)
     assert not ledger["full_source_complete"]

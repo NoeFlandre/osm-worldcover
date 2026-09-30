@@ -57,6 +57,7 @@ def render(manifest: Mapping[str, Any]) -> str:
                 manifest.get("rejections", {}),
                 manifest.get("deduplication", {}),
                 manifest.get("deduplication_analysis", {}),
+                manifest.get("processing", {}),
             ),
         ]
     )
@@ -239,6 +240,7 @@ def _provenance(
     rejections: Mapping[str, int],
     deduplication: Mapping[str, int],
     deduplication_analysis: Mapping[str, Any],
+    processing: Mapping[str, Any],
 ) -> str:
     source_dataset = settings.get("source_dataset")
     source_url = settings.get("source_url", f"https://huggingface.co/datasets/{source_dataset}")
@@ -259,8 +261,8 @@ def _provenance(
         f"- Maximum polygon area: {settings.get('max_polygon_area_m2')} m2\n",
         f"- Split seed: {settings.get('split_seed')},"
         f" H3 resolution {settings.get('h3_resolution')}\n",
-        f"\nCode: [{code_repository.removeprefix('https://')}]({code_repository})\n",
     ]
+    lines.extend(_code_provenance(code_repository, processing))
     lines.extend(_rejection_table(rejections))
     lines.extend(_deduplication_table(deduplication))
     lines.extend(_deduplication_analysis(deduplication_analysis))
@@ -270,6 +272,27 @@ def _provenance(
         "ESA WorldCover is CC BY 4.0.\n"
     )
     return "".join(lines)
+
+
+def _code_provenance(repository: str, processing: Mapping[str, Any]) -> list[str]:
+    groups = processing.get("code_provenance", [])
+    if not groups:
+        return [f"\nCode: [{repository.removeprefix('https://')}]({repository})\n"]
+    lines = ["\nRegion labeling code:\n"]
+    for group in groups:
+        revision = group["revision"]
+        pinned_repository = group["repository"]
+        count = len(group["regions"])
+        region_word = "region" if count == 1 else "regions"
+        link = f"{pinned_repository}/tree/{revision}"
+        lines.append(f"- [{revision}]({link}) — {count:,} {region_word}\n")
+    assembly_revision = processing.get("assembly_code_revision")
+    if assembly_revision:
+        lines.append(
+            f"\nAssembly and finalization code: [{assembly_revision}]"
+            f"({repository}/tree/{assembly_revision})\n"
+        )
+    return lines
 
 
 def _rejection_table(rejections: Mapping[str, int]) -> list[str]:

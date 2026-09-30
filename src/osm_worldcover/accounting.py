@@ -10,10 +10,12 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, fields
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,9 @@ __all__ = [
 ]
 
 RECEIPT_VERSION = 1
+PROCESSING_LEDGER_VERSION = 2
 PIPELINE_SCHEMA_VERSION = 3
+_CODE_REVISION = re.compile(r"[0-9a-f]{40}")
 COUNT_FIELDS = (
     "polygons_seen",
     "polygons_invalid",
@@ -45,6 +49,35 @@ COUNT_FIELDS = (
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+@lru_cache(maxsize=1)
+def _current_code_revision() -> str | None:
+    """Return the exact commit only for a clean source checkout."""
+    repository = Path(__file__).resolve().parents[2]
+    status = _git_output(repository, "status", "--porcelain", "--untracked-files=no")
+    if status is None or status:
+        return None
+    revision = _git_output(repository, "rev-parse", "--verify", "HEAD")
+    return revision if _is_code_revision(revision) else None
+
+
+def _git_output(repository: Path, *arguments: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _is_code_revision(value: object) -> bool:
+    return isinstance(value, str) and _CODE_REVISION.fullmatch(value) is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +96,7 @@ class BuildContext:
             {
                 "receipt_version": RECEIPT_VERSION,
                 "pipeline_schema_version": PIPELINE_SCHEMA_VERSION,
+                "code_revision": _current_code_revision(),
                 "settings": config.as_manifest_settings(),
                 "extra": config.extra,
                 "source_recipe": asdict(config.source_recipe),
@@ -70,6 +104,19 @@ class BuildContext:
                 "outcome_fields": [item.name for item in fields(RegionOutcome)],
             }
         )
+
+    @classmethod
+    def from_document(cls, document: Mapping[str, Any]) -> "BuildContext":
+        """Restore an immutable context exactly as it was recorded in a receipt."""
+        if not isinstance(document, Mapping):
+            raise TypeError("build context must be an object")
+        normalized = json.loads(_canonical(document))
+        if (
+            normalized.get("receipt_version") != RECEIPT_VERSION
+            or normalized.get("pipeline_schema_version") != PIPELINE_SCHEMA_VERSION
+        ):
+            raise ValueError("unsupported receipt context version")
+        return cls(normalized)
 
     @property
     def fingerprint(self) -> str:
@@ -208,6 +255,9 @@ def processing_ledger(
     selected_regions: Sequence[str],
     outcomes: Sequence[RegionOutcome],
     context: BuildContext,
+    *,
+    region_code_revisions: Mapping[str, str] | None = None,
+    assembly_code_revision: str | None = None,
 ) -> dict[str, Any]:
     """Describe exactly what was processed, including resumed region outcomes.
 
@@ -220,7 +270,60 @@ def processing_ledger(
         expected_regions, selected_regions, outcomes
     )
     missing, pending = _inventory_gaps(expected, selected, processed)
-    return _processing_record(expected, selected, processed, missing, pending, outcomes, context)
+    revisions = _validated_code_revisions(processed, context, region_code_revisions)
+    assembly_code_revision = _validated_assembly_code_revision(
+        assembly_code_revision, context, revisions
+    )
+    return _processing_record(
+        expected,
+        selected,
+        processed,
+        missing,
+        pending,
+        outcomes,
+        context,
+        revisions,
+        assembly_code_revision,
+    )
+
+
+def _validated_assembly_code_revision(
+    revision: str | None, context: BuildContext, region_revisions: Mapping[str, str] | None
+) -> str | None:
+    if revision is None:
+        revision = context.document.get("code_revision")
+    if revision is not None:
+        if not _is_code_revision(revision):
+            raise ValueError("assembly code revision must be a full 40-character commit")
+        return revision
+    if region_revisions is not None:
+        raise ValueError("schema 2 processing ledgers require an assembly code revision")
+    return None
+
+
+def _validated_code_revisions(
+    processed: list[str],
+    context: BuildContext,
+    revisions: Mapping[str, str] | None,
+) -> dict[str, str] | None:
+    if revisions is None:
+        revisions = _context_code_revisions(processed, context)
+    if revisions is None:
+        return None
+    _validate_code_revision_inventory(processed, revisions)
+    return dict(revisions)
+
+
+def _context_code_revisions(processed: list[str], context: BuildContext) -> dict[str, str] | None:
+    revision = context.document.get("code_revision")
+    return {stem: revision for stem in processed} if revision is not None else None
+
+
+def _validate_code_revision_inventory(processed: list[str], revisions: Mapping[str, str]) -> None:
+    if set(revisions) != set(processed):
+        raise ValueError("code revision inventory must match processed regions exactly")
+    if not all(_is_code_revision(revision) for revision in revisions.values()):
+        raise ValueError("region code revisions must be full 40-character commits")
 
 
 def _validated_inventories(
@@ -256,9 +359,11 @@ def _processing_record(
     pending: list[str],
     outcomes: Sequence[RegionOutcome],
     context: BuildContext,
+    region_code_revisions: Mapping[str, str] | None,
+    assembly_code_revision: str | None,
 ) -> dict[str, Any]:
-    return {
-        "schema_version": RECEIPT_VERSION,
+    record = {
+        "schema_version": _processing_schema_version(region_code_revisions),
         "build_context_sha256": context.fingerprint,
         "context": context.as_dict(),
         "scope": "full" if set(selected) == set(expected) else "subset",
@@ -286,3 +391,34 @@ def _processing_record(
             "valid": True,
         },
     }
+    record.update(_code_provenance_fields(region_code_revisions, context, assembly_code_revision))
+    return record
+
+
+def _processing_schema_version(revisions: Mapping[str, str] | None) -> int:
+    return PROCESSING_LEDGER_VERSION if revisions is not None else RECEIPT_VERSION
+
+
+def _code_provenance_fields(
+    revisions: Mapping[str, str] | None,
+    context: BuildContext,
+    assembly_revision: str | None,
+) -> dict[str, Any]:
+    if revisions is None:
+        return {}
+    return {
+        "code_provenance": _code_provenance(
+            revisions, context.document["settings"]["code_repository"]
+        ),
+        "assembly_code_revision": assembly_revision,
+    }
+
+
+def _code_provenance(revisions: Mapping[str, str], repository: str) -> list[dict[str, Any]]:
+    by_revision: dict[str, list[str]] = {}
+    for stem, revision in revisions.items():
+        by_revision.setdefault(revision, []).append(stem)
+    return [
+        {"repository": repository, "revision": revision, "regions": sorted(stems)}
+        for revision, stems in sorted(by_revision.items())
+    ]

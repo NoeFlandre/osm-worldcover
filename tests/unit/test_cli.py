@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-from osm_worldcover import cli
+from osm_worldcover import accounting, cli
 from osm_worldcover.accounting import BuildContext
 from osm_worldcover.build import ShardStore
 from osm_worldcover.config import Config
@@ -499,7 +499,7 @@ def test_regions_refuses_an_unknown_source() -> None:
     assert "unknown source" in outcome.output
 
 
-def verified_shard(directory, stem="alpha", config=None, count=2):
+def verified_shard(directory, stem="alpha", config=None, count=2, receipt_context=None):
     """Write real completion receipts, including all pre-deduplication accounting."""
     config = config or Config(source="description", source_revision="a" * 40)
     directory.mkdir(parents=True, exist_ok=True)
@@ -519,7 +519,8 @@ def verified_shard(directory, stem="alpha", config=None, count=2):
         rejections=Counter({"below_threshold": 3}),
         text_rejections=Counter({"empty_text": 1}),
     )
-    ShardStore(directory, BuildContext.from_config(config)).write_outcome(stem, rows, outcome)
+    context = receipt_context or BuildContext.from_config(config)
+    ShardStore(directory, context).write_outcome(stem, rows, outcome)
     return config
 
 
@@ -623,6 +624,56 @@ def test_assemble_aggregates_worker_receipts_including_empty_regions(tmp_path, m
     assert ledger["totals"]["polygons_seen"] == 14
     assert ledger["totals"]["text_rejections"] == {"empty_text": 2}
     assert manifest["rejections"] == {"below_threshold": 6}
+
+
+def test_assemble_preserves_mixed_region_code_pins(tmp_path, monkeypatch):
+    config = Config(source="description", source_revision="a" * 40)
+    legacy_document = BuildContext.from_config(config).as_dict()
+    legacy_document.pop("code_revision", None)
+    current_document = BuildContext.from_config(config).as_dict()
+    current_document["code_revision"] = "b" * 40
+    first, second = tmp_path / "w0", tmp_path / "w1"
+    verified_shard(
+        first,
+        config=config,
+        receipt_context=BuildContext.from_document(legacy_document),
+    )
+    verified_shard(
+        second,
+        stem="beta",
+        config=config,
+        receipt_context=BuildContext.from_document(current_document),
+    )
+    monkeypatch.setattr(accounting, "_current_code_revision", lambda: "c" * 40)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta"])
+    unpinned = runner.invoke(cli.app, assemble_args(tmp_path, first, second))
+    assert unpinned.exit_code == 1
+    assert "provide --legacy-code-revision" in unpinned.output
+    assert not (tmp_path / "out").exists()
+    outcome = runner.invoke(
+        cli.app,
+        [
+            *assemble_args(tmp_path, first, second),
+            "--legacy-code-revision",
+            "a" * 40,
+        ],
+    )
+    assert outcome.exit_code == 0, outcome.output
+    ledger = assembled_manifest(tmp_path)["processing"]
+    assert ledger["schema_version"] == 2
+    assert ledger["code_provenance"] == [
+        {
+            "repository": config.as_manifest_settings()["code_repository"],
+            "revision": "a" * 40,
+            "regions": ["alpha"],
+        },
+        {
+            "repository": config.as_manifest_settings()["code_repository"],
+            "revision": "b" * 40,
+            "regions": ["beta"],
+        },
+    ]
+    assert ledger["assembly_code_revision"] == "c" * 40
 
 
 @pytest.mark.parametrize(

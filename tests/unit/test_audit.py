@@ -8,13 +8,16 @@ import h3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import yaml
 
 from osm_worldcover.adapters.audit import _SCHEMA, audit_build
+from osm_worldcover.domain.card import render
 from osm_worldcover.domain.splits import assign_cell
 
 SPLITS = ("train", "validation", "test")
 SETTINGS = {
     "dataset_version": "2.0.0",
+    "code_repository": "https://github.com/NoeFlandre/osm-worldcover",
     "source_dataset": "owner/source",
     "source_revision": "a" * 40,
     "worldcover_version": "v200",
@@ -170,6 +173,51 @@ def test_complete_release_passes_and_report_serializes(build):
     json.dumps(report.as_dict())
 
 
+def test_complete_release_accepts_partitioned_mixed_code_provenance(build):
+    path = build / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["processing"].update(
+        {
+            "schema_version": 2,
+            "assembly_code_revision": "b" * 40,
+            "code_provenance": [
+                {
+                    "repository": SETTINGS["code_repository"],
+                    "revision": "a" * 40,
+                    "regions": ["place"],
+                }
+            ],
+        }
+    )
+    path.write_text(json.dumps(manifest))
+    assert audit_build(build, require_complete=True).ok
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        [],
+        [{"repository": SETTINGS["code_repository"], "revision": "a" * 40, "regions": []}],
+        [
+            {
+                "repository": SETTINGS["code_repository"],
+                "revision": "a" * 40,
+                "regions": ["place", "place"],
+            }
+        ],
+        [{"repository": SETTINGS["code_repository"], "revision": "bad", "regions": ["place"]}],
+    ],
+)
+def test_complete_release_rejects_invalid_code_provenance(build, groups):
+    path = build / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["processing"].update(
+        {"schema_version": 2, "assembly_code_revision": "b" * 40, "code_provenance": groups}
+    )
+    path.write_text(json.dumps(manifest))
+    assert "invalid_processing_ledger" in problems(audit_build(build, require_complete=True))
+
+
 @pytest.mark.parametrize(
     ("key", "value", "expected"),
     [
@@ -256,6 +304,60 @@ def test_document_polygon_and_h3_leakage_are_detected(build):
 def test_card_is_required_only_when_requested(build):
     assert audit_build(build).ok
     assert "invalid_card_or_map" in problems(audit_build(build, require_card=True))
+
+
+def test_card_metadata_and_assets_are_audited(build):
+    metadata = {
+        "license": "cc-by-sa-4.0",
+        "configs": [
+            {
+                "config_name": "default",
+                "data_files": [{"split": split, "path": f"{split}.parquet"} for split in SPLITS],
+            }
+        ],
+    }
+    front_matter = yaml.safe_dump(metadata, sort_keys=False)
+    (build / "README.md").write_text(
+        f"---\n{front_matter}---\n{SETTINGS['source_dataset']} "
+        f"{SETTINGS['source_revision']} ![map](worldcover_centroids.png)"
+    )
+    (build / "worldcover_centroids.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert audit_build(build, require_card=True).ok
+
+    (build / "README.md").write_text("---\n" + front_matter + "---\n")
+    (build / "worldcover_centroids.png").write_bytes(b"not a png")
+    codes = problems(audit_build(build, require_card=True))
+    assert "card_missing_provenance:source_revision" in codes
+    assert "card_missing_provenance:source_dataset" in codes
+    assert "card_missing_coverage_map" in codes
+    assert "invalid_coverage_map_png" in codes
+
+
+def test_required_card_matches_mixed_code_provenance(build):
+    path = build / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["processing"].update(
+        {
+            "schema_version": 2,
+            "assembly_code_revision": "b" * 40,
+            "code_provenance": [
+                {
+                    "repository": SETTINGS["code_repository"],
+                    "revision": "a" * 40,
+                    "regions": ["place"],
+                }
+            ],
+        }
+    )
+    path.write_text(json.dumps(manifest))
+    (build / "README.md").write_text(render(manifest))
+    (build / "worldcover_centroids.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert audit_build(build, require_complete=True, require_card=True).ok
+
+    card_path = build / "README.md"
+    card_path.write_text(card_path.read_text().replace(f"[{'a' * 40}](", "[wrong-pin]("))
+    codes = problems(audit_build(build, require_complete=True, require_card=True))
+    assert "card_missing_code_provenance" in codes
 
 
 def test_seven_decimal_centroid_rounding_is_accepted(build):
