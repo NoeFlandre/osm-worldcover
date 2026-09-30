@@ -16,7 +16,7 @@ import math
 import urllib.error
 import urllib.request
 from collections import OrderedDict, defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Final, Protocol
 
@@ -53,6 +53,15 @@ _OPS: Final[Sequence[str]] = ("cell_id", "coverage", "values")
 #: polygon against those cells; the halo only selects candidates for checking.
 _BOUNDARY_HALO_PIXELS: Final[float] = 0.01
 _BOUNDARY_ROW_CHUNK: Final[int] = 256
+
+# exactextract returns one cell-level result array per feature. Bound each
+# batch by both feature count and polygon area so one busy tile cannot make a
+# whole region's result arrays resident at once. A 2,000 km² batch covers at
+# most about 20 million 10 m cells; larger polygons are processed alone.
+_MAX_FEATURES_PER_BATCH: Final[int] = 128
+_MAX_BATCH_AREA_M2: Final[float] = 2_000_000_000.0
+_MAX_CELLS_IN_MEMORY: Final[int] = 2_000_000
+_ACCUMULATION_CELL_CHUNK: Final[int] = 1_000_000
 
 
 class TileNotPublishedError(FileNotFoundError):
@@ -188,20 +197,58 @@ def _add_raster(
     with rasterio.open(path) as dataset:
         transform = dataset.transform
         cell_area = abs(transform.a * transform.e - transform.b * transform.d)
-        result = exact_extract(str(path), frame, list(_OPS), output="pandas")
-        for index, (cell_ids, coverage, values) in enumerate(
-            zip(result["cell_id"], result["coverage"], result["values"], strict=True)
-        ):
-            _accumulate_corrected(
-                totals[index],
-                cell_ids,
-                coverage,
-                values,
-                frame.geometry.iloc[index],
-                dataset,
-                cell_area,
-                areas[index],
+        for start, stop in _feature_batches(frame):
+            batch = frame.iloc[start:stop]
+            result = exact_extract(
+                str(path),
+                batch,
+                list(_OPS),
+                max_cells_in_memory=_MAX_CELLS_IN_MEMORY,
+                output="pandas",
             )
+            for index, (cell_ids, coverage, values) in enumerate(
+                zip(result["cell_id"], result["coverage"], result["values"], strict=True),
+                start=start,
+            ):
+                _accumulate_corrected(
+                    totals[index],
+                    cell_ids,
+                    coverage,
+                    values,
+                    frame.geometry.iloc[index],
+                    dataset,
+                    cell_area,
+                    areas[index],
+                )
+
+
+def _feature_batches(frame: gpd.GeoDataFrame) -> Iterator[tuple[int, int]]:
+    """Yield feature ranges with bounded count and total source area."""
+    areas = _feature_areas(frame)
+    start = 0
+    batch_area = 0.0
+    for index, value in enumerate(areas):
+        area = float(value)
+        feature_count = index - start
+        if feature_count and _batch_exceeds_limits(feature_count, batch_area, area):
+            yield start, index
+            start = index
+            batch_area = 0.0
+        batch_area += area
+    if start < len(frame):
+        yield start, len(frame)
+
+
+def _feature_areas(frame: gpd.GeoDataFrame) -> np.ndarray:
+    """Return source areas, or zeros when only the feature-count limit applies."""
+    if "area_m2" in frame:
+        return frame["area_m2"].to_numpy(dtype=float, copy=False)
+    return np.zeros(len(frame), dtype=float)
+
+
+def _batch_exceeds_limits(feature_count: int, batch_area: float, next_area: float) -> bool:
+    """Whether adding another feature would exceed either extraction bound."""
+    return feature_count >= _MAX_FEATURES_PER_BATCH or batch_area + next_area > _MAX_BATCH_AREA_M2
 
 
 def _accumulate_corrected(
@@ -219,21 +266,27 @@ def _accumulate_corrected(
         return
     ids = np.asarray(cell_ids, dtype=np.int64)
     fractions = np.asarray(coverage, dtype=float)
-    raw_values = np.ma.asarray(values, dtype=float)
-    classes = np.asarray(raw_values.filled(np.nan), dtype=float)
-    order = np.argsort(ids, kind="stable")
-    ids, fractions, classes = ids[order], fractions[order], classes[order]
+    raw_values = np.ma.asarray(values)
+    classes = np.asarray(raw_values.data)
+    mask = None if raw_values.mask is np.ma.nomask else np.asarray(raw_values.mask, dtype=bool)
     pixel_geometry = _pixel_geometry(geometry, dataset.transform)
     candidate_ids, rows, columns, corrected = _boundary_cells(
         pixel_geometry, dataset.width, dataset.height
     )
     present, positions = _find_candidates(ids, candidate_ids)
-    stable = np.ones(len(ids), dtype=bool)
-    stable[positions[present]] = False
+    candidate_positions = np.sort(positions[present])
     scale = cell_area / polygon_area
-    _add_class_coverage(into, classes[stable], fractions[stable], scale)
     candidate_classes = np.full(len(candidate_ids), np.nan)
-    candidate_classes[present] = classes[positions[present]]
+    matched_candidates = np.flatnonzero(present)
+    matched_positions = positions[matched_candidates]
+    if mask is None:
+        candidate_classes[matched_candidates] = classes[matched_positions]
+    else:
+        valid_candidates = ~mask[matched_positions]
+        candidate_classes[matched_candidates[valid_candidates]] = classes[
+            matched_positions[valid_candidates]
+        ]
+    _accumulate_stable_cells(into, classes, mask, fractions, candidate_positions, scale)
     _read_missing_classes(
         dataset,
         rows[~present & (corrected > 0.0)],
@@ -315,14 +368,65 @@ def _rasterized_boundary_ids(
 
 
 def _find_candidates(cell_ids: np.ndarray, candidates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Find exactextract result positions for candidate boundary cell IDs."""
+    """Find result positions without reordering the potentially huge cell array."""
     if not len(cell_ids) or not len(candidates):
         return np.zeros(len(candidates), dtype=bool), np.zeros(len(candidates), dtype=np.int64)
-    positions = np.searchsorted(cell_ids, candidates)
-    in_range = positions < len(cell_ids)
     found = np.zeros(len(candidates), dtype=bool)
-    found[in_range] = cell_ids[positions[in_range]] == candidates[in_range]
+    positions = np.zeros(len(candidates), dtype=np.int64)
+    if _is_sorted(cell_ids):
+        positions = np.searchsorted(cell_ids, candidates)
+        in_range = positions < len(cell_ids)
+        found[in_range] = cell_ids[positions[in_range]] == candidates[in_range]
+        return found, positions
+    for start in range(0, len(cell_ids), _ACCUMULATION_CELL_CHUNK):
+        stop = min(start + _ACCUMULATION_CELL_CHUNK, len(cell_ids))
+        chunk = cell_ids[start:stop]
+        offsets = np.searchsorted(candidates, chunk)
+        in_range = offsets < len(candidates)
+        matched = np.zeros(len(chunk), dtype=bool)
+        matched[in_range] = candidates[offsets[in_range]] == chunk[in_range]
+        found[offsets[matched]] = True
+        positions[offsets[matched]] = start + np.flatnonzero(matched)
     return found, positions
+
+
+def _is_sorted(values: np.ndarray) -> bool:
+    """Check monotonic order in bounded slices, avoiding a full-size mask."""
+    previous: int | None = None
+    for start in range(0, len(values), _ACCUMULATION_CELL_CHUNK):
+        chunk = values[start : start + _ACCUMULATION_CELL_CHUNK]
+        if not _chunk_follows(previous, chunk):
+            return False
+        previous = int(chunk[-1])
+    return True
+
+
+def _chunk_follows(previous: int | None, chunk: np.ndarray) -> bool:
+    """Check sorted order within a chunk and across its leading boundary."""
+    starts_after_previous = previous is None or previous <= chunk[0]
+    return starts_after_previous and not np.any(chunk[1:] < chunk[:-1])
+
+
+def _accumulate_stable_cells(
+    into: defaultdict[int, float],
+    classes: np.ndarray,
+    mask: np.ndarray | None,
+    fractions: np.ndarray,
+    excluded: np.ndarray,
+    scale: float,
+) -> None:
+    """Accumulate non-boundary cells in bounded slices of exactextract output."""
+    for start in range(0, len(classes), _ACCUMULATION_CELL_CHUNK):
+        stop = min(start + _ACCUMULATION_CELL_CHUNK, len(classes))
+        stable = np.ones(stop - start, dtype=bool)
+        left = np.searchsorted(excluded, start, side="left")
+        right = np.searchsorted(excluded, stop, side="left")
+        stable[excluded[left:right] - start] = False
+        valid = stable & np.isfinite(classes[start:stop]) & np.isfinite(fractions[start:stop])
+        valid &= fractions[start:stop] > 0.0
+        if mask is not None:
+            valid &= ~mask[start:stop]
+        _add_class_coverage(into, classes[start:stop][valid], fractions[start:stop][valid], scale)
 
 
 def _read_missing_classes(

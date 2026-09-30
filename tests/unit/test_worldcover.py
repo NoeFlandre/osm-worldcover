@@ -12,6 +12,7 @@ from rasterio.windows import Window
 from shapely.geometry import MultiPolygon, Polygon
 from tests.conftest import write_raster
 
+import osm_worldcover.adapters.worldcover as worldcover
 from osm_worldcover.adapters.worldcover import WorldCoverTiles, class_coverage
 from osm_worldcover.domain.tiling import Tile
 
@@ -98,6 +99,51 @@ class TestClassCoverage:
             {10: pytest.approx(1.0)},
             {50: pytest.approx(1.0)},
         ]
+
+    def test_feature_batches_preserve_coverage_and_bound_extraction(
+        self, half_and_half, monkeypatch
+    ) -> None:
+        frame = gpd.GeoDataFrame(
+            {"polygon_id": ["left", "right", "across"], "area_m2": [6.0, 3.0, 3.0]},
+            geometry=[
+                Polygon([(0, 0), (0, 4), (2, 4), (2, 0)]),
+                Polygon([(2, 0), (2, 4), (4, 4), (4, 0)]),
+                Polygon([(1, 0), (1, 4), (3, 4), (3, 0)]),
+            ],
+            crs="EPSG:4326",
+        )
+        monkeypatch.setattr(worldcover, "_MAX_FEATURES_PER_BATCH", 2)
+        monkeypatch.setattr(worldcover, "_MAX_BATCH_AREA_M2", 8.0)
+        monkeypatch.setattr(worldcover, "_ACCUMULATION_CELL_CHUNK", 2)
+        original_extract = worldcover.exact_extract
+        batch_sizes = []
+
+        def recording_extract(raster, features, operations, **kwargs):
+            batch_sizes.append((len(features), kwargs["max_cells_in_memory"]))
+            return original_extract(raster, features, operations, **kwargs)
+
+        monkeypatch.setattr(worldcover, "exact_extract", recording_extract)
+
+        coverage = class_coverage([half_and_half], frame)
+
+        assert batch_sizes == [
+            (1, worldcover._MAX_CELLS_IN_MEMORY),
+            (2, worldcover._MAX_CELLS_IN_MEMORY),
+        ]
+        assert coverage == [
+            {10: pytest.approx(1.0)},
+            {50: pytest.approx(1.0)},
+            {10: pytest.approx(0.5), 50: pytest.approx(0.5)},
+        ]
+
+    def test_boundary_candidate_lookup_handles_unsorted_cell_ids(self) -> None:
+        cell_ids = np.array([9, 2, 6, 1], dtype=np.int64)
+        candidates = np.array([1, 6, 8, 9], dtype=np.int64)
+
+        present, positions = worldcover._find_candidates(cell_ids, candidates)
+
+        assert present.tolist() == [True, True, False, True]
+        assert cell_ids[positions[present]].tolist() == candidates[present].tolist()
 
     def test_an_empty_frame_yields_no_rows(self, half_and_half) -> None:
         empty = gpd.GeoDataFrame({"polygon_id": []}, geometry=[], crs="EPSG:4326")
