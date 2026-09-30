@@ -32,7 +32,7 @@ from osm_worldcover.config import Config
 from osm_worldcover.domain import manifest as manifest_module
 from osm_worldcover.domain.manifest import DatasetCounts, GeographicCoverage
 from osm_worldcover.domain.splits import SplitRatios, assign_cell, cell_for
-from osm_worldcover.domain.text import dedup_key
+from osm_worldcover.domain.text import dedup_key, word_count
 from osm_worldcover.domain.validation import (
     REQUIRED_COLUMNS,
     ValidationReport,
@@ -62,6 +62,7 @@ def finalize_shards(
     work_dir: Path,
     out_dir: Path,
     rejections: dict[str, int] | None = None,
+    processing: dict[str, Any] | None = None,
 ) -> StreamedBuild:
     """Assemble region shards into the dataset written under ``out_dir``."""
     work_dir, out_dir = Path(work_dir), Path(out_dir)
@@ -75,14 +76,16 @@ def finalize_shards(
     if _enrich_shards(Path(shard_dir), enriched, config) == 0:
         return StreamedBuild(0, [], {}, validate([]))
 
-    connection, dropped = _deduplicate(enriched)
+    connection, dropped, deduplication_analysis = _deduplicate(enriched)
     try:
         paths, rows = _write_splits(connection, target)
-        counts = _aggregate(connection, rejections or {}, dropped)
+        counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
     finally:
         connection.close()
 
     manifest = manifest_module.build(counts, config.as_manifest_settings())
+    if processing is not None:
+        manifest["processing"] = processing
     report = _validate_written(paths, config)
     paths.append(write_manifest(manifest, target / "manifest.json"))
     return StreamedBuild(
@@ -107,6 +110,7 @@ def _enrich_shards(shard_dir: Path, enriched: Path, config: Config) -> int:
         frame = _assign_splits(frame, config, ratios)
         frame = _attach_provenance(frame, config)
         frame = _with_stable_text_types(frame)
+        frame["text_words"] = frame["text"].map(word_count).astype("int64")
         frame["_dedup_key"] = [
             dedup_key(text, str(code))
             for text, code in zip(frame["text"], frame["worldcover_code"], strict=True)
@@ -155,7 +159,7 @@ def _attach_provenance(frame: pd.DataFrame, config: Config) -> pd.DataFrame:
     )
 
 
-def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int]]:
+def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int], dict[str, Any]]:
     """Collapse duplicates and split conflicts across every shard, using DuckDB.
 
     The open connection is returned so the surviving rows can be streamed out
@@ -166,6 +170,10 @@ def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int]]:
 
     pattern = str(enriched / "*.parquet")
     connection = duckdb.connect()
+    connection.execute("SET memory_limit = '2GB'")
+    connection.execute("SET threads = 2")
+    connection.execute("SET preserve_insertion_order = false")
+    connection.execute("SET temp_directory = ?", [str(enriched.parent / "duckdb-spill")])
     before = _count(connection, f"SELECT count(*) FROM read_parquet('{pattern}')")
 
     # One region per OSM object, so an object cannot wear two polygon_ids.
@@ -194,6 +202,7 @@ def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int]]:
         """
     )
     after_objects = _count(connection, "SELECT count(*) FROM objects")
+    analysis = _duplicate_text_analysis(connection)
 
     # One row per (text, label).
     connection.execute(
@@ -230,10 +239,59 @@ def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int]]:
     connection.execute("DROP TABLE objects")
     connection.execute("DROP TABLE examples")
 
-    return connection, {
-        "duplicate_objects_across_regions": before - after_objects,
-        "duplicate_examples": after_objects - after_examples,
-        "documents_split_across_splits": after_examples - after,
+    return (
+        connection,
+        {
+            "duplicate_objects_across_regions": before - after_objects,
+            "duplicate_examples": after_objects - after_examples,
+            "documents_split_across_splits": after_examples - after,
+        },
+        analysis,
+    )
+
+
+def _duplicate_text_analysis(connection: Any) -> dict[str, Any]:
+    """Measure exact text-label dedup attrition before rows are collapsed."""
+    summary = connection.execute(
+        """
+        WITH grouped AS (
+            SELECT _dedup_key, min(text_words) AS text_words, count(*) AS row_count,
+                   count(DISTINCT split) AS split_count
+            FROM objects GROUP BY _dedup_key
+        ), duplicates AS (
+            SELECT *, row_count - 1 AS removed FROM grouped WHERE row_count > 1
+        )
+        SELECT count(*), coalesce(sum(removed), 0),
+               count(*) FILTER (WHERE split_count > 1),
+               coalesce(sum(removed) FILTER (WHERE split_count > 1), 0)
+        FROM duplicates
+        """
+    ).fetchone()
+    by_length = {
+        str(words): int(rows)
+        for words, rows in connection.execute(
+            """
+            WITH grouped AS (
+                SELECT _dedup_key, min(text_words) AS text_words, count(*) AS row_count
+                FROM objects GROUP BY _dedup_key
+            )
+            SELECT CASE WHEN text_words < 10 THEN cast(text_words AS varchar) ELSE '10+'
+                       END AS length_bucket,
+                   sum(row_count - 1) AS removed
+            FROM grouped WHERE row_count > 1
+            GROUP BY length_bucket
+            """
+        ).fetchall()
+    }
+    return {
+        "duplicate_text_label_groups": int(summary[0]),
+        "duplicate_rows_removed": int(summary[1]),
+        "duplicate_groups_crossing_splits": int(summary[2]),
+        "duplicate_rows_removed_from_cross_split_groups": int(summary[3]),
+        "duplicate_rows_removed_by_text_words": {
+            **{str(words): by_length.get(str(words), 0) for words in range(1, 10)},
+            "10+": by_length.get("10+", 0),
+        },
     }
 
 
@@ -264,11 +322,14 @@ def _validate_written(paths: Sequence[Path], config: Config) -> ValidationReport
             for batch in batches:
                 yield from batch.to_pylist()
 
-    return validate(rows(), threshold=config.threshold, min_words=config.min_words)
+    return validate(rows(), threshold=config.threshold, min_words=config.effective_min_words)
 
 
 def _aggregate(
-    connection: Any, rejections: dict[str, int], dropped: dict[str, int]
+    connection: Any,
+    rejections: dict[str, int],
+    dropped: dict[str, int],
+    deduplication_analysis: dict[str, Any],
 ) -> DatasetCounts:
     """Compute every manifest number in SQL, so no frame is ever built."""
     quantiles = connection.execute(
@@ -294,6 +355,7 @@ def _aggregate(
         ),
         rejections=dict(sorted(rejections.items())),
         deduplication=dict(sorted(dropped.items())),
+        deduplication_analysis=deduplication_analysis,
     )
 
 

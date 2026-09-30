@@ -22,7 +22,18 @@ def written(result) -> pd.DataFrame:
 TEXT = " ".join(["word"] * 30)
 
 
-def shard(path, n=1, start=0, region="luxembourg", code=10, text=None):
+def shard(
+    path,
+    n=1,
+    start=0,
+    region="luxembourg",
+    code=10,
+    text=None,
+    text_words=None,
+    lat=49.6,
+    lon=6.1,
+):
+    texts = [text or f"{TEXT} {i}" for i in range(start, start + n)]
     pd.DataFrame(
         {
             "polygon_id": [f"{region}-latest:way:{i}" for i in range(start, start + n)],
@@ -36,15 +47,15 @@ def shard(path, n=1, start=0, region="luxembourg", code=10, text=None):
             "language": ["en"] * n,
             "title": ["T"] * n,
             "url": ["u"] * n,
-            "text": [text or f"{TEXT} {i}" for i in range(start, start + n)],
+            "text": texts,
             "lead_text": ["lead"] * n,
-            "text_words": [31] * n,
+            "text_words": [text_words or len(value.split()) for value in texts],
             "worldcover_code": [code] * n,
             "worldcover_label": ["Tree cover" if code == 10 else "Built-up"] * n,
             "dominant_fraction": [0.95] * n,
             "observed_fraction": [1.0] * n,
-            "lat": [49.6] * n,
-            "lon": [6.1] * n,
+            "lat": [lat] * n,
+            "lon": [lon] * n,
             "centroid_wkt": ["POINT (6.1 49.6)"] * n,
             "polygon_area_m2": [1000.0] * n,
             "source_pbf": [f"{region}-latest.osm.pbf"] * n,
@@ -102,6 +113,41 @@ def test_identical_text_and_label_collapses(shards, tmp_path) -> None:
     result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
     assert result.rows == 1
     assert result.duplicate_examples == 1
+
+
+def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, tmp_path) -> None:
+    shard(shards / "a.parquet", start=0, region="alpha", text="Park", lat=49.6, lon=6.1)
+    shard(
+        shards / "b.parquet",
+        start=1,
+        region="beta",
+        text="Park",
+        lat=-33.9,
+        lon=151.2,
+    )
+
+    result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
+
+    analysis = result.manifest["deduplication_analysis"]
+    assert result.duplicate_examples == 1
+    assert analysis == {
+        "duplicate_text_label_groups": 1,
+        "duplicate_rows_removed": 1,
+        "duplicate_groups_crossing_splits": 1,
+        "duplicate_rows_removed_from_cross_split_groups": 1,
+        "duplicate_rows_removed_by_text_words": {
+            "1": 1,
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10+": 0,
+        },
+    }
 
 
 def test_identical_text_under_different_labels_is_kept(shards, tmp_path) -> None:

@@ -50,6 +50,10 @@ class RegionOutcome:
     polygons_seen: int = 0
     polygons_invalid: int = 0
     polygons_accepted: int = 0
+    polygons_with_examples: int = 0
+    source_links: int = 0
+    source_documents: int = 0
+    text_rejections: Counter[str] = field(default_factory=Counter)
     examples: int = 0
     rejections: Counter[str] = field(default_factory=Counter)
     tiles_missing: list[str] = field(default_factory=list)
@@ -65,7 +69,7 @@ def prepare_polygons(polygons: pd.DataFrame) -> tuple[gpd.GeoDataFrame, int]:
         empty = gpd.GeoDataFrame(polygons.assign(geometry=[]), geometry="geometry", crs="EPSG:4326")
         return empty, 0
 
-    geometries = shapely.from_geojson(polygons["geometry"].to_numpy())
+    geometries = shapely.from_geojson(polygons["geometry"].to_numpy(), on_invalid="ignore")
     frame = gpd.GeoDataFrame(
         polygons.drop(columns=["geometry"]), geometry=geometries, crs="EPSG:4326"
     )
@@ -237,30 +241,42 @@ def to_examples(
     labelled: pd.DataFrame,
     tables: RegionTables,
     min_words: int,
+    outcome: RegionOutcome | None = None,
 ) -> pd.DataFrame:
-    """Join labelled polygons to the articles that describe them.
+    """Join labels to text and account for every polygon lost at each stage.
 
-    One row per ``(polygon, document)`` pair, dropping documents that failed to
-    fetch or are too short to carry signal.
+    A polygon is rejected at its last surviving stage, so the mutually
+    exclusive counters sum to labelled polygons without any usable example.
+    Multiple documents can still produce multiple examples for one polygon.
     """
     if len(labelled) == 0:
         return pd.DataFrame()
-
-    documents = tables.documents
-    documents = documents[documents["fetch_status"] == "ok"]
-    if len(documents) == 0:
-        return pd.DataFrame()
-
     links = tables.links[["polygon_id", "document_id"]]
-    joined = labelled.merge(links, on="polygon_id", how="inner").merge(
-        documents, on="document_id", how="inner", suffixes=("", "_doc")
-    )
-    if len(joined) == 0:
-        return pd.DataFrame()
+    joined = labelled.merge(links, on="polygon_id", how="inner")
+    _text_loss(labelled, joined, "no_source_document", outcome)
+    linked = joined.merge(tables.documents, on="document_id", how="inner", suffixes=("", "_doc"))
+    _text_loss(joined, linked, "missing_document", outcome)
+    fetched = linked[linked["fetch_status"] == "ok"].copy()
+    _text_loss(linked, fetched, "document_fetch_failed", outcome)
+    fetched["text"] = fetched["full_text"].fillna("").map(normalise)
+    nonempty = fetched[fetched["text"].map(bool).astype(bool)]
+    _text_loss(fetched, nonempty, "empty_text", outcome)
+    kept = nonempty[nonempty["text"].map(lambda t: is_usable(t, min_words)).astype(bool)]
+    _text_loss(nonempty, kept, "text_too_short", outcome)
+    return kept.reset_index(drop=True)
 
-    joined["text"] = joined["full_text"].fillna("").map(normalise)
-    joined = joined[joined["text"].map(lambda t: is_usable(t, min_words))]
-    return joined.reset_index(drop=True)
+
+def _text_loss(
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    reason: str,
+    outcome: RegionOutcome | None,
+) -> None:
+    """Count polygons that lose their final candidate at this text stage."""
+    if outcome is not None:
+        count = before["polygon_id"].nunique() - after["polygon_id"].nunique()
+        if count:
+            outcome.text_rejections[reason] += int(count)
 
 
 def run_region(
@@ -270,7 +286,9 @@ def run_region(
     keep_tiles: bool = False,
 ) -> tuple[pd.DataFrame, RegionOutcome]:
     """Produce every example for one region."""
-    outcome = RegionOutcome(stem=tables.stem)
+    outcome = RegionOutcome(
+        stem=tables.stem, source_links=len(tables.links), source_documents=len(tables.documents)
+    )
     frame, invalid = prepare_polygons(tables.polygons)
     outcome.polygons_seen = len(tables.polygons)
     outcome.polygons_invalid = invalid
@@ -283,9 +301,10 @@ def run_region(
         keep_tiles,
         max_area_m2=config.max_polygon_area_m2,
     )
-    examples = to_examples(labelled, tables, config.min_words)
+    examples = to_examples(labelled, tables, config.effective_min_words, outcome)
     examples = _shape(examples)
     outcome.examples = len(examples)
+    outcome.polygons_with_examples = int(examples["polygon_id"].nunique())
     return examples, outcome
 
 

@@ -1,0 +1,25 @@
+{
+  "filename": "ESA_WorldCover_10m_2021_v200_S12W078_Map.tif",
+  "width": 36000,
+  "height": 36000,
+  "bounds": [
+    -78.0,
+    -12.0,
+    -75.0,
+    -9.0
+  ],
+  "transform": [
+    8.333333333333333e-05,
+    0.0,
+    -78.0,
+    0.0,
+    -8.333333333333333e-05,
+    -9.0
+  ],
+  "row0": 24197,
+  "col0": 24560,
+  "official_url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_S12W078_Map.tif",
+  "source_url": "https://huggingface.co/datasets/NoeFlandre/osm-polygon-wikidata-and-wikipedia/resolve/f48c5aaaec6aecd63ecf5c195565cc2787597f1e/polygons/peru-latest.parquet",
+  "polygon_id": "peru-latest:way:47373550",
+  "original_sha256": "4f7453f2e50e0eb479b8cb1758c2e8cc330151547723c78bbb4be9a4b63fa360"
+}

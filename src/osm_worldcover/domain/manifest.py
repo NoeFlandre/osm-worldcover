@@ -39,6 +39,7 @@ class DatasetCounts:
     coverage: GeographicCoverage
     rejections: dict[str, int] = field(default_factory=dict)
     deduplication: dict[str, int] = field(default_factory=dict)
+    deduplication_analysis: dict[str, Any] = field(default_factory=dict)
     example_polygons: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -85,7 +86,20 @@ def build(counts: DatasetCounts, settings: Mapping[str, Any]) -> dict[str, Any]:
         },
         "rejections": dict(sorted(counts.rejections.items())),
         "deduplication": dict(sorted(counts.deduplication.items())),
+        "deduplication_analysis": _copy_deduplication_analysis(counts.deduplication_analysis),
         "settings": dict(settings),
+    }
+
+
+def _copy_deduplication_analysis(analysis: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy nested diagnostics so caller mutation cannot change the manifest."""
+    if not analysis:
+        return {}
+    return {
+        **analysis,
+        "duplicate_rows_removed_by_text_words": dict(
+            sorted(analysis.get("duplicate_rows_removed_by_text_words", {}).items())
+        ),
     }
 
 

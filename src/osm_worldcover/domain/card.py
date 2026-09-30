@@ -56,6 +56,7 @@ def render(manifest: Mapping[str, Any]) -> str:
                 settings,
                 manifest.get("rejections", {}),
                 manifest.get("deduplication", {}),
+                manifest.get("deduplication_analysis", {}),
             ),
         ]
     )
@@ -237,6 +238,7 @@ def _provenance(
     settings: Mapping[str, Any],
     rejections: Mapping[str, int],
     deduplication: Mapping[str, int],
+    deduplication_analysis: Mapping[str, Any],
 ) -> str:
     source_dataset = settings.get("source_dataset")
     source_url = settings.get("source_url", f"https://huggingface.co/datasets/{source_dataset}")
@@ -253,26 +255,73 @@ def _provenance(
         f"- Land cover: ESA WorldCover {settings.get('worldcover_year')}"
         f" {settings.get('worldcover_version')} (10 m)\n",
         f"- Dominance threshold: {settings.get('dominance_threshold')}\n",
-        f"- Minimum article length: {settings.get('min_words')} words\n",
+        f"- Minimum source text length: {settings.get('min_words')} words\n",
         f"- Maximum polygon area: {settings.get('max_polygon_area_m2')} m2\n",
         f"- Split seed: {settings.get('split_seed')},"
         f" H3 resolution {settings.get('h3_resolution')}\n",
         f"\nCode: [{code_repository.removeprefix('https://')}]({code_repository})\n",
     ]
-    if rejections:
-        lines.append("\n### Polygons refused\n\n")
-        lines.append("| reason | polygons |\n| --- | --- |\n")
-        lines += [f"| `{k}` | {v:,} |\n" for k, v in sorted(rejections.items())]
-    if deduplication:
-        lines.append("\n### Rows removed after labelling\n\n")
-        lines.append("| reason | rows |\n| --- | --- |\n")
-        lines += [f"| `{k}` | {v:,} |\n" for k, v in sorted(deduplication.items())]
+    lines.extend(_rejection_table(rejections))
+    lines.extend(_deduplication_table(deduplication))
+    lines.extend(_deduplication_analysis(deduplication_analysis))
     lines.append(
         "\n## Licence\n\n"
         f"{str(text_license).rstrip('.')}. OpenStreetMap geometry is ODbL. "
         "ESA WorldCover is CC BY 4.0.\n"
     )
     return "".join(lines)
+
+
+def _rejection_table(rejections: Mapping[str, int]) -> list[str]:
+    if not rejections:
+        return []
+    return [
+        "\n### Polygons refused\n\n",
+        "| reason | polygons |\n| --- | --- |\n",
+        *[f"| `{key}` | {count:,} |\n" for key, count in sorted(rejections.items())],
+    ]
+
+
+def _deduplication_table(deduplication: Mapping[str, int]) -> list[str]:
+    if not deduplication:
+        return []
+    return [
+        "\n### Rows removed after labelling\n\n",
+        "| reason | rows |\n| --- | --- |\n",
+        *[f"| `{key}` | {count:,} |\n" for key, count in sorted(deduplication.items())],
+    ]
+
+
+def _deduplication_analysis(analysis: Mapping[str, Any]) -> list[str]:
+    """Make the repeated-text loss and split tradeoff visible in the card."""
+    if not analysis:
+        return []
+    by_length = analysis["duplicate_rows_removed_by_text_words"]
+    short_summary = ", ".join(_short_word_counts(by_length)) or "none"
+    short_total = _short_word_total(by_length)
+    return [
+        "\n### Repeated text and split tradeoff\n\n",
+        f"The build collapsed {analysis['duplicate_text_label_groups']:,} exact text-label "
+        f"groups, removing {analysis['duplicate_rows_removed']:,} rows. Of those, "
+        f"{short_total:,} had fewer than 10 words ({short_summary}). "
+        f"{analysis['duplicate_groups_crossing_splits']:,} duplicate groups crossed "
+        "the spatial split assignments, accounting for "
+        f"{analysis['duplicate_rows_removed_from_cross_split_groups']:,} removed rows.\n\n",
+        "This can remove valid repeated short descriptions on distinct polygons; keeping "
+        "all of them could expose identical text and labels across splits. Spatial and "
+        "document split assignments are retained, and the complete counts are in "
+        "`manifest.json`.\n",
+    ]
+
+
+def _short_word_counts(by_length: Mapping[str, int]) -> list[str]:
+    return [
+        f"{words} word: {count:,}" for words, count in by_length.items() if words != "10+" and count
+    ]
+
+
+def _short_word_total(by_length: Mapping[str, int]) -> int:
+    return sum(count for words, count in by_length.items() if words != "10+")
 
 
 def _table(title: str, header: Sequence[str], rows: Sequence[Sequence[str]]) -> str:

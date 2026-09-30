@@ -27,13 +27,18 @@ regions whose shard already exists.
 
 ## Measuring coverage
 
-`exactextract` gives per-class shares of the area it actually read. Those are
-rescaled by how much of the polygon was observed at all, so shares sum to *at
-most* one and the shortfall is the unobserved part (ADR 0002).
+`exactextract` supplies per-cell values and coverage. Cells near each polygon
+boundary are selected in pixel coordinates, then their areas are recomputed by
+GEOS against the original polygon and unit pixel squares. This corrects corner
+cases where exactextract can report a full exterior cell or omit an interior
+cell. The small pixel-space halo only selects cells for checking; it does not
+change the polygon or its area. The corrected class areas are divided by the
+polygon's own area, so no-data and raster gaps remain unobserved (ADR 0002).
 
-That makes coverage additive across tiles, so a polygon straddling a tile
-boundary is just a sum — no mosaic. It also means shares summing past one is a
-real bug, and `OverlappingCoverageError` says so rather than clamping.
+Coverage is additive across tiles, so a polygon straddling a tile boundary is
+just a sum — no mosaic. Shares are never clamped or renormalized. Shares
+summing past one remain a validation failure, and `OverlappingCoverageError`
+reports them.
 
 ## Deciding the label
 
@@ -45,6 +50,20 @@ real bug, and `OverlappingCoverageError` says so rather than clamping.
 - The highest share wins; ties break on the lowest class code, so the result
   never depends on iteration order.
 - Accepted only at or above the threshold (default 0.8).
+
+## Source-specific text eligibility
+
+Description tags are concise labels and descriptions, not articles. Their
+default minimum is **1 whitespace-separated word**, preserving useful short
+base and localized descriptions, including scripts that do not separate words
+with spaces. Empty and whitespace-only values are never examples.
+
+Wikipedia/Wikivoyage and website text retain the **10-word** minimum. A build
+can override its recipe's policy with a positive integer `Config.min_words`
+(or the `min_words` YAML setting); `null` selects the recipe default. The
+resolved integer is recorded as `settings.min_words` in the manifest and used
+for both example selection and validation. No text is expanded to meet the
+threshold; normalization only trims and collapses whitespace.
 
 ## Assembling the dataset
 
@@ -58,6 +77,13 @@ one wrong:
    cells and so different splits. The split holding most of that document's
    rows keeps them; the rest are dropped, because moving them would break the
    geographic blocking.
+
+Exact text-label duplicates are collapsed globally after geographic split
+assignment. This can remove useful repeated short descriptions on distinct
+polygons; retaining them could place identical text and labels in multiple
+splits. The manifest and generated card report duplicate groups crossing
+splits and removed rows by text length so the data loss is visible before a
+release is approved.
 
 ### Nothing is held whole
 

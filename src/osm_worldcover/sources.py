@@ -1,12 +1,14 @@
 """The supported input and output dataset recipes.
 
-Recipes are metadata and path rules only. Source-specific row normalization
-lives in :mod:`osm_worldcover.adapters.source`, while the WorldCover
-pipeline consumes the same canonical tables for every recipe.
+Recipes provide metadata, path rules, and text-eligibility defaults.
+Source-specific row normalization lives in :mod:`osm_worldcover.adapters.source`,
+while the WorldCover pipeline consumes the same canonical tables for every recipe.
 """
 
 from dataclasses import dataclass
 from typing import Final
+
+from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 
 __all__ = ["DEFAULT_SOURCE", "SourceRecipe", "recipe_for"]
 
@@ -28,6 +30,7 @@ class SourceRecipe:
     text_license: str
     region_prefix: str
     region_paths_template: tuple[str, ...]
+    min_words: int = DEFAULT_MIN_WORDS
 
     def region_paths(self, stem: str) -> tuple[str, ...]:
         """Return the source-repository files needed for ``stem``."""
@@ -65,6 +68,7 @@ _RECIPES: Final[dict[str, SourceRecipe]] = {
         text_license="Open Database License (ODbL)",
         region_prefix="data/",
         region_paths_template=("data/{stem}.parquet",),
+        min_words=1,
     ),
     "website": SourceRecipe(
         name="website",

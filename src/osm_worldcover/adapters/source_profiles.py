@@ -262,7 +262,8 @@ def _pair(value: object) -> tuple[str, str] | None:
         return None
     if "key" not in value or "value" not in value:
         return None
-    return str(value["key"]), str(value["value"])
+    text = _usable_text(value["value"])
+    return None if text is None else (str(value["key"]), text)
 
 
 def _tag_key(key: str) -> str:

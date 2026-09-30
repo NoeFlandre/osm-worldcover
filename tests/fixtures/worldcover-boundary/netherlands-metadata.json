@@ -1,0 +1,25 @@
+{
+  "filename": "ESA_WorldCover_10m_2021_v200_N51E003_Map.tif",
+  "width": 36000,
+  "height": 36000,
+  "bounds": [
+    3.0,
+    51.0,
+    6.0,
+    54.0
+  ],
+  "transform": [
+    8.333333333333333e-05,
+    0.0,
+    3.0,
+    0.0,
+    -8.333333333333333e-05,
+    54.0
+  ],
+  "row0": 27670,
+  "col0": 26825,
+  "official_url": "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/ESA_WorldCover_10m_2021_v200_N51E003_Map.tif",
+  "source_url": "https://huggingface.co/datasets/NoeFlandre/osm-polygon-wikidata-and-wikipedia/resolve/f48c5aaaec6aecd63ecf5c195565cc2787597f1e/polygons/netherlands-latest.parquet",
+  "polygon_id": "netherlands-latest:way:15304016",
+  "original_sha256": "33190aed23427fede8bcb6b99d70aa423ba718644cf2c07453cb6ce09ff08464"
+}

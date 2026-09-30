@@ -17,10 +17,12 @@ here.
 
 ## How an example is made
 
-1. Measure what share of each OSM polygon every WorldCover class covers.
+1. Measure each class's polygon-area share; recompute boundary-touching cells
+   with GEOS in pixel coordinates to catch raster-grid corner misclassification.
 2. Keep the polygon only if **one class covers at least 80%** of it.
 3. Emit one example per `(polygon, source text)` pair.
-4. Drop empty, very short, and exactly duplicated text.
+4. Keep non-empty description tags (at least 1 word); require at least 10 words
+   for Wikipedia/Wikivoyage and website text. Drop exact text/label duplicates.
 5. Split on H3 cells so nearby places never straddle train/validation/test.
 
 ## Use

@@ -68,6 +68,19 @@ class TestPreparePolygons:
         assert len(frame) == 0
         assert invalid == 0
 
+    @pytest.mark.parametrize(
+        "geometry",
+        [None, "", "not GeoJSON", "null", '{"type":"Polygon"}', BOWTIE_GEOJSON],
+    )
+    def test_null_or_malformed_geometry_does_not_discard_valid_neighbors(self, geometry) -> None:
+        polygons = pd.concat(
+            [polygons_frame(polygon_id=["bad"], geometry=[geometry]), polygons_frame()],
+            ignore_index=True,
+        )
+        frame, invalid = prepare_polygons(polygons)
+        assert invalid == 1
+        assert frame["polygon_id"].tolist() == ["p1"]
+
 
 class TestLabelPolygons:
     def test_a_dominated_polygon_is_labelled(self, half_and_half) -> None:
@@ -194,6 +207,133 @@ class TestRunRegion:
         examples, outcome = run_region(Config(), tables_for(), FixedTiles(half_and_half))
         assert len(examples) == 0
         assert outcome.examples == 0
+
+    @pytest.mark.parametrize("geometry", [None, "malformed GeoJSON"])
+    def test_invalid_geometry_is_accounted_for_without_fetching_tiles(
+        self, half_and_half, geometry
+    ) -> None:
+        tables = tables_for()
+        tables = RegionTables(
+            stem="r",
+            polygons=polygons_frame(geometry=[geometry]),
+            links=tables.links,
+            documents=tables.documents,
+        )
+        tiles = FixedTiles(half_and_half)
+
+        examples, outcome = run_region(Config(), tables, tiles)
+
+        assert examples.empty
+        assert outcome.polygons_seen == outcome.polygons_invalid == 1
+        assert outcome.polygons_accepted == outcome.polygons_with_examples == 0
+        assert outcome.text_rejections == outcome.rejections == {}
+        assert outcome.source_links == outcome.source_documents == 1
+        assert tiles.ensured == []
+
+
+class TestTextRejectionAccounting:
+    """Every labelled polygon is retained or counted once at its last text stage."""
+
+    def test_each_text_stage_accounts_for_its_rejected_polygon(self, half_and_half) -> None:
+        polygon_ids = ["no-link", "missing", "failed", "empty", "short", "kept"]
+        polygons = pd.concat(
+            [polygons_frame(polygon_id=[pid], geometry=[LEFT_GEOJSON]) for pid in polygon_ids],
+            ignore_index=True,
+        )
+        source = tables_for()
+        documents = pd.concat(
+            [
+                source.documents.assign(document_id="failed", fetch_status="error"),
+                source.documents.assign(document_id="empty", full_text=" \t\n "),
+                source.documents.assign(document_id="short", full_text="Small wooded garden"),
+                source.documents.assign(document_id="kept"),
+            ],
+            ignore_index=True,
+        )
+        tables = RegionTables(
+            stem="r",
+            polygons=polygons,
+            links=pd.DataFrame({"polygon_id": polygon_ids[1:], "document_id": polygon_ids[1:]}),
+            documents=documents,
+        )
+
+        examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
+
+        assert examples["polygon_id"].tolist() == ["kept"]
+        assert outcome.polygons_seen == outcome.polygons_accepted == 6
+        assert outcome.polygons_invalid == 0
+        assert outcome.rejections == {}
+        assert outcome.source_links == 5
+        assert outcome.source_documents == 4
+        assert outcome.examples == outcome.polygons_with_examples == 1
+        assert outcome.text_rejections == {
+            "no_source_document": 1,
+            "missing_document": 1,
+            "document_fetch_failed": 1,
+            "empty_text": 1,
+            "text_too_short": 1,
+        }
+        assert outcome.polygons_accepted == (
+            outcome.polygons_with_examples + sum(outcome.text_rejections.values())
+        )
+
+    def test_one_usable_document_prevents_counting_a_polygon_as_rejected(
+        self, half_and_half
+    ) -> None:
+        source = tables_for()
+        document_ids = ["missing", "failed", "empty", "short", "kept-a", "kept-b"]
+        documents = pd.concat(
+            [
+                source.documents.assign(document_id="failed", fetch_status="error"),
+                source.documents.assign(document_id="empty", full_text=None),
+                source.documents.assign(document_id="short", full_text="Garden"),
+                source.documents.assign(document_id="kept-a"),
+                source.documents.assign(document_id="kept-b"),
+            ],
+            ignore_index=True,
+        )
+        tables = RegionTables(
+            stem="r",
+            polygons=polygons_frame(geometry=[LEFT_GEOJSON]),
+            links=pd.DataFrame({"polygon_id": ["p1"] * 6, "document_id": document_ids}),
+            documents=documents,
+        )
+
+        examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
+
+        assert set(examples["document_id"]) == {"kept-a", "kept-b"}
+        assert outcome.examples == 2
+        assert outcome.polygons_accepted == outcome.polygons_with_examples == 1
+        assert outcome.source_links == 6
+        assert outcome.source_documents == 5
+        assert outcome.text_rejections == {}
+
+    def test_last_surviving_document_determines_polygon_rejection_stage(
+        self, half_and_half
+    ) -> None:
+        source = tables_for()
+        documents = pd.concat(
+            [
+                source.documents.assign(document_id="failed", fetch_status="error"),
+                source.documents.assign(document_id="blank", full_text=""),
+                source.documents.assign(document_id="short-a", full_text="Garden"),
+                source.documents.assign(document_id="short-b", full_text="Wooded garden"),
+            ],
+            ignore_index=True,
+        )
+        tables = RegionTables(
+            stem="r",
+            polygons=polygons_frame(geometry=[LEFT_GEOJSON]),
+            links=pd.DataFrame({"polygon_id": ["p1"] * 4, "document_id": documents["document_id"]}),
+            documents=documents,
+        )
+
+        examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
+
+        assert examples.empty
+        assert outcome.polygons_accepted == 1
+        assert outcome.polygons_with_examples == outcome.examples == 0
+        assert outcome.text_rejections == {"text_too_short": 1}
 
 
 class TestTileDeduplication:
