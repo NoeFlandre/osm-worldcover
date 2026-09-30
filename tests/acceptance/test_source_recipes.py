@@ -6,25 +6,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
-from tests.conftest import write_raster
+from tests.conftest import FixedTiles, write_raster
 
 from osm_worldcover.adapters.source import RegionTables
 from osm_worldcover.config import Config
 from osm_worldcover.finalize import finalize_shards
 from osm_worldcover.pipeline import run_region
-
-
-class FixedTiles:
-    """Return one deterministic raster for every requested tile."""
-
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def ensure(self, tile: object) -> Path:
-        return self.path
-
-    def discard(self, tile: object) -> None:
-        return None
 
 
 def test_description_source_flows_through_the_shared_pipeline(tmp_path: Path) -> None:

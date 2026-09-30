@@ -17,6 +17,9 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from osm_worldcover.adapters.source_profiles import (
+    DOCUMENT_COLUMNS,
+    LINK_COLUMNS,
+    POLYGON_COLUMNS,
     load_description_region,
     load_website_region,
 )
@@ -34,40 +37,6 @@ __all__ = [
 
 #: The two text corpora the source links polygons to.
 PROJECTS: Final[tuple[str, ...]] = ("wikipedia", "wikivoyage")
-
-POLYGON_COLUMNS: Final[list[str]] = [
-    "polygon_id",
-    "region",
-    "osm_type",
-    "osm_id",
-    "wikidata",
-    "name",
-    "lat",
-    "lon",
-    "geometry",
-    "area_m2",
-    "source_pbf",
-]
-
-LINK_COLUMNS: Final[list[str]] = [
-    "polygon_id",
-    "document_id",
-    "project",
-    "language",
-    "link_sources",
-]
-
-DOCUMENT_COLUMNS: Final[list[str]] = [
-    "document_id",
-    "language",
-    "title",
-    "url",
-    "lead_text",
-    "full_text",
-    "article_length_words",
-    "fetch_status",
-    "license",
-]
 
 
 def region_stems(root: Path, source: str | SourceRecipe = DEFAULT_SOURCE) -> list[str]:

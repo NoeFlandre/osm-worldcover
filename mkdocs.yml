@@ -16,6 +16,7 @@ nav:
   - How it works: pipeline.md
   - Dataset schema: schema.md
   - Technical debt: technical-debt.md
+  - Duplication review: duplication-review.md
   - Decisions:
       - ADR 0001 WorldCover over CORINE: adr/0001-worldcover-instead-of-corine.md
       - ADR 0002 Coverage relative to the polygon: adr/0002-coverage-relative-to-the-polygon.md

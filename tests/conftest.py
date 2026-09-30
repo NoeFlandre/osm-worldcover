@@ -13,6 +13,24 @@ import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import Polygon
 
+from osm_worldcover.domain.tiling import Tile
+
+
+class FixedTiles:
+    """Return one deterministic raster and record tile-cache calls."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.ensured: list[Tile] = []
+        self.discarded: list[Tile] = []
+
+    def ensure(self, tile: Tile) -> Path:
+        self.ensured.append(tile)
+        return self.path
+
+    def discard(self, tile: Tile) -> None:
+        self.discarded.append(tile)
+
 
 def write_raster(path: Path, values: np.ndarray, origin=(0.0, 4.0), pixel=1.0) -> Path:
     """Write ``values`` as a 1-band byte GeoTIFF in WGS84 with ``pixel``-degree cells."""
