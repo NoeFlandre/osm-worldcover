@@ -116,27 +116,41 @@ def test_identical_text_and_label_collapses(shards, tmp_path) -> None:
 
 
 def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, tmp_path) -> None:
-    shard(shards / "a.parquet", start=0, region="alpha", text="Park", lat=49.6, lon=6.1)
+    shard(
+        shards / "a.parquet",
+        n=2,
+        start=0,
+        region="alpha",
+        text="Park",
+        lat=49.6,
+        lon=6.1,
+    )
     shard(
         shards / "b.parquet",
-        start=1,
+        start=2,
         region="beta",
         text="Park",
         lat=-33.9,
         lon=151.2,
     )
+    shard(
+        shards / "c.parquet",
+        n=2,
+        start=20,
+        text="one two three four five six seven eight nine ten eleven twelve",
+    )
 
     result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
 
     analysis = result.manifest["deduplication_analysis"]
-    assert result.duplicate_examples == 1
+    assert result.duplicate_examples == 3
     assert analysis == {
-        "duplicate_text_label_groups": 1,
-        "duplicate_rows_removed": 1,
+        "duplicate_text_label_groups": 2,
+        "duplicate_rows_removed": 3,
         "duplicate_groups_crossing_splits": 1,
-        "duplicate_rows_removed_from_cross_split_groups": 1,
+        "duplicate_rows_removed_from_cross_split_groups": 2,
         "duplicate_rows_removed_by_text_words": {
-            "1": 1,
+            "1": 2,
             "2": 0,
             "3": 0,
             "4": 0,
@@ -145,7 +159,7 @@ def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, 
             "7": 0,
             "8": 0,
             "9": 0,
-            "10+": 0,
+            "10+": 1,
         },
     }
 
