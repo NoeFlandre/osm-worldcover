@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from osm_worldcover.config import Config
-from osm_worldcover.finalize import _write_splits, finalize_shards
+from osm_worldcover.finalize import _deduplicate, _enrich_shards, _write_splits, finalize_shards
 
 
 def written(result) -> pd.DataFrame:
@@ -168,6 +168,22 @@ def test_identical_text_under_different_labels_is_kept(shards, tmp_path) -> None
     shard(shards / "a.parquet", n=1, start=0, text="same text here " * 5, code=10)
     shard(shards / "b.parquet", n=1, start=9, text="same text here " * 5, code=50)
     assert finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out").rows == 2
+
+
+def test_deduplication_uses_the_work_directory_for_duckdb_spill(shards, tmp_path) -> None:
+    shard(shards / "a.parquet")
+    work = tmp_path / "work"
+    enriched = work / "enriched"
+    enriched.mkdir(parents=True)
+    assert _enrich_shards(shards, enriched, Config()) == 1
+
+    connection, _, _ = _deduplicate(enriched)
+    try:
+        spill_dir = connection.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert spill_dir == str(work / "duckdb-spill")
 
 
 def test_the_result_validates(shards, tmp_path) -> None:
