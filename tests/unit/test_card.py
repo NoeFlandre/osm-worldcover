@@ -94,6 +94,26 @@ def test_card_names_the_source_and_pinned_revision() -> None:
     assert "abc123" in text
 
 
+def test_card_lists_region_and_assembly_code_revisions() -> None:
+    repository = "https://github.com/NoeFlandre/osm-worldcover"
+    manifest = {
+        **MANIFEST,
+        "processing": {
+            "code_provenance": [
+                {"repository": repository, "revision": "a" * 40, "regions": ["alpha", "beta"]},
+                {"repository": repository, "revision": "b" * 40, "regions": ["gamma"]},
+            ],
+            "assembly_code_revision": "c" * 40,
+        },
+    }
+    text = render(manifest)
+    assert f"{repository}/tree/{'a' * 40}" in text
+    assert f"{repository}/tree/{'b' * 40}" in text
+    assert f"{repository}/tree/{'c' * 40}" in text
+    assert "2 regions" in text
+    assert "1 region" in text
+
+
 def test_card_uses_source_specific_metadata() -> None:
     manifest = {
         **MANIFEST,

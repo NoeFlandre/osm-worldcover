@@ -113,6 +113,12 @@ def assemble(
     dataset_version: Annotated[
         str | None, typer.Option(help="Require this output version in the receipts.")
     ] = None,
+    legacy_code_revision: Annotated[
+        str | None,
+        typer.Option(
+            help="Exact commit for verified legacy receipts that predate code revision fields."
+        ),
+    ] = None,
     allow_unverified_shards: Annotated[
         bool,
         typer.Option(help="Recover legacy shards without receipts; output is not publishable."),
@@ -136,6 +142,7 @@ def assemble(
             threshold,
             revision,
             dataset_version,
+            legacy_code_revision,
             allow_unverified_shards,
         )
     except (OSError, ValueError) as error:
@@ -155,6 +162,7 @@ def _assemble(
     threshold: float | None,
     revision: str | None,
     dataset_version: str | None,
+    legacy_code_revision: str | None,
     allow_unverified: bool,
 ) -> StreamedBuild:
     """Keep the legacy recovery route visibly separate from verified assembly."""
@@ -162,7 +170,16 @@ def _assemble(
         return _assemble_unverified(
             shard_dirs, out, work, source, threshold, revision, dataset_version
         )
-    return _assemble_verified(shard_dirs, out, work, source, threshold, revision, dataset_version)
+    return _assemble_verified(
+        shard_dirs,
+        out,
+        work,
+        source,
+        threshold,
+        revision,
+        dataset_version,
+        legacy_code_revision,
+    )
 
 
 def _assemble_unverified(
@@ -200,7 +217,7 @@ def _assemble_unverified(
 
 
 def _assemble_verified(
-    shard_dirs, out, work, source, threshold, revision, dataset_version
+    shard_dirs, out, work, source, threshold, revision, dataset_version, legacy_code_revision
 ) -> StreamedBuild:
     inputs = verified_assembly(
         shard_dirs,
@@ -212,6 +229,7 @@ def _assemble_verified(
             "source_revision": revision,
             "dataset_version": dataset_version,
         },
+        legacy_code_revision=legacy_code_revision,
     )
     if not inputs.processing["full_source_complete"]:
         typer.echo(

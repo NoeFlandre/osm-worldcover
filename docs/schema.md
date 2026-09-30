@@ -65,3 +65,19 @@ Wikidata-linked documents, OSM `description` tags, and fetched website text.
 | 100 | Moss and lichen |
 
 `0` is WorldCover's no-data value. It is never a label.
+
+## Processing ledger and code provenance
+
+New completion receipts record `context.code_revision` as the full Git commit
+for the clean checkout that produced the region. Processing ledger schema 2
+adds `code_provenance`, a list of exact repository commit references and the
+region stems produced by each, plus `assembly_code_revision` for the code used
+to assemble and finalize the release. The audit requires the listed regions to
+partition the complete processed-region inventory exactly. Mixed pins are
+therefore explicit in both `manifest.json` and the dataset card.
+
+Schema 1 ledgers remain readable for existing releases. When assembling older
+receipts that predate `context.code_revision`, the operator must provide their
+verified legacy commit with `owc assemble --legacy-code-revision <40-char-sha>`
+to produce a schema 2 mixed-provenance ledger. The repository URL alone is not
+treated as a code pin.

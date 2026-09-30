@@ -14,7 +14,7 @@ import tempfile
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import duckdb
 import h3
@@ -150,7 +150,7 @@ def audit_build(
     _check_settings(settings, checks)
     _check_completion(manifest, require_complete, checks)
     if require_card:
-        _check_card(build_dir, settings, checks)
+        _check_card(build_dir, settings, manifest.get("processing", {}), checks)
     if checks.counts.get("invalid_settings"):
         checks.finish()
         return report
@@ -316,11 +316,82 @@ def _check_context(ledger: dict, manifest: dict) -> None:
         json.dumps(context, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
     _require(ledger["build_context_sha256"] == digest, "build context hash mismatch")
+    version = ledger["schema_version"]
+    _require(version in {1, 2}, "unsupported processing ledger schema")
     _require(
         _processing_settings_match(context["settings"], manifest["settings"]),
         "build context settings mismatch",
     )
-    _require(ledger["schema_version"] == 1, "unsupported processing ledger schema")
+    if version == 2:
+        _check_code_provenance(ledger, context)
+
+
+def _check_code_provenance(ledger: dict, context: dict) -> None:
+    _require(
+        _is_full_code_revision(ledger["assembly_code_revision"]),
+        "invalid assembly code revision",
+    )
+    _require(
+        _is_optional_code_revision(context.get("code_revision")),
+        "invalid context code revision",
+    )
+    groups = ledger["code_provenance"]
+    repository = context["settings"]["code_repository"]
+    regions = _validated_code_regions(groups, repository)
+    _require(
+        _matches_processed_regions(regions, ledger["processed_regions"]),
+        "code provenance does not match processed regions",
+    )
+    if context.get("code_revision") is not None:
+        _require(
+            ledger["assembly_code_revision"] == context["code_revision"],
+            "assembly code revision differs from the ledger context",
+        )
+
+
+def _is_full_code_revision(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) is not None
+
+
+def _is_optional_code_revision(value: object) -> bool:
+    return value is None or _is_full_code_revision(value)
+
+
+def _validated_code_regions(groups: object, repository: str) -> list[str]:
+    _require(isinstance(groups, list) and bool(groups), "missing region code provenance")
+    groups = cast(list[object], groups)
+    regions = []
+    for group in groups:
+        regions.extend(_validated_code_group(group, repository))
+    _require(len(regions) == len(set(regions)), "duplicate code provenance region")
+    return regions
+
+
+def _validated_code_group(group: object, expected_repository: str) -> list[str]:
+    _require(isinstance(group, dict), "invalid code provenance group")
+    group = cast(dict[str, Any], group)
+    repository = group.get("repository")
+    revision = group.get("revision")
+    raw_regions = group.get("regions")
+    _require(isinstance(repository, str) and bool(repository), "invalid code repository")
+    _require(repository == expected_repository, "code repository differs from the ledger context")
+    _require(_is_full_code_revision(revision), "invalid region code revision")
+    _require(
+        isinstance(raw_regions, list) and bool(raw_regions),
+        "empty code provenance region group",
+    )
+    regions = cast(list[object], raw_regions)
+    _require(
+        all(isinstance(stem, str) and bool(stem) for stem in regions),
+        "invalid code provenance region",
+    )
+    regions = cast(list[str], regions)
+    _require(len(regions) == len(set(regions)), "duplicate code provenance region")
+    return regions
+
+
+def _matches_processed_regions(regions: list[str], processed: list[str]) -> bool:
+    return sorted(regions) == sorted(processed)
 
 
 def _processing_settings_match(processing: dict, release: dict) -> bool:
@@ -843,7 +914,7 @@ def _check_dominant_quantiles(row, manifest, checks) -> None:
         checks.add("manifest_quantile_mismatch", quantiles)
 
 
-def _check_card(build_dir, settings, checks) -> None:
+def _check_card(build_dir, settings, processing, checks) -> None:
     try:
         text = (build_dir / "README.md").read_text()
         metadata = yaml.safe_load(text.split("---", 2)[1])
@@ -857,17 +928,57 @@ def _check_card(build_dir, settings, checks) -> None:
             checks.add("card_data_files_mismatch")
         if metadata.get("license") != settings.get("dataset_license", "cc-by-sa-4.0"):
             checks.add("card_license_mismatch")
-        _check_card_assets(build_dir, text, settings, checks)
+        _check_card_assets(build_dir, text, settings, processing, checks)
     except (OSError, ValueError, IndexError, AttributeError, yaml.YAMLError) as error:
         checks.add("invalid_card_or_map", error)
 
 
-def _check_card_assets(build_dir, text, settings, checks) -> None:
+def _check_card_assets(build_dir, text, settings, processing, checks) -> None:
+    _check_card_provenance(text, settings, checks)
+    _check_card_map_text(text, checks)
+    _check_card_map_file(build_dir, checks)
+    _check_card_code_provenance(text, processing, checks)
+
+
+def _check_card_provenance(text, settings, checks) -> None:
     for key in ("source_revision", "source_dataset"):
         if str(settings.get(key)) not in text:
             checks.add(f"card_missing_provenance:{key}")
+
+
+def _check_card_map_text(text, checks) -> None:
     if "worldcover_centroids.png" not in text:
         checks.add("card_missing_coverage_map")
+
+
+def _check_card_map_file(build_dir, checks) -> None:
     with (build_dir / "worldcover_centroids.png").open("rb") as source:
         if source.read(8) != b"\x89PNG\r\n\x1a\n":
             checks.add("invalid_coverage_map_png")
+
+
+def _check_card_code_provenance(text, processing, checks) -> None:
+    _check_card_code_groups(text, processing.get("code_provenance", []), checks)
+    _check_card_assembly_revision(text, processing, checks)
+
+
+def _check_card_code_groups(text, groups, checks) -> None:
+    for group in groups:
+        revision = group["revision"]
+        if not _card_code_group_present(text, group):
+            checks.add("card_missing_code_provenance", revision)
+
+
+def _card_code_group_present(text, group) -> bool:
+    revision = group["revision"]
+    repository = group["repository"]
+    count = len(group["regions"])
+    unit = "region" if count == 1 else "regions"
+    link = f"[{revision}]({repository}/tree/{revision})"
+    return f"{link} — {count:,} {unit}" in text
+
+
+def _check_card_assembly_revision(text, processing, checks) -> None:
+    revision = processing.get("assembly_code_revision")
+    if revision and f"[{revision}]" not in text:
+        checks.add("card_missing_assembly_code_revision", revision)

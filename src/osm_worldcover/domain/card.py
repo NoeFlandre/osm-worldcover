@@ -253,9 +253,6 @@ def _provenance(
     text_license = settings.get(
         "text_license", "Article text is CC BY-SA 4.0 (Wikipedia/Wikivoyage)"
     )
-    processing_settings = processing.get("context", {}).get("settings", {})
-    processing_code = processing_settings.get("code_repository")
-    release_code = settings.get("code_repository")
     lines = [
         "\n## Provenance\n",
         f"- Source: [`{source_dataset}`]({source_url})"
@@ -271,17 +268,7 @@ def _provenance(
         " normalized text and WorldCover class match. Identical text across splits is"
         " reported as a diagnostic.\n",
     ]
-    if processing_code and processing_code != release_code:
-        lines.extend(
-            [
-                f"- Region labeling code: [{str(processing_code).removeprefix('https://')}]"
-                f"({processing_code})\n",
-                f"- Release finalization code: [{code_repository.removeprefix('https://')}]"
-                f"({code_repository})\n",
-            ]
-        )
-    else:
-        lines.append(f"\nCode: [{code_repository.removeprefix('https://')}]({code_repository})\n")
+    lines.extend(_code_provenance(code_repository, processing))
     lines.extend(_rejection_table(rejections))
     lines.extend(_deduplication_table(deduplication))
     lines.extend(_deduplication_analysis(deduplication_analysis))
@@ -291,6 +278,27 @@ def _provenance(
         "ESA WorldCover is CC BY 4.0.\n"
     )
     return "".join(lines)
+
+
+def _code_provenance(repository: str, processing: Mapping[str, Any]) -> list[str]:
+    groups = processing.get("code_provenance", [])
+    if not groups:
+        return [f"\nCode: [{repository.removeprefix('https://')}]({repository})\n"]
+    lines = ["\nRegion labeling code:\n"]
+    for group in groups:
+        revision = group["revision"]
+        pinned_repository = group["repository"]
+        count = len(group["regions"])
+        region_word = "region" if count == 1 else "regions"
+        link = f"{pinned_repository}/tree/{revision}"
+        lines.append(f"- [{revision}]({link}) — {count:,} {region_word}\n")
+    assembly_revision = processing.get("assembly_code_revision")
+    if assembly_revision:
+        lines.append(
+            f"\nAssembly and finalization code: [{assembly_revision}]"
+            f"({repository}/tree/{assembly_revision})\n"
+        )
+    return lines
 
 
 def _rejection_table(rejections: Mapping[str, int]) -> list[str]:
