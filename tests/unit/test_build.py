@@ -1,6 +1,7 @@
 """Shard persistence and resume behaviour of a whole build."""
 
 import pandas as pd
+import pytest
 
 from osm_worldcover.build import ShardStore
 
@@ -57,7 +58,7 @@ class TestRunBuild:
         from osm_worldcover.adapters.source import RegionTables
         from osm_worldcover.pipeline import RegionOutcome
 
-        monkeypatch.setattr(build_module.hub, "resolve_revision", lambda *a, **k: "rev1")
+        monkeypatch.setattr(build_module.hub, "resolve_revision", lambda *a, **k: "a" * 40)
         monkeypatch.setattr(build_module.hub, "list_region_stems", lambda *a, **k: stems)
         monkeypatch.setattr(build_module.hub, "snapshot_region", lambda *a, **k: [])
         monkeypatch.setattr(build_module.hub, "region_files", lambda stem: [])
@@ -89,7 +90,13 @@ class TestRunBuild:
                 }
             )
             return rows, RegionOutcome(
-                tables.stem, polygons_seen=1, polygons_accepted=1, examples=examples_per_region
+                tables.stem,
+                polygons_seen=examples_per_region,
+                polygons_accepted=examples_per_region,
+                polygons_with_examples=examples_per_region,
+                source_links=examples_per_region,
+                source_documents=examples_per_region,
+                examples=examples_per_region,
             )
 
         monkeypatch.setattr(build_module, "run_region", fake_run_region)
@@ -109,8 +116,13 @@ class TestRunBuild:
         module = self._patch(monkeypatch, tmp_path, ["alpha", "beta"])
         config = Config(cache_dir=tmp_path, out_dir=tmp_path / "out")
         module.run_build(config)
+
+        def unexpected(*args, **kwargs):
+            raise AssertionError("finished region was processed again")
+
+        monkeypatch.setattr(module, "run_region", unexpected)
         second = module.run_build(config)
-        assert second.regions == []  # nothing re-processed
+        assert [r.stem for r in second.regions] == ["alpha", "beta"]
         assert second.result.rows == 2  # but the data is still there
 
     def test_rejections_are_summed_across_regions(self, tmp_path, monkeypatch) -> None:
@@ -142,11 +154,11 @@ class TestRunBuild:
 
         monkeypatch.setattr(build_module.hub, "resolve_revision", explode)
         report = build_module.run_build(
-            Config(cache_dir=tmp_path, out_dir=tmp_path / "out", source_revision="pinned")
+            Config(cache_dir=tmp_path, out_dir=tmp_path / "out", source_revision="a" * 40)
         )
         splits = [p for p in report.result.paths if p.suffix == ".parquet"]
         rows = pd.concat([pd.read_parquet(p) for p in splits], ignore_index=True)
-        assert rows["source_revision"].unique().tolist() == ["pinned"]
+        assert rows["source_revision"].unique().tolist() == ["a" * 40]
 
 
 def test_progress_is_reported_as_each_region_starts(tmp_path, monkeypatch) -> None:
@@ -220,3 +232,93 @@ class TestRejectionsSurviveTheProcess:
         store = ShardStore(tmp_path)
         store.write("alpha", frame(1))
         assert store.rejections() == {}
+
+
+def test_unknown_selected_region_is_rejected_before_processing(tmp_path, monkeypatch):
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha"])
+    with pytest.raises(ValueError, match="unknown selected"):
+        module.run_build(Config(cache_dir=tmp_path), regions=["missing"])
+
+
+def test_empty_selection_is_not_mistaken_for_full_source(tmp_path, monkeypatch):
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha"])
+    with pytest.raises(ValueError, match="nonempty"):
+        module.run_build(Config(cache_dir=tmp_path), regions=[])
+
+
+def test_subset_does_not_assemble_previously_cached_unselected_regions(tmp_path, monkeypatch):
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha", "beta"])
+    config = Config(cache_dir=tmp_path, out_dir=tmp_path / "out")
+    module.run_build(config)
+    subset = module.run_build(config, regions=["alpha"])
+    assert subset.result.rows == 1
+    assert subset.processing["expected_regions"] == ["alpha", "beta"]
+    assert subset.processing["missing_regions"] == ["beta"]
+    assert not subset.result.manifest["processing"]["full_source_complete"]
+
+
+def test_changed_minimum_words_forces_region_reprocessing(tmp_path, monkeypatch):
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha"])
+    config = Config(cache_dir=tmp_path, out_dir=tmp_path / "out")
+    module.run_build(config)
+    visited = []
+    original = module.run_region
+
+    def recording_run(*args, **kwargs):
+        visited.append(args[1].stem)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "run_region", recording_run)
+    module.run_build(config.with_overrides(min_words=1))
+    assert visited == ["alpha"]
+
+
+def test_resumed_build_preserves_full_processing_ledger(tmp_path, monkeypatch):
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha", "beta"])
+    config = Config(cache_dir=tmp_path, out_dir=tmp_path / "out")
+    original = module.run_region
+
+    def with_rejections(*args, **kwargs):
+        rows, outcome = original(*args, **kwargs)
+        outcome.polygons_seen += 3
+        outcome.rejections["below_threshold"] = 3
+        outcome.polygons_seen += 2
+        outcome.polygons_accepted += 2
+        outcome.text_rejections["text_too_short"] = 2
+        return rows, outcome
+
+    monkeypatch.setattr(module, "run_region", with_rejections)
+    first = module.run_build(config)
+    second = module.run_build(config)
+    assert first.processing == second.processing
+    assert second.rejections == {"below_threshold": 6}
+    assert second.processing["totals"]["text_rejections"] == {"text_too_short": 4}
+    assert second.result.manifest["rejections"] == {"below_threshold": 6}
+
+
+def test_named_source_revision_is_resolved_to_a_commit(tmp_path, monkeypatch):
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha"])
+    requested = []
+
+    def resolve(repository, revision):
+        requested.append(revision)
+        return "b" * 40
+
+    monkeypatch.setattr(module.hub, "resolve_revision", resolve)
+    report = module.run_build(
+        Config(cache_dir=tmp_path, out_dir=tmp_path / "out", source_revision="main")
+    )
+    assert requested == ["main"]
+    assert report.processing["context"]["settings"]["source_revision"] == "b" * 40

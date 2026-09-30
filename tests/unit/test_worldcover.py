@@ -1,11 +1,21 @@
 """WorldCover tile addressing and class-coverage extraction."""
 
+import json
+from pathlib import Path
+
 import geopandas as gpd
+import numpy as np
 import pytest
-from shapely.geometry import Polygon
+import rasterio
+import shapely
+from rasterio.windows import Window
+from shapely.geometry import MultiPolygon, Polygon
+from tests.conftest import write_raster
 
 from osm_worldcover.adapters.worldcover import WorldCoverTiles, class_coverage
 from osm_worldcover.domain.tiling import Tile
+
+BOUNDARY_FIXTURES = Path(__file__).parents[1] / "fixtures" / "worldcover-boundary"
 
 
 def one(geom) -> gpd.GeoDataFrame:
@@ -92,3 +102,98 @@ class TestClassCoverage:
     def test_an_empty_frame_yields_no_rows(self, half_and_half) -> None:
         empty = gpd.GeoDataFrame({"polygon_id": []}, geometry=[], crs="EPSG:4326")
         assert class_coverage([half_and_half], empty) == []
+
+    def test_a_polygon_with_a_hole_keeps_only_observed_pixel_area(self, half_and_half) -> None:
+        shell = [(0, 0), (0, 4), (4, 4), (4, 0)]
+        hole = [[(1, 1), (1, 3), (3, 3), (3, 1)]]
+        coverage = class_coverage([half_and_half], one(Polygon(shell, holes=hole)))[0]
+        assert coverage == {10: pytest.approx(0.5), 50: pytest.approx(0.5)}
+
+    def test_a_multipolygon_keeps_each_component(self, half_and_half) -> None:
+        left = Polygon([(0, 0), (0, 2), (1, 2), (1, 0)])
+        right = Polygon([(3, 2), (3, 4), (4, 4), (4, 2)])
+        coverage = class_coverage([half_and_half], one(MultiPolygon([left, right])))[0]
+        assert coverage == {10: pytest.approx(0.5), 50: pytest.approx(0.5)}
+
+    def test_southern_hemisphere_polygon_crosses_two_raster_tiles(self, tmp_path) -> None:
+        left = write_raster(
+            tmp_path / "south-west.tif",
+            np.full((4, 2), 10, dtype="uint8"),
+            origin=(0, -2),
+        )
+        right = write_raster(
+            tmp_path / "south-east.tif",
+            np.full((4, 2), 50, dtype="uint8"),
+            origin=(2, -2),
+        )
+        across_seam = one(Polygon([(1, -6), (1, -2), (3, -2), (3, -6)]))
+        coverage = class_coverage([left, right], across_seam)[0]
+        assert coverage == {10: pytest.approx(0.5), 50: pytest.approx(0.5)}
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (
+            "peru",
+            {
+                30: 0.03163706888209,
+                40: 0.00005711142495,
+                80: 0.90592590549736,
+                90: 0.06237991419558,
+            },
+        ),
+        (
+            "netherlands",
+            {
+                10: 0.92213518778889,
+                30: 0.03879794117976,
+                40: 0.00004881067089,
+                50: 0.00052447539422,
+                80: 0.02518630617598,
+                90: 0.01330727879024,
+            },
+        ),
+    ],
+)
+def test_real_raster_corner_cases_match_geos_coverage(name, expected, tmp_path) -> None:
+    metadata = json.loads((BOUNDARY_FIXTURES / f"{name}-metadata.json").read_text())
+    geometry = shapely.from_wkt((BOUNDARY_FIXTURES / f"{name}.wkt").read_text())
+    raster_path = _sparse_full_grid_fixture(name, metadata, tmp_path)
+
+    coverage = class_coverage([raster_path], one(geometry))[0]
+
+    assert coverage == pytest.approx(expected, abs=1e-9)
+    assert sum(coverage.values()) == pytest.approx(1.0, abs=1e-9)
+    assert max(coverage, key=coverage.get) in {10, 80}
+
+
+def _sparse_full_grid_fixture(name: str, metadata: dict, tmp_path: Path) -> Path:
+    """Restore a small tile window at its full WorldCover grid origin."""
+    window_path = BOUNDARY_FIXTURES / f"{name}-window.tif"
+    with rasterio.open(window_path) as window:
+        values = window.read(1)
+    output = tmp_path / f"{name}-full-grid.tif"
+    with rasterio.open(
+        output,
+        "w",
+        driver="GTiff",
+        width=metadata["width"],
+        height=metadata["height"],
+        count=1,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=rasterio.Affine(*metadata["transform"]),
+        nodata=0,
+        tiled=True,
+        blockxsize=256,
+        blockysize=256,
+        compress="DEFLATE",
+        SPARSE_OK="TRUE",
+    ) as dataset:
+        dataset.write(
+            values,
+            1,
+            window=Window(metadata["col0"], metadata["row0"], values.shape[1], values.shape[0]),
+        )
+    return output

@@ -15,9 +15,9 @@ manifest, map, and publication steps should nevertheless remain identical.
 
 Keep one canonical `RegionTables` contract inside the pipeline and register one
 source recipe for each input: `wikidata`, `description`, and `website`. Each
-recipe owns only source-repository paths and normalization into canonical
-polygon, link, and document tables. The domain and downstream pipeline do not
-branch on source-specific columns.
+recipe owns source-repository paths, text-eligibility defaults, and normalization
+into canonical polygon, link, and document tables. The domain and downstream
+pipeline do not branch on source-specific columns.
 
 The Wikidata-derived HF dataset remains the existing
 `NoeFlandre/osm-wikidata-worldcover` repository. The new recipes publish to
@@ -30,6 +30,9 @@ recorded in every manifest and card.
   the WorldCover algorithm or split rules.
 - Description text keeps exact base and localized tag values; localized suffixes
   are preserved as opaque language values when no detector label is available.
+- Description tags require only one whitespace-separated word by default;
+  Wikipedia/Wikivoyage and website text require ten. Explicit positive-integer
+  overrides are retained and the resolved threshold is recorded in the manifest.
 - Website and contact-website text remain separate documents, and the card must
   state that their copyright and reuse conditions belong to the source sites.
 - The repository/package name becomes `osm-worldcover`; the historical HF

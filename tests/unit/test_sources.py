@@ -3,6 +3,7 @@
 import json
 
 import pandas as pd
+import pytest
 from shapely.geometry import Polygon
 from shapely.wkb import dumps
 
@@ -122,3 +123,26 @@ def test_missing_description_shard_is_an_empty_region(tmp_path) -> None:
     assert tables.polygons.empty
     assert tables.links.empty
     assert tables.documents.empty
+
+
+@pytest.mark.parametrize("missing_text", [None, "", "  \n\t\u3000 "])
+def test_blank_base_and_localized_descriptions_are_not_documents(tmp_path, missing_text) -> None:
+    path = tmp_path / "data" / "alpha-latest.parquet"
+    path.parent.mkdir()
+    pd.DataFrame(
+        {
+            "source_pbf": ["alpha-latest.osm.pbf"],
+            "osm_type": ["way"],
+            "osm_id": [1],
+            "description": [missing_text],
+            "localized_descriptions": [[{"key": "fr", "value": missing_text}]],
+            "area_m2": [1000.0],
+            "geometry": [dumps(Polygon([(0, 0), (0, 1), (1, 1), (1, 0)]))],
+        }
+    ).to_parquet(path, index=False)
+
+    tables = RegionTables.load(tmp_path, "alpha-latest", source="description")
+
+    assert len(tables.polygons) == 1
+    assert tables.documents.empty
+    assert tables.links.empty

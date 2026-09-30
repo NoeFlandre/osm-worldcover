@@ -13,7 +13,6 @@ import yaml
 from osm_worldcover.adapters.worldcover import DEFAULT_CACHED_TILES
 from osm_worldcover.domain.dominance import DEFAULT_THRESHOLD
 from osm_worldcover.domain.splits import DEFAULT_RATIOS, DEFAULT_RESOLUTION, DEFAULT_SEED
-from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 from osm_worldcover.sources import DEFAULT_SOURCE, SourceRecipe, recipe_for
 
 __all__ = ["DEFAULT_SOURCE", "DEFAULT_SOURCE_DATASET", "Config"]
@@ -52,7 +51,8 @@ class Config:
 
     threshold: float = DEFAULT_THRESHOLD
     max_polygon_area_m2: float | None = DEFAULT_MAX_POLYGON_AREA_M2
-    min_words: int = DEFAULT_MIN_WORDS
+    # None selects the source recipe's policy; an explicit integer overrides it.
+    min_words: int | None = None
     h3_resolution: int = DEFAULT_RESOLUTION
     split_seed: int = DEFAULT_SEED
     train_ratio: float = DEFAULT_RATIOS.train
@@ -67,11 +67,18 @@ class Config:
         recipe_for(self.source)
         if self.source != DEFAULT_SOURCE and self.source_dataset == DEFAULT_SOURCE_DATASET:
             object.__setattr__(self, "source_dataset", recipe_for(self.source).source_dataset)
+        if self.min_words is not None:
+            _validate_min_words(self.min_words)
 
     @property
     def source_recipe(self) -> SourceRecipe:
         """Return the immutable metadata for this build's source."""
         return recipe_for(self.source)
+
+    @property
+    def effective_min_words(self) -> int:
+        """Resolve a text-length override or the source-specific default."""
+        return self.source_recipe.min_words if self.min_words is None else self.min_words
 
     @classmethod
     def from_yaml(cls, path: Path) -> Self:
@@ -110,7 +117,7 @@ class Config:
             "text_license": self.source_recipe.text_license,
             "dominance_threshold": self.threshold,
             "max_polygon_area_m2": self.max_polygon_area_m2,
-            "min_words": self.min_words,
+            "min_words": self.effective_min_words,
             "h3_resolution": self.h3_resolution,
             "split_seed": self.split_seed,
             "split_ratios": {
@@ -120,6 +127,12 @@ class Config:
             },
             "equal_area_crs": EQUAL_AREA_CRS,
         }
+
+
+def _validate_min_words(value: int) -> None:
+    """Require a positive integer so an override can never admit empty text."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("min_words must be a positive integer or null for the source default")
 
 
 def _coerce(data: dict[str, Any]) -> dict[str, Any]:

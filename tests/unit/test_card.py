@@ -128,6 +128,37 @@ def test_card_documents_the_leakage_guarantees() -> None:
     assert "leak" in text or "split" in text
 
 
+def test_card_exposes_short_text_dedup_attrition_and_split_tradeoff() -> None:
+    manifest = {
+        **MANIFEST,
+        "deduplication": {"duplicate_examples": 3},
+        "deduplication_analysis": {
+            "duplicate_text_label_groups": 2,
+            "duplicate_rows_removed": 3,
+            "duplicate_groups_crossing_splits": 1,
+            "duplicate_rows_removed_from_cross_split_groups": 2,
+            "duplicate_rows_removed_by_text_words": {
+                "1": 1,
+                "2": 0,
+                "3": 0,
+                "4": 0,
+                "5": 0,
+                "6": 0,
+                "7": 0,
+                "8": 0,
+                "9": 0,
+                "10+": 2,
+            },
+        },
+    }
+
+    text = render(manifest)
+
+    assert "1 word: 1" in text
+    assert "duplicate groups crossed the spatial split assignments" in text
+    assert "valid repeated short descriptions on distinct polygons" in text
+
+
 def test_card_is_deterministic() -> None:
     assert render(MANIFEST) == render(MANIFEST)
 

@@ -101,6 +101,26 @@ def test_deduplication_counts_are_reported(counts) -> None:
 
 def test_deduplication_defaults_to_empty(counts) -> None:
     assert build(counts, settings={})["deduplication"] == {}
+    assert build(counts, settings={})["deduplication_analysis"] == {}
+
+
+def test_manifest_copies_nested_deduplication_analysis(counts) -> None:
+    counts.deduplication_analysis = {
+        "duplicate_text_label_groups": 2,
+        "duplicate_rows_removed": 3,
+        "duplicate_groups_crossing_splits": 1,
+        "duplicate_rows_removed_from_cross_split_groups": 2,
+        "duplicate_rows_removed_by_text_words": {"1": 1, "10+": 2},
+    }
+
+    manifest = build(counts, settings={})
+
+    assert manifest["deduplication_analysis"]["duplicate_rows_removed_by_text_words"] == {
+        "1": 1,
+        "10+": 2,
+    }
+    counts.deduplication_analysis["duplicate_rows_removed_by_text_words"]["1"] = 9
+    assert manifest["deduplication_analysis"]["duplicate_rows_removed_by_text_words"]["1"] == 1
 
 
 def test_manifest_keys_are_the_published_contract(counts) -> None:
@@ -119,6 +139,7 @@ def test_manifest_keys_are_the_published_contract(counts) -> None:
         "geographic_coverage",
         "rejections",
         "deduplication",
+        "deduplication_analysis",
         "settings",
     }
     assert set(manifest["counts"]) == {"examples", "polygons", "documents"}

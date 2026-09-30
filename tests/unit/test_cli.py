@@ -1,13 +1,20 @@
 """Command line behaviour."""
 
 import json
+from collections import Counter
+from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 from typer.testing import CliRunner
 
 from osm_worldcover import cli
+from osm_worldcover.accounting import BuildContext
+from osm_worldcover.build import ShardStore
+from osm_worldcover.config import Config
 from osm_worldcover.domain.validation import Check, ValidationReport, Violation
 from osm_worldcover.finalize import StreamedBuild
+from osm_worldcover.pipeline import RegionOutcome
 
 runner = CliRunner()
 
@@ -86,6 +93,38 @@ def test_verify_accepts_a_sound_build(tmp_path) -> None:
     assert "every guarantee holds" in outcome.output
 
 
+@pytest.mark.parametrize("minimum, expected_exit", [(1, 0), (10, 1)])
+def test_verify_uses_the_manifest_text_threshold(tmp_path, minimum, expected_exit) -> None:
+    build = tmp_path / "v1.0.0"
+    build.mkdir()
+    rows = frame(1)
+    rows["text"] = ["Small public wooded garden"]
+    rows.to_parquet(build / "train.parquet", index=False)
+    (build / "manifest.json").write_text(
+        json.dumps({"settings": {"source": "description", "min_words": minimum}})
+    )
+
+    outcome = runner.invoke(cli.app, ["verify", str(build)])
+
+    assert outcome.exit_code == expected_exit, outcome.output
+    assert ("every guarantee holds" in outcome.output) == (expected_exit == 0)
+    assert ("unusable_text" in outcome.output) == (expected_exit == 1)
+
+
+def test_verify_uses_ten_words_for_legacy_manifest_without_settings(tmp_path) -> None:
+    build = tmp_path / "v1.0.0"
+    build.mkdir()
+    rows = frame(1)
+    rows["text"] = ["Small public wooded garden"]
+    rows.to_parquet(build / "train.parquet", index=False)
+    (build / "manifest.json").write_text(json.dumps(MANIFEST))
+
+    outcome = runner.invoke(cli.app, ["verify", str(build)])
+
+    assert outcome.exit_code == 1
+    assert "unusable_text" in outcome.output
+
+
 def test_verify_rejects_a_build_that_breaks_a_guarantee(tmp_path) -> None:
     build = tmp_path / "v1.0.0"
     build.mkdir(parents=True)
@@ -101,6 +140,67 @@ def test_verify_refuses_a_directory_with_no_splits(tmp_path) -> None:
     outcome = runner.invoke(cli.app, ["verify", str(tmp_path)])
     assert outcome.exit_code == 1
     assert "no splits" in outcome.output
+
+
+def test_audit_reports_warnings_and_writes_json_report(tmp_path, monkeypatch) -> None:
+    report = SimpleNamespace(
+        rows=4,
+        warnings=[SimpleNamespace(code="identical_text_cross_split", count=2)],
+        problems=[],
+        ok=True,
+        as_dict=lambda: {"ok": True, "rows": 4},
+    )
+    seen = {}
+
+    def fake_audit(build_dir, **options):
+        seen["build_dir"] = build_dir
+        seen["options"] = options
+        return report
+
+    monkeypatch.setattr("osm_worldcover.adapters.audit.audit_build", fake_audit)
+    build_dir = tmp_path / "release"
+    report_file = tmp_path / "audit.json"
+    outcome = runner.invoke(
+        cli.app,
+        [
+            "audit",
+            str(build_dir),
+            "--require-complete",
+            "--require-card",
+            "--strict-text-leakage",
+            "--report-file",
+            str(report_file),
+        ],
+    )
+
+    assert outcome.exit_code == 0, outcome.output
+    assert seen["build_dir"] == build_dir
+    assert seen["options"] == {
+        "require_complete": True,
+        "require_card": True,
+        "strict_text_leakage": True,
+    }
+    assert "WARNING identical_text_cross_split: 2" in outcome.output
+    assert "independent release audit passed" in outcome.output
+    assert json.loads(report_file.read_text()) == {"ok": True, "rows": 4}
+
+
+def test_audit_fails_when_report_contains_a_problem(monkeypatch, tmp_path) -> None:
+    report = SimpleNamespace(
+        rows=1,
+        warnings=[],
+        problems=[SimpleNamespace(code="invalid_text", count=1, examples=("p1",))],
+        ok=False,
+        as_dict=lambda: {"ok": False, "rows": 1},
+    )
+    monkeypatch.setattr(
+        "osm_worldcover.adapters.audit.audit_build", lambda *_args, **_kwargs: report
+    )
+
+    outcome = runner.invoke(cli.app, ["audit", str(tmp_path / "release")])
+
+    assert outcome.exit_code == 1
+    assert "FAILED invalid_text: 1 ('p1',)" in outcome.output
 
 
 def test_info_summarises_a_manifest(tmp_path) -> None:
@@ -184,7 +284,10 @@ def test_assemble_turns_shards_into_a_dataset(tmp_path) -> None:
     shards = tmp_path / "shards"
     shards.mkdir()
     shard_file(shards / "a.parquet")
-    outcome = runner.invoke(cli.app, ["assemble", str(shards), "--out", str(tmp_path / "out")])
+    outcome = runner.invoke(
+        cli.app,
+        ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
+    )
     assert outcome.exit_code == 0, outcome.output
     assert (tmp_path / "out" / "v1.0.0" / "train.parquet").exists()
     assert (tmp_path / "out" / "v1.0.0" / "manifest.json").exists()
@@ -198,7 +301,9 @@ def test_assemble_accepts_several_shard_directories(tmp_path) -> None:
         d.mkdir()
         shard_file(d / f"{name}.parquet", n=2)
         dirs.append(str(d))
-    outcome = runner.invoke(cli.app, ["assemble", *dirs, "--out", str(tmp_path / "out")])
+    outcome = runner.invoke(
+        cli.app, ["assemble", "--allow-unverified-shards", *dirs, "--out", str(tmp_path / "out")]
+    )
     assert outcome.exit_code == 0, outcome.output
     train = pd.read_parquet(tmp_path / "out" / "v1.0.0" / "train.parquet")
     assert len(train) >= 1
@@ -211,7 +316,10 @@ def test_assemble_fails_when_a_guarantee_breaks(tmp_path) -> None:
     frame = pd.read_parquet(shards / "a.parquet")
     frame["dominant_fraction"] = 0.1
     frame.to_parquet(shards / "a.parquet", index=False)
-    outcome = runner.invoke(cli.app, ["assemble", str(shards), "--out", str(tmp_path / "out")])
+    outcome = runner.invoke(
+        cli.app,
+        ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
+    )
     assert outcome.exit_code == 1
     assert "below_threshold" in outcome.output
 
@@ -219,7 +327,10 @@ def test_assemble_fails_when_a_guarantee_breaks(tmp_path) -> None:
 def test_assemble_refuses_an_empty_shard_directory(tmp_path) -> None:
     shards = tmp_path / "shards"
     shards.mkdir()
-    outcome = runner.invoke(cli.app, ["assemble", str(shards), "--out", str(tmp_path / "out")])
+    outcome = runner.invoke(
+        cli.app,
+        ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
+    )
     assert outcome.exit_code == 1
 
 
@@ -230,7 +341,15 @@ def test_assemble_with_one_directory_uses_it_directly(tmp_path) -> None:
     shard_file(shards / "a.parquet")
     outcome = runner.invoke(
         cli.app,
-        ["assemble", str(shards), "--out", str(tmp_path / "out"), "--work", str(tmp_path / "work")],
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            str(shards),
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
     assert not (tmp_path / "work" / "shards").exists()
@@ -248,7 +367,16 @@ def test_assemble_does_not_inherit_a_previous_run(tmp_path) -> None:
         shard_file(d / f"{name}.parquet", n=2)
         dirs.append(str(d))
     outcome = runner.invoke(
-        cli.app, ["assemble", *dirs, "--out", str(tmp_path / "out"), "--work", str(work)]
+        cli.app,
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            *dirs,
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(work),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
 
@@ -263,7 +391,15 @@ def test_assemble_reports_rejections_recorded_by_the_builders(tmp_path) -> None:
     (shards / "a.rejections.json").write_text(json.dumps({"below_threshold": 12}))
     outcome = runner.invoke(
         cli.app,
-        ["assemble", str(shards), "--out", str(tmp_path / "out"), "--work", str(tmp_path / "work")],
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            str(shards),
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
     manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
@@ -282,7 +418,15 @@ def test_assemble_sums_rejections_across_worker_directories(tmp_path) -> None:
         dirs.append(str(d))
     outcome = runner.invoke(
         cli.app,
-        ["assemble", *dirs, "--out", str(tmp_path / "out"), "--work", str(tmp_path / "work")],
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            *dirs,
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
     manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
@@ -308,7 +452,15 @@ def test_assemble_combines_directories_that_share_a_leaf_name(tmp_path) -> None:
         dirs.append(str(d))
     outcome = runner.invoke(
         cli.app,
-        ["assemble", *dirs, "--out", str(tmp_path / "out"), "--work", str(tmp_path / "work")],
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            *dirs,
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
     manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
@@ -345,3 +497,255 @@ def test_regions_refuses_an_unknown_source() -> None:
     outcome = runner.invoke(cli.app, ["regions", "--source", "nonsense"])
     assert outcome.exit_code == 1
     assert "unknown source" in outcome.output
+
+
+def verified_shard(directory, stem="alpha", config=None, count=2):
+    """Write real completion receipts, including all pre-deduplication accounting."""
+    config = config or Config(source="description", source_revision="a" * 40)
+    directory.mkdir(parents=True, exist_ok=True)
+    shard_file(directory / f"{stem}.parquet", n=count)
+    rows = pd.read_parquet(directory / f"{stem}.parquet")
+    rows["region"] = stem
+    rows["polygon_id"] = [f"{stem}-{i}" for i in range(count)]
+    outcome = RegionOutcome(
+        stem,
+        polygons_seen=count + 5,
+        polygons_invalid=1,
+        polygons_accepted=count + 1,
+        polygons_with_examples=count,
+        examples=count,
+        source_links=count + 1,
+        source_documents=count + 1,
+        rejections=Counter({"below_threshold": 3}),
+        text_rejections=Counter({"empty_text": 1}),
+    )
+    ShardStore(directory, BuildContext.from_config(config)).write_outcome(stem, rows, outcome)
+    return config
+
+
+def assemble_args(tmp_path, *directories):
+    return [
+        "assemble",
+        *(str(directory) for directory in directories),
+        "--out",
+        str(tmp_path / "out"),
+        "--work",
+        str(tmp_path / "work"),
+    ]
+
+
+def assembled_manifest(tmp_path, version="1.0.0"):
+    return json.loads((tmp_path / "out" / f"v{version}" / "manifest.json").read_text())
+
+
+def test_assemble_defaults_refuse_legacy_shards(tmp_path, monkeypatch) -> None:
+    directory = tmp_path / "shards"
+    directory.mkdir()
+    shard_file(directory / "alpha.parquet")
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
+    assert outcome.exit_code == 1
+    assert "unverifiable completion receipt" in outcome.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_legacy_recovery_is_explicitly_unpublishable_without_network(tmp_path, monkeypatch):
+    directory = tmp_path / "shards"
+    directory.mkdir()
+    shard_file(directory / "alpha.parquet")
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
+    outcome = runner.invoke(
+        cli.app, [*assemble_args(tmp_path, directory), "--allow-unverified-shards"]
+    )
+    assert outcome.exit_code == 0, outcome.output
+    assert "UNVERIFIED" in outcome.output
+    assert "not publishable" in outcome.output
+    processing = assembled_manifest(tmp_path)["processing"]
+    assert processing["scope"] == "unverified"
+    assert processing["full_source_complete"] is False
+    assert processing["complete"] is False
+
+
+def test_assemble_derives_all_settings_from_verified_receipts(tmp_path, monkeypatch):
+    directory = tmp_path / "shards"
+    config = Config(
+        source="description",
+        source_dataset="owner/custom-description",
+        source_revision="a" * 40,
+        min_words=10,
+        threshold=0.9,
+        max_polygon_area_m2=None,
+        worldcover_version="v100",
+        worldcover_year=2020,
+        h3_resolution=4,
+        split_seed=17,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+        dataset_version="2.1.0",
+        extra={"policy": "custom"},
+    )
+    verified_shard(directory, config=config)
+    seen = []
+
+    def inventory(repo, revision, source):
+        seen.append((repo, revision, source.name))
+        return ["alpha"]
+
+    monkeypatch.setattr(cli.hub, "list_region_stems", inventory)
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
+    assert outcome.exit_code == 0, outcome.output
+    manifest = assembled_manifest(tmp_path, "2.1.0")
+    assert manifest["settings"] == config.as_manifest_settings()
+    assert manifest["settings"]["min_words"] == 10
+    assert manifest["processing"]["full_source_complete"] is True
+    assert manifest["processing"]["context"] == BuildContext.from_config(config).as_dict()
+    assert seen == [("owner/custom-description", "a" * 40, "description")]
+
+
+def test_assemble_aggregates_worker_receipts_including_empty_regions(tmp_path, monkeypatch):
+    first, second = tmp_path / "w0" / "shards", tmp_path / "w1" / "shards"
+    config = verified_shard(first)
+    verified_shard(second, stem="beta", config=config)
+    ShardStore(second, BuildContext.from_config(config)).write_outcome(
+        "empty", pd.DataFrame(), RegionOutcome("empty")
+    )
+    # Receipt counters are authoritative; stale generic sidecars must never win.
+    (first / "alpha.rejections.json").write_text('{"too_large": 999}')
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta", "empty"])
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, first, second))
+    assert outcome.exit_code == 0, outcome.output
+    manifest = assembled_manifest(tmp_path)
+    ledger = manifest["processing"]
+    assert ledger["processed_regions"] == ["alpha", "beta", "empty"]
+    assert ledger["full_source_complete"] is True
+    assert ledger["totals"]["examples"] == 4
+    assert ledger["totals"]["polygons_seen"] == 14
+    assert ledger["totals"]["text_rejections"] == {"empty_text": 2}
+    assert manifest["rejections"] == {"below_threshold": 6}
+
+
+@pytest.mark.parametrize(
+    "option,value",
+    [
+        ("source", "wikidata"),
+        ("threshold", "0.7"),
+        ("revision", "b" * 40),
+        ("dataset-version", "9.0.0"),
+    ],
+)
+def test_assemble_refuses_explicit_conflicting_settings(tmp_path, monkeypatch, option, value):
+    directory = tmp_path / "shards"
+    verified_shard(directory)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
+    outcome = runner.invoke(cli.app, [*assemble_args(tmp_path, directory), f"--{option}", value])
+    assert outcome.exit_code == 1
+    assert "conflicts with verified receipt setting" in outcome.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_assemble_accepts_matching_explicit_settings(tmp_path, monkeypatch):
+    directory = tmp_path / "shards"
+    verified_shard(directory)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha"])
+    outcome = runner.invoke(
+        cli.app,
+        [
+            *assemble_args(tmp_path, directory),
+            "--source",
+            "description",
+            "--threshold",
+            "0.8",
+            "--revision",
+            "a" * 40,
+            "--dataset-version",
+            "1.0.0",
+        ],
+    )
+    assert outcome.exit_code == 0, outcome.output
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"min_words": 10},
+        {"source": "website"},
+        {"source_revision": "b" * 40},
+        {"max_polygon_area_m2": None},
+        {"worldcover_year": 2020},
+        {"split_seed": 27},
+        {"extra": {"policy": "changed"}},
+    ],
+)
+def test_assemble_refuses_workers_with_different_contexts(tmp_path, monkeypatch, change):
+    first, second = tmp_path / "w0", tmp_path / "w1"
+    config = verified_shard(first)
+    from dataclasses import replace
+
+    verified_shard(second, "beta", replace(config, **change))
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, first, second))
+    assert outcome.exit_code == 1
+    assert "unverifiable region completion receipts" in outcome.output
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize("repeat_directory", [False, True])
+def test_assemble_rejects_duplicate_worker_assignments(tmp_path, monkeypatch, repeat_directory):
+    first, second = tmp_path / "w0", tmp_path / "w1"
+    verified_shard(first)
+    verified_shard(second)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
+    outcome = runner.invoke(
+        cli.app, assemble_args(tmp_path, first, first if repeat_directory else second)
+    )
+    assert outcome.exit_code == 1
+    assert "duplicate region worker assignments" in outcome.output
+    assert not (tmp_path / "out").exists()
+
+
+def test_assemble_marks_subset_as_incomplete(tmp_path, monkeypatch):
+    directory = tmp_path / "shards"
+    verified_shard(directory)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta"])
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
+    assert outcome.exit_code == 0, outcome.output
+    ledger = assembled_manifest(tmp_path)["processing"]
+    assert ledger["selected_complete"] is True
+    assert ledger["full_source_complete"] is False
+    assert ledger["missing_regions"] == ["beta"]
+    assert "incomplete source inventory" in outcome.output
+
+
+def test_assemble_rejects_regions_outside_pinned_inventory(tmp_path, monkeypatch):
+    directory = tmp_path / "shards"
+    verified_shard(directory)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["other"])
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
+    assert outcome.exit_code == 1
+    assert "unknown selected regions" in outcome.output
+
+
+@pytest.mark.parametrize("damage", ["receipt", "shard", "bytes", "orphan", "schema"])
+def test_assemble_rejects_damaged_or_incomplete_receipts(tmp_path, monkeypatch, damage):
+    directory = tmp_path / "shards"
+    verified_shard(directory)
+    receipt = directory / "alpha.complete.json"
+    shard = directory / "alpha.parquet"
+    if damage == "receipt":
+        receipt.unlink()
+    elif damage == "shard":
+        shard.unlink()
+    elif damage == "bytes":
+        shard.write_bytes(shard.read_bytes() + b"changed")
+    elif damage == "orphan":
+        (directory / "beta.complete.json").write_text(receipt.read_text())
+    else:
+        document = json.loads(receipt.read_text())
+        document["context"]["pipeline_schema_version"] = 999
+        receipt.write_text(json.dumps(document))
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
+    assert outcome.exit_code == 1
+    assert "unverifiable" in outcome.output
+    assert not (tmp_path / "out").exists()

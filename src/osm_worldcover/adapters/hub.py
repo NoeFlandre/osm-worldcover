@@ -67,7 +67,8 @@ def snapshot_region(
     most often -- are skipped rather than treated as failures.
     """
     downloaded: list[Path] = []
-    for path in region_files(stem, source):
+    paths = region_files(stem, source)
+    for path in paths:
         try:
             local = hf_hub_download(
                 repo_id,
@@ -77,6 +78,8 @@ def snapshot_region(
                 local_dir=dest,
             )
         except EntryNotFoundError:
+            if path == paths[0]:
+                raise
             continue
         downloaded.append(Path(local))
     return downloaded

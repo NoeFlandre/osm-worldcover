@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from osm_worldcover.config import Config
-from osm_worldcover.finalize import _write_splits, finalize_shards
+from osm_worldcover.finalize import _deduplicate, _enrich_shards, _write_splits, finalize_shards
 
 
 def written(result) -> pd.DataFrame:
@@ -22,7 +22,18 @@ def written(result) -> pd.DataFrame:
 TEXT = " ".join(["word"] * 30)
 
 
-def shard(path, n=1, start=0, region="luxembourg", code=10, text=None):
+def shard(
+    path,
+    n=1,
+    start=0,
+    region="luxembourg",
+    code=10,
+    text=None,
+    text_words=None,
+    lat=49.6,
+    lon=6.1,
+):
+    texts = [text or f"{TEXT} {i}" for i in range(start, start + n)]
     pd.DataFrame(
         {
             "polygon_id": [f"{region}-latest:way:{i}" for i in range(start, start + n)],
@@ -36,15 +47,15 @@ def shard(path, n=1, start=0, region="luxembourg", code=10, text=None):
             "language": ["en"] * n,
             "title": ["T"] * n,
             "url": ["u"] * n,
-            "text": [text or f"{TEXT} {i}" for i in range(start, start + n)],
+            "text": texts,
             "lead_text": ["lead"] * n,
-            "text_words": [31] * n,
+            "text_words": [text_words or len(value.split()) for value in texts],
             "worldcover_code": [code] * n,
             "worldcover_label": ["Tree cover" if code == 10 else "Built-up"] * n,
             "dominant_fraction": [0.95] * n,
             "observed_fraction": [1.0] * n,
-            "lat": [49.6] * n,
-            "lon": [6.1] * n,
+            "lat": [lat] * n,
+            "lon": [lon] * n,
             "centroid_wkt": ["POINT (6.1 49.6)"] * n,
             "polygon_area_m2": [1000.0] * n,
             "source_pbf": [f"{region}-latest.osm.pbf"] * n,
@@ -104,10 +115,75 @@ def test_identical_text_and_label_collapses(shards, tmp_path) -> None:
     assert result.duplicate_examples == 1
 
 
+def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, tmp_path) -> None:
+    shard(
+        shards / "a.parquet",
+        n=2,
+        start=0,
+        region="alpha",
+        text="Park",
+        lat=49.6,
+        lon=6.1,
+    )
+    shard(
+        shards / "b.parquet",
+        start=2,
+        region="beta",
+        text="Park",
+        lat=-33.9,
+        lon=151.2,
+    )
+    shard(
+        shards / "c.parquet",
+        n=2,
+        start=20,
+        text="one two three four five six seven eight nine ten eleven twelve",
+    )
+
+    result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
+
+    analysis = result.manifest["deduplication_analysis"]
+    assert result.duplicate_examples == 3
+    assert analysis == {
+        "duplicate_text_label_groups": 2,
+        "duplicate_rows_removed": 3,
+        "duplicate_groups_crossing_splits": 1,
+        "duplicate_rows_removed_from_cross_split_groups": 2,
+        "duplicate_rows_removed_by_text_words": {
+            "1": 2,
+            "2": 0,
+            "3": 0,
+            "4": 0,
+            "5": 0,
+            "6": 0,
+            "7": 0,
+            "8": 0,
+            "9": 0,
+            "10+": 1,
+        },
+    }
+
+
 def test_identical_text_under_different_labels_is_kept(shards, tmp_path) -> None:
     shard(shards / "a.parquet", n=1, start=0, text="same text here " * 5, code=10)
     shard(shards / "b.parquet", n=1, start=9, text="same text here " * 5, code=50)
     assert finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out").rows == 2
+
+
+def test_deduplication_uses_the_work_directory_for_duckdb_spill(shards, tmp_path) -> None:
+    shard(shards / "a.parquet")
+    work = tmp_path / "work"
+    enriched = work / "enriched"
+    enriched.mkdir(parents=True)
+    assert _enrich_shards(shards, enriched, Config()) == 1
+
+    connection, _, _ = _deduplicate(enriched)
+    try:
+        spill_dir = connection.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+    finally:
+        connection.close()
+
+    assert spill_dir == str(work / "duckdb-spill")
 
 
 def test_the_result_validates(shards, tmp_path) -> None:

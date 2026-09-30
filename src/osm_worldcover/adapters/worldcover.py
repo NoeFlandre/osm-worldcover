@@ -25,6 +25,9 @@ import numpy as np
 import rasterio
 import shapely
 from exactextract import exact_extract
+from rasterio.features import rasterize
+from shapely.affinity import affine_transform
+from shapely.geometry import box
 
 from osm_worldcover.domain.tiling import Tile
 
@@ -42,9 +45,14 @@ DEFAULT_BASE_URL: Final[str] = "https://esa-worldcover.s3.eu-central-1.amazonaws
 #: Eight tiles is roughly 750 MB, a good trade against a 94 MB re-download.
 DEFAULT_CACHED_TILES: Final[int] = 8
 
-#: exactextract operations: the distinct values, their share of the observed
-#: area, and the observed area itself in (fractional) cells.
-_OPS: Final[Sequence[str]] = ("unique", "frac", "count")
+#: exactextract operations needed to correct pixel-boundary coverage.
+_OPS: Final[Sequence[str]] = ("cell_id", "coverage", "values")
+
+#: A small pixel-space halo makes all-touched rasterization retain cells that
+#: meet a polygon boundary at a single grid corner. GEOS measures the original
+#: polygon against those cells; the halo only selects candidates for checking.
+_BOUNDARY_HALO_PIXELS: Final[float] = 0.01
+_BOUNDARY_ROW_CHUNK: Final[int] = 256
 
 
 class TileNotPublishedError(FileNotFoundError):
@@ -178,38 +186,172 @@ def _add_raster(
 ) -> None:
     """Add one raster's contribution to every polygon's running totals."""
     with rasterio.open(path) as dataset:
-        cell_area = abs(dataset.transform.a * dataset.transform.e)
-    result = exact_extract(str(path), frame, list(_OPS), output="pandas")
-    for index, (values, shares, observed) in enumerate(
-        zip(result["unique"], result["frac"], result["count"], strict=True)
-    ):
-        _accumulate(totals[index], values, shares, observed, cell_area, areas[index])
+        transform = dataset.transform
+        cell_area = abs(transform.a * transform.e - transform.b * transform.d)
+        result = exact_extract(str(path), frame, list(_OPS), output="pandas")
+        for index, (cell_ids, coverage, values) in enumerate(
+            zip(result["cell_id"], result["coverage"], result["values"], strict=True)
+        ):
+            _accumulate_corrected(
+                totals[index],
+                cell_ids,
+                coverage,
+                values,
+                frame.geometry.iloc[index],
+                dataset,
+                cell_area,
+                areas[index],
+            )
 
 
-def _accumulate(
+def _accumulate_corrected(
     into: defaultdict[int, float],
+    cell_ids: Iterable[int],
+    coverage: Iterable[float],
     values: Iterable[float],
-    shares: Iterable[float],
-    observed_cells: float,
+    geometry: shapely.Geometry,
+    dataset: rasterio.DatasetReader,
     cell_area: float,
     polygon_area: float,
 ) -> None:
-    """Convert shares-of-observed into shares-of-polygon and add them to ``into``."""
-    observed_share = _observed_share(observed_cells, cell_area, polygon_area)
-    if observed_share is None:
+    """Replace exactextract's boundary-cell values with independent GEOS areas."""
+    if polygon_area <= 0.0 or not math.isfinite(polygon_area):
         return
-    for value, share in zip(values, shares, strict=True):
-        contribution = float(share) * observed_share
-        if contribution > 0.0:
-            into[int(value)] += contribution
+    ids = np.asarray(cell_ids, dtype=np.int64)
+    fractions = np.asarray(coverage, dtype=float)
+    raw_values = np.ma.asarray(values, dtype=float)
+    classes = np.asarray(raw_values.filled(np.nan), dtype=float)
+    order = np.argsort(ids, kind="stable")
+    ids, fractions, classes = ids[order], fractions[order], classes[order]
+    pixel_geometry = _pixel_geometry(geometry, dataset.transform)
+    candidate_ids, rows, columns, corrected = _boundary_cells(
+        pixel_geometry, dataset.width, dataset.height
+    )
+    present, positions = _find_candidates(ids, candidate_ids)
+    stable = np.ones(len(ids), dtype=bool)
+    stable[positions[present]] = False
+    scale = cell_area / polygon_area
+    _add_class_coverage(into, classes[stable], fractions[stable], scale)
+    candidate_classes = np.full(len(candidate_ids), np.nan)
+    candidate_classes[present] = classes[positions[present]]
+    _read_missing_classes(
+        dataset,
+        rows[~present & (corrected > 0.0)],
+        columns[~present & (corrected > 0.0)],
+        candidate_classes,
+        np.flatnonzero(~present & (corrected > 0.0)),
+    )
+    _add_class_coverage(into, candidate_classes, corrected, scale)
 
 
-def _observed_share(observed_cells: float, cell_area: float, polygon_area: float) -> float | None:
-    """What share of the polygon the raster actually observed, or ``None``.
+def _pixel_geometry(geometry: shapely.Geometry, transform: rasterio.Affine) -> shapely.Geometry:
+    """Express a raster-CRS geometry in pixel coordinates for stable overlay."""
+    inverse = ~transform
+    return affine_transform(
+        geometry,
+        [inverse.a, inverse.b, inverse.d, inverse.e, inverse.c, inverse.f],
+    )
 
-    exactextract reports NaN for a polygon that never met the raster, so a
-    non-finite count means no observation rather than a bad measurement.
-    """
-    if polygon_area <= 0.0 or not math.isfinite(observed_cells) or observed_cells <= 0.0:
-        return None
-    return float(observed_cells) * cell_area / polygon_area
+
+def _boundary_cells(
+    geometry: shapely.Geometry, width: int, height: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return raster cells near the polygon boundary and GEOS coverage for each."""
+    if geometry.is_empty:
+        empty = np.array([], dtype=np.int64)
+        return empty, empty, empty, empty.astype(float)
+    min_x, min_y, max_x, max_y = geometry.bounds
+    col_start = max(0, math.floor(min_x) - 1)
+    col_stop = min(width, math.ceil(max_x) + 1)
+    row_start = max(0, math.floor(min_y) - 1)
+    row_stop = min(height, math.ceil(max_y) + 1)
+    if col_start >= col_stop or row_start >= row_stop:
+        empty = np.array([], dtype=np.int64)
+        return empty, empty, empty, empty.astype(float)
+    boundary = shapely.buffer(geometry.boundary, _BOUNDARY_HALO_PIXELS)
+    cell_ids = _rasterized_boundary_ids(
+        boundary, col_start, col_stop, row_start, row_stop, width, height
+    )
+    rows, columns = cell_ids // width, cell_ids % width
+    cells = shapely.box(columns, rows, columns + 1, rows + 1)
+    corrected = np.asarray(shapely.area(shapely.intersection(geometry, cells)), dtype=float)
+    return cell_ids, rows, columns, corrected
+
+
+def _rasterized_boundary_ids(
+    boundary: shapely.Geometry,
+    col_start: int,
+    col_stop: int,
+    row_start: int,
+    row_stop: int,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Rasterize boundary strips with bounded memory, then return unique IDs."""
+    ids: list[np.ndarray] = []
+    for row in range(row_start, row_stop, _BOUNDARY_ROW_CHUNK):
+        strip_top = max(0, row - 1)
+        strip_bottom = min(height, row + _BOUNDARY_ROW_CHUNK + 1)
+        part = shapely.intersection(boundary, box(col_start, strip_top, col_stop, strip_bottom))
+        if part.is_empty:
+            continue
+        min_x, min_y, max_x, max_y = part.bounds
+        left = max(col_start, math.floor(min_x) - 1)
+        right = min(col_stop, math.ceil(max_x) + 1)
+        top = max(0, math.floor(min_y) - 1)
+        bottom = min(height, math.ceil(max_y) + 1)
+        mask = rasterize(
+            [(part, 1)],
+            out_shape=(bottom - top, right - left),
+            transform=rasterio.Affine.translation(left, top),
+            all_touched=True,
+            dtype="uint8",
+        )
+        rows, columns = np.nonzero(mask)
+        ids.append((rows + top) * width + columns + left)
+    if not ids:
+        return np.array([], dtype=np.int64)
+    return np.unique(np.concatenate(ids).astype(np.int64, copy=False))
+
+
+def _find_candidates(cell_ids: np.ndarray, candidates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Find exactextract result positions for candidate boundary cell IDs."""
+    if not len(cell_ids) or not len(candidates):
+        return np.zeros(len(candidates), dtype=bool), np.zeros(len(candidates), dtype=np.int64)
+    positions = np.searchsorted(cell_ids, candidates)
+    in_range = positions < len(cell_ids)
+    found = np.zeros(len(candidates), dtype=bool)
+    found[in_range] = cell_ids[positions[in_range]] == candidates[in_range]
+    return found, positions
+
+
+def _read_missing_classes(
+    dataset: rasterio.DatasetReader,
+    rows: np.ndarray,
+    columns: np.ndarray,
+    classes: np.ndarray,
+    positions: np.ndarray,
+) -> None:
+    """Read valid pixel classes for boundary cells omitted by exactextract."""
+    for row, column, position in zip(rows, columns, positions, strict=True):
+        value = dataset.read(
+            1,
+            window=((int(row), int(row) + 1), (int(column), int(column) + 1)),
+            masked=True,
+        )[0, 0]
+        if not np.ma.is_masked(value):
+            classes[position] = float(value)
+
+
+def _add_class_coverage(
+    into: defaultdict[int, float],
+    values: np.ndarray,
+    coverage: np.ndarray,
+    scale: float,
+) -> None:
+    """Add valid per-cell areas to class totals."""
+    valid = np.isfinite(values) & np.isfinite(coverage) & (coverage > 0.0)
+    for value in np.unique(values[valid]):
+        share = float(coverage[valid & (values == value)].sum()) * scale
+        if share > 0.0:
+            into[int(value)] += share
