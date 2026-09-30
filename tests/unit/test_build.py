@@ -69,7 +69,10 @@ class TestRunBuild:
         def fake_run_region(config, tables, tiles, keep_tiles=False):
             # Distinct objects need distinct osm ids: sharing an id across
             # regions means the same object, which assembly collapses.
-            base = abs(hash(tables.stem)) % 1000 * 100
+            # Make fake OSM identities deterministic and unique by region.
+            # Hash-modulo fixtures can collide and make unrelated regions
+            # look like duplicate records to the production finalizer.
+            base = (stems.index(tables.stem) + 1) * 100_000
             rows = pd.DataFrame(
                 {
                     "polygon_id": [f"{tables.stem}:{i}" for i in range(examples_per_region)],

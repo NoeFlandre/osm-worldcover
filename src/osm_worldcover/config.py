@@ -19,6 +19,8 @@ __all__ = ["DEFAULT_SOURCE", "DEFAULT_SOURCE_DATASET", "Config"]
 
 DEFAULT_SOURCE_DATASET = recipe_for(DEFAULT_SOURCE).source_dataset
 
+DEDUPLICATION_POLICY = "polygon_id+normalized_text+worldcover_code"
+
 #: Polygons larger than this are refused before any raster is read.
 #: Zonal-statistics cost is linear in area: 10,000 km2 is ~10^8 pixels and
 #: about 1.4 s, while the largest polygon in the source -- 10.2 million km2 --
@@ -59,7 +61,7 @@ class Config:
     validation_ratio: float = DEFAULT_RATIOS.validation
     test_ratio: float = DEFAULT_RATIOS.test
 
-    dataset_version: str = "1.0.0"
+    dataset_version: str = "1.1.0"
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -103,6 +105,7 @@ class Config:
         """The subset of settings recorded in the manifest."""
         return {
             "dataset_version": self.dataset_version,
+            "deduplication_policy": DEDUPLICATION_POLICY,
             "source": self.source,
             "worldcover_version": self.worldcover_version,
             "worldcover_year": self.worldcover_year,

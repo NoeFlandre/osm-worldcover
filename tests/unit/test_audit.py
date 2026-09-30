@@ -239,10 +239,19 @@ def test_identical_text_different_labels_is_visible_and_optionally_fatal(build):
     assert "identical_text_cross_split" in problems(audit_build(build, strict_text_leakage=True))
 
 
-def test_text_label_duplicates_are_always_fatal(build):
+def test_identical_text_and_label_on_distinct_polygons_is_a_diagnostic(build):
     text = pq.read_table(build / "train.parquet")["text"][0].as_py()
     mutate(build, "test", text=text)
-    assert "duplicate_text_label" in problems(audit_build(build))
+    report = audit_build(build)
+    assert report.ok
+    assert "duplicate_polygon_text_label_record" not in problems(report)
+    assert any(warning.code == "identical_text_cross_split" for warning in report.warnings)
+
+
+def test_exact_polygon_text_and_label_record_is_fatal(build):
+    train = pq.read_table(build / "train.parquet").to_pylist()[0]
+    mutate(build, "test", text=train["text"], polygon_id=train["polygon_id"])
+    assert "duplicate_polygon_text_label_record" in problems(audit_build(build))
 
 
 def test_document_polygon_and_h3_leakage_are_detected(build):
@@ -303,7 +312,7 @@ def test_inconsistent_completion_claim_is_rejected(build, change):
 def test_processing_examples_reconcile_dedup_removals(build):
     path = build / "manifest.json"
     manifest = json.loads(path.read_text())
-    manifest["deduplication"] = {"duplicate_examples": 1}
+    manifest["deduplication"] = {"duplicate_polygon_text_label_records": 1}
     path.write_text(json.dumps(manifest))
     assert "invalid_processing_ledger" in problems(audit_build(build, require_complete=True))
 
@@ -313,18 +322,24 @@ def test_processing_duplicate_text_analysis_reconciles(build):
     manifest = json.loads(path.read_text())
     manifest["deduplication"] = {
         "duplicate_objects_across_regions": 0,
-        "duplicate_examples": 0,
+        "duplicate_polygon_text_label_records": 0,
         "documents_split_across_splits": 0,
     }
     manifest["deduplication_analysis"] = {
-        "duplicate_text_label_groups": 0,
-        "duplicate_rows_removed": 0,
-        "duplicate_groups_crossing_splits": 0,
-        "duplicate_rows_removed_from_cross_split_groups": 0,
-        "duplicate_rows_removed_by_text_words": {
+        "duplicate_polygon_text_label_groups": 0,
+        "duplicate_records_removed": 0,
+        "duplicate_record_groups_crossing_splits": 0,
+        "duplicate_records_removed_from_cross_split_groups": 0,
+        "duplicate_records_removed_by_text_words": {
             **dict.fromkeys((str(words) for words in range(1, 10)), 0),
             "10+": 0,
         },
+        "retained_identical_text_label_groups": 0,
+        "retained_identical_text_label_rows": 0,
+        "retained_identical_text_label_cross_split_groups": 0,
+        "retained_identical_text_label_cross_split_rows": 0,
+        "identical_text_cross_split_groups": 0,
+        "identical_text_cross_split_rows": 0,
     }
     path.write_text(json.dumps(manifest))
 
@@ -336,15 +351,21 @@ def test_processing_duplicate_text_length_histogram_must_be_complete(build):
     manifest = json.loads(path.read_text())
     manifest["deduplication"] = {
         "duplicate_objects_across_regions": 0,
-        "duplicate_examples": 0,
+        "duplicate_polygon_text_label_records": 0,
         "documents_split_across_splits": 0,
     }
     manifest["deduplication_analysis"] = {
-        "duplicate_text_label_groups": 0,
-        "duplicate_rows_removed": 0,
-        "duplicate_groups_crossing_splits": 0,
-        "duplicate_rows_removed_from_cross_split_groups": 0,
-        "duplicate_rows_removed_by_text_words": {"10+": 0},
+        "duplicate_polygon_text_label_groups": 0,
+        "duplicate_records_removed": 0,
+        "duplicate_record_groups_crossing_splits": 0,
+        "duplicate_records_removed_from_cross_split_groups": 0,
+        "duplicate_records_removed_by_text_words": {"10+": 0},
+        "retained_identical_text_label_groups": 0,
+        "retained_identical_text_label_rows": 0,
+        "retained_identical_text_label_cross_split_groups": 0,
+        "retained_identical_text_label_cross_split_rows": 0,
+        "identical_text_cross_split_groups": 0,
+        "identical_text_cross_split_rows": 0,
     }
     path.write_text(json.dumps(manifest))
 

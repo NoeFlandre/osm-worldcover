@@ -10,7 +10,7 @@ from typing import Any
 from osm_worldcover.accounting import BuildContext, processing_ledger
 from osm_worldcover.adapters import hub
 from osm_worldcover.build import ShardStore
-from osm_worldcover.config import Config
+from osm_worldcover.config import DEDUPLICATION_POLICY, Config
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +31,37 @@ def verified_assembly(
 ) -> AssemblyInputs:
     """Load all worker receipts before staging or writing any output data."""
     groups = _worker_regions(shard_dirs)
+    config, context = _verified_configuration(groups, out, work, assertions)
+    return _assemble_verified_inputs(groups, config, context, work)
+
+
+def _verified_configuration(
+    groups: list[tuple[Path, list[str]]],
+    out: Path,
+    work: Path,
+    assertions: dict[str, Any],
+) -> tuple[Config, BuildContext]:
+    """Resolve finalization-only overrides from one verified source receipt."""
     directory, stems = next((directory, stems) for directory, stems in groups if stems)
-    config = _receipt_config(directory / f"{stems[0]}.complete.json", out, work)
+    config, context = _receipt_config(directory / f"{stems[0]}.complete.json", out, work)
     _check_assertions(config, assertions)
-    context = BuildContext.from_config(config)
+    requested_version = assertions.get("dataset_version")
+    recorded_policy = context.document["settings"].get("deduplication_policy")
+    output_version = requested_version or (
+        config.dataset_version
+        if recorded_policy == DEDUPLICATION_POLICY
+        else Config().dataset_version
+    )
+    return config.with_overrides(dataset_version=output_version), context
+
+
+def _assemble_verified_inputs(
+    groups: list[tuple[Path, list[str]]],
+    config: Config,
+    context: BuildContext,
+    work: Path,
+) -> AssemblyInputs:
+    """Reconcile every verified shard against the pinned inventory and stage it."""
     assert config.source_revision is not None  # The pinned context validates this above.
     outcomes = _verified_outcomes(groups, context)
     selected = [outcome.stem for outcome in outcomes]
@@ -96,16 +123,29 @@ def _reject_duplicate_assignments(seen: set[str], stems: set[str]) -> None:
         raise ValueError(f"duplicate region worker assignments: {duplicate}")
 
 
-def _receipt_config(path: Path, out: Path, work: Path) -> Config:
-    """Reconstruct every data setting, then demand an exact current-schema context."""
+def _receipt_config(path: Path, out: Path, work: Path) -> tuple[Config, BuildContext]:
+    """Reconstruct settings and accept only finalization-only context changes."""
     try:
         document = json.loads(path.read_text())["context"]
         config = _context_config(document, out, work)
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise ValueError(f"unverifiable completion receipt {path}: {error}") from error
-    if BuildContext.from_config(config).as_dict() != document:
+    if not _compatible_receipt_context(BuildContext.from_config(config).as_dict(), document):
         raise ValueError(f"unverifiable completion receipt {path}: incompatible pipeline contract")
-    return config
+    return config, BuildContext.from_document(document)
+
+
+def _compatible_receipt_context(expected: dict[str, Any], recorded: dict[str, Any]) -> bool:
+    """Permit version and provenance changes made only during finalization."""
+    finalization_settings = {"dataset_version", "code_repository", "deduplication_policy"}
+    if (set(expected) != set(recorded)) or any(
+        expected[key] != recorded[key] for key in set(expected) - {"settings"}
+    ):
+        return False
+    expected_settings = expected["settings"]
+    recorded_settings = recorded["settings"]
+    keys = (set(expected_settings) | set(recorded_settings)) - finalization_settings
+    return all(expected_settings.get(key) == recorded_settings.get(key) for key in keys)
 
 
 def _context_config(document: dict[str, Any], out: Path, work: Path) -> Config:
@@ -134,6 +174,10 @@ def _context_config(document: dict[str, Any], out: Path, work: Path) -> Config:
 
 def _check_assertions(config: Config, assertions: dict[str, Any]) -> None:
     for name, value in assertions.items():
+        if name == "dataset_version":
+            # The region shards contain labelled examples; the release version
+            # and finalization policy can change without raster recomputation.
+            continue
         actual = getattr(config, name)
         if value is not None and value != actual:
             option = {"source_revision": "revision"}.get(name, name).replace("_", "-")
