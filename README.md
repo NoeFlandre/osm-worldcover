@@ -22,7 +22,9 @@ here.
 2. Keep the polygon only if **one class covers at least 80%** of it.
 3. Emit one example per `(polygon, source text)` pair.
 4. Keep non-empty description tags (at least 1 word); require at least 10 words
-   for Wikipedia/Wikivoyage and website text. Drop exact text/label duplicates.
+   for Wikipedia/Wikivoyage and website text. Remove repeated rows only when
+   polygon identity, normalized text and WorldCover label all match. Identical
+   text on distinct polygons is retained and cross-split collisions are reported.
 5. Split on H3 cells so nearby places never straddle train/validation/test.
 
 ## Use
@@ -32,9 +34,9 @@ uv sync
 
 # Use --source description or --source website for the other recipes.
 uv run owc build --source wikidata --region luxembourg-latest --out data/out
-uv run owc verify data/out/v1.0.0
-uv run owc info data/out/v1.0.0
-uv run owc publish data/out/v1.0.0 NoeFlandre/osm-wikidata-worldcover
+uv run owc verify data/out/v1.1.0
+uv run owc info data/out/v1.1.0
+uv run owc publish data/out/v1.1.0 NoeFlandre/osm-wikidata-worldcover
 ```
 
 For a global run, split disjoint region lists across processes and assemble
@@ -72,7 +74,9 @@ Every published build is checked against these, and fails if any breaks:
 - No polygon or source document appears in more than one split.
 - Every label is one of the 11 real WorldCover classes — never no-data.
 - Every row's dominant class covers at least the configured threshold.
-- No two rows share both text and label.
+- No two rows share the same polygon identity, normalized text and label.
+- Identical text across different polygons may remain, including across splits;
+  those cross-split collisions are reported as diagnostics.
 - Rebuilding the same inputs produces byte-identical files.
 
 ## Design

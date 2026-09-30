@@ -1,74 +1,109 @@
-"""Report the CRAP score of every function.
+"""Report CRAP scores for every source and utility function.
 
 CRAP = complexity^2 * (1 - coverage)^3 + complexity
 
-It punishes code that is both convoluted and untested, and forgives code that
-is one or the other: a simple function needs little testing to score well, and
-a complex one can still pass if it is thoroughly covered.
-
-Per-function coverage is derived by intersecting each function's line range
-(from radon) with the lines coverage.py recorded as executed.
+Per-function coverage intersects each Radon function span with the executable
+lines recorded by coverage.py. Functions missing from the coverage report are
+treated as uncovered so utility code cannot disappear from the quality gate.
 """
 
 import json
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 THRESHOLD = 6.0
 
 
 def crap(complexity: int, coverage: float) -> float:
+    """Return the CRAP score for one function."""
     return complexity**2 * (1.0 - coverage) ** 3 + complexity
 
 
-def blocks(target: str) -> list[dict]:
+def blocks(targets: Sequence[str]) -> list[dict[str, Any]]:
+    """Return every Radon block from all requested source roots."""
     raw = subprocess.run(
-        [sys.executable, "-m", "radon", "cc", "-j", target],
+        [sys.executable, "-m", "radon", "cc", "-j", *targets],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
-    found = []
-    for path, items in json.loads(raw).items():
-        if isinstance(items, dict) and items.get("error"):
-            continue
-        for item in items:
-            found.append({**item, "path": path})
-    return found
+    report = json.loads(raw)
+    _reject_radon_errors(report)
+    return [{**item, "path": path} for path, items in report.items() for item in items]
+
+
+def _reject_radon_errors(report: Mapping[str, Any]) -> None:
+    errors = [f"{path}: {item['error']}" for path, item in report.items() if "error" in item]
+    if errors:
+        raise ValueError("Radon could not measure: " + "; ".join(errors))
+
+
+def _coverage(block: Mapping[str, Any], files: Mapping[str, Any]) -> float:
+    """Return measured line coverage, counting an absent report as zero."""
+    file_data = files.get(block["path"])
+    span = set(range(block["lineno"], block["endline"] + 1))
+    if file_data is None:
+        return 0.0
+    executed = set(file_data["executed_lines"]) & span
+    measured = (set(file_data["executed_lines"]) | set(file_data["missing_lines"])) & span
+    return len(executed) / len(measured) if measured else 0.0
+
+
+def _score_rows(measured: Sequence[dict[str, Any]], files: Mapping[str, Any]) -> list[tuple]:
+    """Score every function Radon found, including functions with no test data."""
+    rows = []
+    for block in measured:
+        coverage = _coverage(block, files)
+        score = crap(block["complexity"], coverage)
+        rows.append((score, block["path"], block["name"], block["complexity"], coverage))
+    return sorted(rows, reverse=True)
+
+
+def _print_report(rows: Sequence[tuple]) -> int:
+    """Print the highest scores and every strict-gate violation."""
+    violations = [row for row in rows if row[0] >= THRESHOLD]
+    _print_rows(rows[:15])
+    _print_violations(violations)
+    _print_summary(rows, violations)
+    return 1 if violations else 0
+
+
+def _print_rows(rows: Sequence[tuple]) -> None:
+    """Print the ranked report head."""
+    print(f"{'CRAP':>7}  {'cplx':>4}  {'cov':>6}  location")
+    for score, path, name, complexity, coverage in rows[:15]:
+        print(f"{score:7.2f}  {complexity:4d}  {coverage:6.1%}  {path}:{name}")
+
+
+def _print_violations(violations: Sequence[tuple]) -> None:
+    """List every score that fails the strict limit."""
+    if violations:
+        print("\nCRAP scores at or above the strict limit:")
+        for score, path, name, complexity, coverage in violations:
+            print(f"{score:7.2f}  {complexity:4d}  {coverage:6.1%}  {path}:{name}")
+
+
+def _print_summary(rows: Sequence[tuple], violations: Sequence[tuple]) -> None:
+    """Report the maximum score, violation count, and the absence of exceptions."""
+    highest = rows[0][0] if rows else 0.0
+    print(
+        f"\nMeasured blocks: {len(rows)}; highest CRAP: {highest:.2f}; "
+        f"scores >= {THRESHOLD:.0f}: {len(violations)}; allowlisted exceptions: 0"
+    )
 
 
 def main() -> int:
-    target = sys.argv[1] if len(sys.argv) > 1 else "src"
+    """Measure all requested code roots using the complete coverage report."""
+    targets = sys.argv[1:] or ["src"]
     coverage_path = Path("coverage.json")
     if not coverage_path.exists():
         print("run: pytest --cov --cov-report=json", file=sys.stderr)
         return 2
-    data = json.loads(coverage_path.read_text())["files"]
-
-    rows = []
-    for block in blocks(target):
-        file_data = data.get(block["path"])
-        if file_data is None:
-            continue
-        executed = set(file_data["executed_lines"])
-        missing = set(file_data["missing_lines"])
-        span = set(range(block["lineno"], block["endline"] + 1))
-        run, gone = len(span & executed), len(span & missing)
-        if run + gone == 0:
-            continue
-        coverage = run / (run + gone)
-        score = crap(block["complexity"], coverage)
-        rows.append((score, block["path"], block["name"], block["complexity"], coverage))
-
-    rows.sort(reverse=True)
-    over = [r for r in rows if r[0] >= THRESHOLD]
-    print(f"{'CRAP':>7}  {'cplx':>4}  {'cov':>6}  location")
-    for score, path, name, complexity, coverage in rows[:15]:
-        flag = "!!" if score >= THRESHOLD else "  "
-        print(f"{score:7.2f}  {complexity:4d}  {coverage:6.1%}  {flag} {path}:{name}")
-    print(f"\n{len(rows)} blocks, {len(over)} at or above CRAP {THRESHOLD}")
-    return 1 if over else 0
+    files = json.loads(coverage_path.read_text())["files"]
+    return _print_report(_score_rows(blocks(targets), files))
 
 
 if __name__ == "__main__":

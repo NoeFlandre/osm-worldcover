@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from pytest_bdd import given, parsers, scenarios, then, when
 from shapely.geometry import Polygon
-from tests.conftest import write_raster
+from tests.conftest import FixedTiles, write_raster
 
 from osm_worldcover.adapters.source import RegionTables
 from osm_worldcover.config import Config
@@ -41,17 +41,6 @@ def world(tmp_path: Path) -> World:
     state = World()
     state.scratch = tmp_path / "run"
     return state
-
-
-class FixedTiles:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def ensure(self, tile):
-        return self.path
-
-    def discard(self, tile) -> None:
-        return None
 
 
 def add_polygon(world: World, geom: Polygon, index: int = 0, region: str = "alpha") -> str:

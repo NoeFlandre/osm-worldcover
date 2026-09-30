@@ -71,6 +71,11 @@ class BuildContext:
             }
         )
 
+    @classmethod
+    def from_document(cls, document: Mapping[str, Any]) -> "BuildContext":
+        """Restore the exact context recorded by a verified region receipt."""
+        return cls(json.loads(_canonical(dict(document))))
+
     @property
     def fingerprint(self) -> str:
         """Stable identity independent of mapping order and scratch paths."""

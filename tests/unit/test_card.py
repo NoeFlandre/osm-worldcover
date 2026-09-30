@@ -128,16 +128,16 @@ def test_card_documents_the_leakage_guarantees() -> None:
     assert "leak" in text or "split" in text
 
 
-def test_card_exposes_short_text_dedup_attrition_and_split_tradeoff() -> None:
+def test_card_exposes_record_deduplication_and_cross_split_text_diagnostics() -> None:
     manifest = {
         **MANIFEST,
-        "deduplication": {"duplicate_examples": 3},
+        "deduplication": {"duplicate_polygon_text_label_records": 3},
         "deduplication_analysis": {
-            "duplicate_text_label_groups": 2,
-            "duplicate_rows_removed": 3,
-            "duplicate_groups_crossing_splits": 1,
-            "duplicate_rows_removed_from_cross_split_groups": 2,
-            "duplicate_rows_removed_by_text_words": {
+            "duplicate_polygon_text_label_groups": 2,
+            "duplicate_records_removed": 3,
+            "duplicate_record_groups_crossing_splits": 0,
+            "duplicate_records_removed_from_cross_split_groups": 0,
+            "duplicate_records_removed_by_text_words": {
                 "1": 1,
                 "2": 0,
                 "3": 0,
@@ -149,14 +149,21 @@ def test_card_exposes_short_text_dedup_attrition_and_split_tradeoff() -> None:
                 "9": 0,
                 "10+": 2,
             },
+            "retained_identical_text_label_groups": 2,
+            "retained_identical_text_label_rows": 5,
+            "retained_identical_text_label_cross_split_groups": 1,
+            "retained_identical_text_label_cross_split_rows": 3,
+            "identical_text_cross_split_groups": 2,
+            "identical_text_cross_split_rows": 3,
         },
     }
 
     text = render(manifest)
 
     assert "1 word: 1" in text
-    assert "duplicate groups crossed the spatial split assignments" in text
-    assert "valid repeated short descriptions on distinct polygons" in text
+    assert "polygon identity, normalized text and WorldCover label" in text
+    assert "2 identical-text groups span splits, involving 3 rows" in text
+    assert "not removed solely because text matches across polygons" in text
 
 
 def test_card_is_deterministic() -> None:

@@ -64,8 +64,13 @@ def test_too_short_text_is_rejected() -> None:
     assert Check.UNUSABLE_TEXT in checks_in([row(text="tiny")])
 
 
-def test_exact_duplicate_text_and_label_is_rejected() -> None:
+def test_identical_text_and_label_on_distinct_polygons_is_allowed() -> None:
     rows = [row(polygon_id="p1", document_id="d1"), row(polygon_id="p2", document_id="d2")]
+    assert Check.DUPLICATE_EXAMPLE not in checks_in(rows)
+
+
+def test_exact_duplicate_polygon_text_and_label_is_rejected() -> None:
+    rows = [row(polygon_id="p1", document_id="d1"), row(polygon_id="p1", document_id="d2")]
     assert Check.DUPLICATE_EXAMPLE in checks_in(rows)
 
 

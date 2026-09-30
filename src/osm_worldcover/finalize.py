@@ -6,8 +6,8 @@ least one of them wrong:
 * Geofabrik's regional extracts overlap, so one OSM object appears in several
   regions under different ``polygon_id`` values. Those are the *same* object,
   and one region is chosen for all of its documents.
-* Distinct objects can carry byte-identical articles under the same label,
-  which would let a model score on text it had memorised.
+* Distinct polygons can carry byte-identical text and labels; these remain
+  separate examples, with cross-split collisions reported as diagnostics.
 * One article can describe several distant places. Those fall in different
   cells and therefore different splits, which would put the document in train
   *and* test.
@@ -52,7 +52,7 @@ class StreamedBuild:
     manifest: dict[str, Any]
     report: ValidationReport
     duplicates_across_regions: int = 0
-    duplicate_examples: int = 0
+    duplicate_records: int = 0
     documents_split_across_splits: int = 0
 
 
@@ -94,7 +94,7 @@ def finalize_shards(
         manifest=manifest,
         report=report,
         duplicates_across_regions=dropped["duplicate_objects_across_regions"],
-        duplicate_examples=dropped["duplicate_examples"],
+        duplicate_records=dropped["duplicate_polygon_text_label_records"],
         documents_split_across_splits=dropped["documents_split_across_splits"],
     )
 
@@ -202,15 +202,15 @@ def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int], dict[str, Any]]:
         """
     )
     after_objects = _count(connection, "SELECT count(*) FROM objects")
-    analysis = _duplicate_text_analysis(connection)
+    analysis = _deduplication_analysis(connection)
 
-    # One row per (text, label).
+    # Remove only repeated records for the same stable polygon, text and label.
     connection.execute(
         """
         CREATE TEMP TABLE examples AS
-        SELECT * EXCLUDE (_rank, _dedup_key) FROM (
+        SELECT * EXCLUDE (_rank) FROM (
             SELECT *, row_number() OVER (
-                PARTITION BY _dedup_key ORDER BY polygon_id, document_id
+                PARTITION BY polygon_id, _dedup_key ORDER BY document_id
             ) AS _rank
             FROM objects
         ) WHERE _rank = 1
@@ -236,6 +236,7 @@ def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int], dict[str, Any]]:
         """
     )
     after = _count(connection, "SELECT count(*) FROM kept")
+    analysis.update(_retained_text_diagnostics(connection))
     connection.execute("DROP TABLE objects")
     connection.execute("DROP TABLE examples")
 
@@ -243,21 +244,21 @@ def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int], dict[str, Any]]:
         connection,
         {
             "duplicate_objects_across_regions": before - after_objects,
-            "duplicate_examples": after_objects - after_examples,
+            "duplicate_polygon_text_label_records": after_objects - after_examples,
             "documents_split_across_splits": after_examples - after,
         },
         analysis,
     )
 
 
-def _duplicate_text_analysis(connection: Any) -> dict[str, Any]:
-    """Measure exact text-label dedup attrition before rows are collapsed."""
+def _deduplication_analysis(connection: Any) -> dict[str, Any]:
+    """Measure repeated records removed under the polygon-scoped identity key."""
     summary = connection.execute(
         """
         WITH grouped AS (
-            SELECT _dedup_key, min(text_words) AS text_words, count(*) AS row_count,
+            SELECT polygon_id, _dedup_key, min(text_words) AS text_words, count(*) AS row_count,
                    count(DISTINCT split) AS split_count
-            FROM objects GROUP BY _dedup_key
+            FROM objects GROUP BY polygon_id, _dedup_key
         ), duplicates AS (
             SELECT *, row_count - 1 AS removed FROM grouped WHERE row_count > 1
         )
@@ -272,8 +273,9 @@ def _duplicate_text_analysis(connection: Any) -> dict[str, Any]:
         for words, rows in connection.execute(
             """
             WITH grouped AS (
-                SELECT _dedup_key, min(text_words) AS text_words, count(*) AS row_count
-                FROM objects GROUP BY _dedup_key
+                SELECT polygon_id, _dedup_key, min(text_words) AS text_words,
+                       count(*) AS row_count
+                FROM objects GROUP BY polygon_id, _dedup_key
             )
             SELECT CASE WHEN text_words < 10 THEN cast(text_words AS varchar) ELSE '10+'
                        END AS length_bucket,
@@ -284,14 +286,52 @@ def _duplicate_text_analysis(connection: Any) -> dict[str, Any]:
         ).fetchall()
     }
     return {
-        "duplicate_text_label_groups": int(summary[0]),
-        "duplicate_rows_removed": int(summary[1]),
-        "duplicate_groups_crossing_splits": int(summary[2]),
-        "duplicate_rows_removed_from_cross_split_groups": int(summary[3]),
-        "duplicate_rows_removed_by_text_words": {
+        "duplicate_polygon_text_label_groups": int(summary[0]),
+        "duplicate_records_removed": int(summary[1]),
+        "duplicate_record_groups_crossing_splits": int(summary[2]),
+        "duplicate_records_removed_from_cross_split_groups": int(summary[3]),
+        "duplicate_records_removed_by_text_words": {
             **{str(words): by_length.get(str(words), 0) for words in range(1, 10)},
             "10+": by_length.get("10+", 0),
         },
+    }
+
+
+def _retained_text_diagnostics(connection: Any) -> dict[str, int]:
+    """Count repeated text that remains, including text shared across splits."""
+    label_groups = connection.execute(
+        """
+        WITH grouped AS (
+            SELECT _dedup_key, count(*) AS row_count, count(DISTINCT split) AS split_count
+            FROM kept GROUP BY _dedup_key
+        )
+        SELECT count(*), coalesce(sum(row_count), 0),
+               count(*) FILTER (WHERE split_count > 1),
+               coalesce(sum(row_count) FILTER (WHERE split_count > 1), 0)
+        FROM grouped WHERE row_count > 1
+        """
+    ).fetchone()
+    text_groups = connection.execute(
+        r"""
+        WITH normalized AS (
+            SELECT sha256(regexp_replace(trim(text), '\s+', ' ', 'g')) AS text_key, split
+            FROM kept
+        ), grouped AS (
+            SELECT text_key, count(*) AS row_count, count(DISTINCT split) AS split_count
+            FROM normalized GROUP BY text_key
+        )
+        SELECT count(*) FILTER (WHERE split_count > 1),
+               coalesce(sum(row_count) FILTER (WHERE split_count > 1), 0)
+        FROM grouped
+        """
+    ).fetchone()
+    return {
+        "retained_identical_text_label_groups": int(label_groups[0]),
+        "retained_identical_text_label_rows": int(label_groups[1]),
+        "retained_identical_text_label_cross_split_groups": int(label_groups[2]),
+        "retained_identical_text_label_cross_split_rows": int(label_groups[3]),
+        "identical_text_cross_split_groups": int(text_groups[0]),
+        "identical_text_cross_split_rows": int(text_groups[1]),
     }
 
 
@@ -303,7 +343,8 @@ def _write_splits(connection: Any, target: Path) -> tuple[list[Path], int]:
     for split in manifest_module.SPLIT_ORDER:
         path = target / f"{split}.parquet"
         reader = connection.execute(
-            "SELECT * FROM kept WHERE split = ? ORDER BY polygon_id, document_id",
+            "SELECT * EXCLUDE (_dedup_key) FROM kept "
+            "WHERE split = ? ORDER BY polygon_id, document_id",
             [split],
         ).to_arrow_reader()
         rows += write_batches(reader, path)

@@ -107,15 +107,44 @@ def test_cross_region_dedup_is_deterministic(shards, tmp_path) -> None:
     assert kept == ["belgium"]
 
 
-def test_identical_text_and_label_collapses(shards, tmp_path) -> None:
-    shard(shards / "a.parquet", n=1, start=0, text="same text here " * 5)
-    shard(shards / "b.parquet", n=1, start=9, text="same text here " * 5)
+def test_identical_text_and_label_on_distinct_polygons_is_retained(shards, tmp_path) -> None:
+    shared = "same text here " * 5
+    shard(shards / "a.parquet", n=1, start=0, text=shared)
+    shard(
+        shards / "b.parquet",
+        n=1,
+        start=9,
+        region="belgium",
+        text=shared,
+        lat=-33.9,
+        lon=151.2,
+    )
     result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
+    assert result.rows == 2
+    assert result.duplicate_records == 0
+    assert result.manifest["deduplication_analysis"]["retained_identical_text_label_groups"] == 1
+
+
+def test_repeated_records_of_the_same_polygon_text_and_label_are_removed(shards, tmp_path) -> None:
+    path = shards / "a.parquet"
+    shard(path, n=2, start=0, text=TEXT)
+    frame = pd.read_parquet(path)
+    frame.loc[1, "polygon_id"] = frame.loc[0, "polygon_id"]
+    frame.loc[1, "osm_id"] = frame.loc[0, "osm_id"]
+    frame.loc[1, "document_id"] = "same-polygon:second-document"
+    frame.to_parquet(path, index=False)
+
+    result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
+
     assert result.rows == 1
-    assert result.duplicate_examples == 1
+    assert result.duplicate_records == 1
+    assert result.manifest["deduplication"]["duplicate_polygon_text_label_records"] == 1
+    analysis = result.manifest["deduplication_analysis"]
+    assert analysis["duplicate_polygon_text_label_groups"] == 1
+    assert analysis["duplicate_records_removed"] == 1
 
 
-def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, tmp_path) -> None:
+def test_record_removals_and_retained_cross_split_text_are_reported(shards, tmp_path) -> None:
     shard(
         shards / "a.parquet",
         n=2,
@@ -139,18 +168,23 @@ def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, 
         start=20,
         text="one two three four five six seven eight nine ten eleven twelve",
     )
+    repeated = pd.read_parquet(shards / "c.parquet")
+    repeated.loc[1, "polygon_id"] = repeated.loc[0, "polygon_id"]
+    repeated.loc[1, "osm_id"] = repeated.loc[0, "osm_id"]
+    repeated.loc[1, "document_id"] = "same-polygon:second-document"
+    repeated.to_parquet(shards / "c.parquet", index=False)
 
     result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
 
     analysis = result.manifest["deduplication_analysis"]
-    assert result.duplicate_examples == 3
+    assert result.duplicate_records == 1
     assert analysis == {
-        "duplicate_text_label_groups": 2,
-        "duplicate_rows_removed": 3,
-        "duplicate_groups_crossing_splits": 1,
-        "duplicate_rows_removed_from_cross_split_groups": 2,
-        "duplicate_rows_removed_by_text_words": {
-            "1": 2,
+        "duplicate_polygon_text_label_groups": 1,
+        "duplicate_records_removed": 1,
+        "duplicate_record_groups_crossing_splits": 0,
+        "duplicate_records_removed_from_cross_split_groups": 0,
+        "duplicate_records_removed_by_text_words": {
+            "1": 0,
             "2": 0,
             "3": 0,
             "4": 0,
@@ -161,6 +195,12 @@ def test_short_text_dedup_attrition_and_cross_split_groups_are_reported(shards, 
             "9": 0,
             "10+": 1,
         },
+        "retained_identical_text_label_groups": 1,
+        "retained_identical_text_label_rows": 3,
+        "retained_identical_text_label_cross_split_groups": 1,
+        "retained_identical_text_label_cross_split_rows": 3,
+        "identical_text_cross_split_groups": 1,
+        "identical_text_cross_split_rows": 3,
     }
 
 
@@ -253,8 +293,8 @@ def test_split_writes_enable_large_arrow_string_buffers(tmp_path) -> None:
     try:
         connection.execute(
             "CREATE TEMP TABLE kept AS "
-            "SELECT * FROM (VALUES ('train', 'p1', 'd1')) "
-            "AS rows(split, polygon_id, document_id)"
+            "SELECT * FROM (VALUES ('train', 'p1', 'd1', 'key')) "
+            "AS rows(split, polygon_id, document_id, _dedup_key)"
         )
 
         paths, rows = _write_splits(connection, tmp_path)
@@ -294,8 +334,8 @@ def test_shards_are_never_all_held_in_memory(shards, tmp_path, monkeypatch) -> N
 def linked(path, polygon_ids, document_id, lats, lons, region="alpha", codes=None):
     """Rows sharing one document across several polygons.
 
-    Distinct labels matter: identical text under one label is collapsed by the
-    duplicate rule, which would mask the leak rather than fix it.
+    Rows share one document across polygons to exercise its one-home-split rule.
+    Identical text and labels on distinct polygons remain separate records.
     """
     n = len(polygon_ids)
     codes = codes or [10] * n
