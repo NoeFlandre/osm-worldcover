@@ -50,7 +50,7 @@ def build(
     keep_tiles: Annotated[
         bool, typer.Option(help="Keep downloaded tiles instead of discarding them.")
     ] = False,
-    dataset_version: Annotated[str, typer.Option(help="Version of the output.")] = "1.0.0",
+    dataset_version: Annotated[str, typer.Option(help="Version of the output.")] = "1.1.0",
 ) -> None:
     """Build the dataset and write it to disk."""
     config = _build_config(
@@ -130,7 +130,7 @@ def assemble(
     own shards -- can be assembled once, in one place. By default all settings
     come from matching completion receipts; explicit options must agree. The
     pinned source inventory is checked, and incomplete subsets are marked as
-    such. Legacy recovery uses wikidata/0.8/1.0.0 defaults and never proves
+    such. Legacy recovery uses wikidata/0.8/1.1.0 defaults and never proves
     whole-source completeness.
     """
     try:
@@ -195,7 +195,7 @@ def _assemble_unverified(
         out_dir=out,
         threshold=threshold if threshold is not None else 0.8,
         source_revision=revision,
-        dataset_version=dataset_version if dataset_version is not None else "1.0.0",
+        dataset_version=dataset_version if dataset_version is not None else "1.1.0",
     )
     combined = _gather(shard_dirs, work)
     return finalize_shards(

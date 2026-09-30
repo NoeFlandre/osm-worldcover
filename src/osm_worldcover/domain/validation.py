@@ -83,7 +83,7 @@ def validate(
     examples: defaultdict[Check, list[str]] = defaultdict(list)
     splits_by_polygon: defaultdict[str, set[str]] = defaultdict(set)
     splits_by_document: defaultdict[str, set[str]] = defaultdict(set)
-    seen_keys: set[str] = set()
+    seen_keys: set[tuple[str, str]] = set()
     total = 0
 
     for r in rows:
@@ -111,7 +111,7 @@ def _violations(tally: Counter[Check], examples: Mapping[Check, list[str]]) -> l
 
 
 def _row_violations(
-    r: Mapping[str, Any], threshold: float, min_words: int, seen_keys: set[str]
+    r: Mapping[str, Any], threshold: float, min_words: int, seen_keys: set[tuple[str, str]]
 ) -> Iterable[tuple[Check, str]]:
     """Yield the guarantees a single row breaks."""
     polygon_id = str(r["polygon_id"])
@@ -132,13 +132,13 @@ def _label_violations(
 
 
 def _text_violations(
-    r: Mapping[str, Any], min_words: int, seen_keys: set[str], polygon_id: str
+    r: Mapping[str, Any], min_words: int, seen_keys: set[tuple[str, str]], polygon_id: str
 ) -> Iterable[tuple[Check, str]]:
     """Yield violations of the text guarantees, recording what has been seen."""
     text = str(r["text"])
     if not is_usable(text, min_words):
         yield Check.UNUSABLE_TEXT, polygon_id
-    key = dedup_key(text, str(int(r["worldcover_code"])))
+    key = (polygon_id, dedup_key(text, str(int(r["worldcover_code"]))))
     if key in seen_keys:
         yield Check.DUPLICATE_EXAMPLE, polygon_id
     seen_keys.add(key)

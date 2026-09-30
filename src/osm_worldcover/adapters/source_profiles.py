@@ -5,18 +5,27 @@ geometry and turn source-specific text fields into the canonical polygon,
 link, and document tables consumed by the shared pipeline.
 """
 
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pandas as pd
 import pyarrow.parquet as pq
 import shapely
 
-__all__ = ["NormalizedRegion", "load_description_region", "load_website_region"]
+__all__ = [
+    "DOCUMENT_COLUMNS",
+    "LINK_COLUMNS",
+    "POLYGON_COLUMNS",
+    "NormalizedRegion",
+    "load_description_region",
+    "load_website_region",
+]
 
-_POLYGON_COLUMNS = (
+#: Canonical table columns shared by every source layout. Normalized document
+#: rows add the source-specific project value after these base columns.
+POLYGON_COLUMNS: Final[list[str]] = [
     "polygon_id",
     "region",
     "osm_type",
@@ -28,9 +37,15 @@ _POLYGON_COLUMNS = (
     "geometry",
     "area_m2",
     "source_pbf",
-)
-_LINK_COLUMNS = ("polygon_id", "document_id", "project", "language", "link_sources")
-_DOCUMENT_COLUMNS = (
+]
+LINK_COLUMNS: Final[list[str]] = [
+    "polygon_id",
+    "document_id",
+    "project",
+    "language",
+    "link_sources",
+]
+DOCUMENT_COLUMNS: Final[list[str]] = [
     "document_id",
     "language",
     "title",
@@ -40,8 +55,8 @@ _DOCUMENT_COLUMNS = (
     "article_length_words",
     "fetch_status",
     "license",
-    "project",
-)
+]
+_NORMALIZED_DOCUMENT_COLUMNS: Final[tuple[str, ...]] = (*DOCUMENT_COLUMNS, "project")
 
 _DESCRIPTION_COLUMNS = (
     "source_pbf",
@@ -130,7 +145,7 @@ def _description_polygons(raw: pd.DataFrame, stem: str) -> pd.DataFrame:
             "area_m2": raw["area_m2"].tolist(),
             "source_pbf": source_pbf,
         }
-    )[list(_POLYGON_COLUMNS)]
+    )[POLYGON_COLUMNS]
 
 
 def _description_documents(raw: pd.DataFrame, stem: str) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -172,7 +187,7 @@ def _description_documents(raw: pd.DataFrame, stem: str) -> tuple[pd.DataFrame, 
                     "project": "description",
                 }
             )
-    return _frame(links, _LINK_COLUMNS), _frame(documents, _DOCUMENT_COLUMNS)
+    return _frame(links, LINK_COLUMNS), _frame(documents, _NORMALIZED_DOCUMENT_COLUMNS)
 
 
 def _website_polygons(raw: pd.DataFrame, stem: str) -> pd.DataFrame:
@@ -193,7 +208,7 @@ def _website_polygons(raw: pd.DataFrame, stem: str) -> pd.DataFrame:
             "source_pbf": raw["source_pbf"].tolist(),
         }
     )
-    return polygons[list(_POLYGON_COLUMNS)]
+    return polygons[POLYGON_COLUMNS]
 
 
 def _website_documents(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -233,7 +248,7 @@ def _website_documents(raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
                     "project": project,
                 }
             )
-    return _frame(links, _LINK_COLUMNS), _frame(documents, _DOCUMENT_COLUMNS)
+    return _frame(links, LINK_COLUMNS), _frame(documents, _NORMALIZED_DOCUMENT_COLUMNS)
 
 
 def _polygon_id(stem: str, record: Mapping[str, Any]) -> str:
@@ -298,7 +313,7 @@ def _region_from_stem(stem: str) -> str:
     return stem.removesuffix("-latest")
 
 
-def _read(path: Path, columns: tuple[str, ...]) -> pd.DataFrame:
+def _read(path: Path, columns: Sequence[str]) -> pd.DataFrame:
     """Read only needed columns and tolerate old/partial local fixtures."""
     if not path.exists():
         return _empty_columns(columns)
@@ -307,19 +322,19 @@ def _read(path: Path, columns: tuple[str, ...]) -> pd.DataFrame:
     return _fill_missing(frame, columns)
 
 
-def _empty_columns(columns: tuple[str, ...]) -> pd.DataFrame:
+def _empty_columns(columns: Sequence[str]) -> pd.DataFrame:
     """Return an empty frame with a requested schema."""
     return pd.DataFrame({column: pd.Series(dtype="object") for column in columns})
 
 
-def _fill_missing(frame: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+def _fill_missing(frame: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
     """Add absent optional columns and apply the canonical order."""
     for missing in set(columns) - set(frame.columns):
         frame[missing] = pd.Series([None] * len(frame), dtype="object")
     return frame[list(columns)]
 
 
-def _frame(rows: list[dict[str, Any]], columns: tuple[str, ...]) -> pd.DataFrame:
+def _frame(rows: list[dict[str, Any]], columns: Sequence[str]) -> pd.DataFrame:
     """Return rows with a stable column order, including the empty case."""
     return pd.DataFrame(rows, columns=list(columns))
 
@@ -327,7 +342,7 @@ def _frame(rows: list[dict[str, Any]], columns: tuple[str, ...]) -> pd.DataFrame
 def _empty_region() -> NormalizedRegion:
     """Return empty canonical tables for a missing or empty source shard."""
     return NormalizedRegion(
-        pd.DataFrame(columns=list(_POLYGON_COLUMNS)),
-        pd.DataFrame(columns=list(_LINK_COLUMNS)),
-        pd.DataFrame(columns=list(_DOCUMENT_COLUMNS)),
+        pd.DataFrame(columns=POLYGON_COLUMNS),
+        pd.DataFrame(columns=LINK_COLUMNS),
+        pd.DataFrame(columns=_NORMALIZED_DOCUMENT_COLUMNS),
     )

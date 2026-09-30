@@ -76,14 +76,14 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["src/osm_worldcover"]
+source = ["src/osm_worldcover", "scripts"]
 branch = true
 
 [tool.mutmut]
 # The whole package is copied so imports resolve, but only the logic is
 # mutated: the adapters and CLI are thin shells over other people's I/O, where
 # a surviving mutant says more about the stub than about our tests.
-source_paths = ["src/osm_worldcover"]
+source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
     "*/adapters/*",
     "*/cli.py",

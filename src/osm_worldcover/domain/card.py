@@ -212,7 +212,10 @@ Every build is checked against these and fails if any breaks:
 - **Valid labels** — every label is one of the 11 real WorldCover classes;
   no-data is never a label.
 - **Dominance** — every row's class covers at least {threshold_pct}% of its polygon.
-- **No exact duplicates** — no two rows share both text and label.
+- **Polygon-scoped deduplication** — repeated rows are removed only when polygon
+  identity, normalized text and WorldCover label all match.
+- **Repeated text diagnostics** — identical text on distinct polygons is retained;
+  cross-split collisions are counted in the manifest and reported by the audit.
 - **Deterministic** — rebuilding the same inputs yields byte-identical files.
 """
 
@@ -261,6 +264,9 @@ def _provenance(
         f"- Maximum polygon area: {settings.get('max_polygon_area_m2')} m2\n",
         f"- Split seed: {settings.get('split_seed')},"
         f" H3 resolution {settings.get('h3_resolution')}\n",
+        "- Deduplication policy: repeated rows are removed only when polygon identity,"
+        " normalized text and WorldCover class match. Identical text across splits is"
+        " reported as a diagnostic.\n",
     ]
     lines.extend(_code_provenance(code_repository, processing))
     lines.extend(_rejection_table(rejections))
@@ -316,24 +322,24 @@ def _deduplication_table(deduplication: Mapping[str, int]) -> list[str]:
 
 
 def _deduplication_analysis(analysis: Mapping[str, Any]) -> list[str]:
-    """Make the repeated-text loss and split tradeoff visible in the card."""
+    """Show exact record removals and retained repeated-text diagnostics."""
     if not analysis:
         return []
-    by_length = analysis["duplicate_rows_removed_by_text_words"]
+    by_length = analysis["duplicate_records_removed_by_text_words"]
     short_summary = ", ".join(_short_word_counts(by_length)) or "none"
     short_total = _short_word_total(by_length)
     return [
-        "\n### Repeated text and split tradeoff\n\n",
-        f"The build collapsed {analysis['duplicate_text_label_groups']:,} exact text-label "
-        f"groups, removing {analysis['duplicate_rows_removed']:,} rows. Of those, "
+        "\n### Duplicate records and repeated text\n\n",
+        f"The build removed {analysis['duplicate_records_removed']:,} repeated records "
+        f"from {analysis['duplicate_polygon_text_label_groups']:,} groups with the same "
+        "polygon identity, normalized text and WorldCover label. Of those removed records, "
         f"{short_total:,} had fewer than 10 words ({short_summary}). "
-        f"{analysis['duplicate_groups_crossing_splits']:,} duplicate groups crossed "
-        "the spatial split assignments, accounting for "
-        f"{analysis['duplicate_rows_removed_from_cross_split_groups']:,} removed rows.\n\n",
-        "This can remove valid repeated short descriptions on distinct polygons; keeping "
-        "all of them could expose identical text and labels across splits. Spatial and "
-        "document split assignments are retained, and the complete counts are in "
-        "`manifest.json`.\n",
+        f"The release retains {analysis['retained_identical_text_label_groups']:,} "
+        "repeated normalized text-and-label groups on distinct polygon identities. "
+        f"{analysis['identical_text_cross_split_groups']:,} identical-text groups span "
+        f"splits, involving {analysis['identical_text_cross_split_rows']:,} rows. These "
+        "cross-split counts are diagnostics; rows are not removed solely because text "
+        "matches across polygons. The complete counts are in `manifest.json`.\n",
     ]
 
 

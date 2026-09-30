@@ -13,8 +13,8 @@ repositories.
 ```bash
 uv sync
 uv run owc build --source wikidata --region luxembourg-latest --out data/out
-uv run owc verify data/out/v1.0.0
-uv run owc info data/out/v1.0.0
+uv run owc verify data/out/v1.1.0
+uv run owc info data/out/v1.1.0
 ```
 
 Use `--source description` or `--source website` to select another source.

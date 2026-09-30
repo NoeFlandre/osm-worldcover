@@ -12,7 +12,7 @@ from typing import Any
 from osm_worldcover.accounting import BuildContext, processing_ledger
 from osm_worldcover.adapters import hub
 from osm_worldcover.build import ShardStore
-from osm_worldcover.config import Config
+from osm_worldcover.config import DEDUPLICATION_POLICY, Config
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +37,14 @@ def verified_assembly(
     directory, stems = next((directory, stems) for directory, stems in groups if stems)
     config, receipt_context = _receipt_config(directory / f"{stems[0]}.complete.json", out, work)
     _check_assertions(config, assertions)
-    context = BuildContext.from_config(config)
+    assembly_revision = BuildContext.from_config(config).document.get("code_revision")
+    context_document = receipt_context.as_dict()
+    context_document["code_revision"] = assembly_revision
+    context = BuildContext.from_document(context_document)
+    requested_version = assertions.get("dataset_version")
+    config = config.with_overrides(
+        dataset_version=_release_dataset_version(config, receipt_context, requested_version)
+    )
     assert config.source_revision is not None  # The pinned context validates this above.
     outcomes, code_revisions = _verified_outcomes(groups, receipt_context, legacy_code_revision)
     selected = [outcome.stem for outcome in outcomes]
@@ -55,6 +62,17 @@ def verified_assembly(
     rejections = _aggregate_rejections(outcomes)
     staged = _stage(groups, Path(work) / "verified-shards")
     return AssemblyInputs(config, staged, dict(sorted(rejections.items())), ledger)
+
+
+def _release_dataset_version(
+    config: Config, receipt_context: BuildContext, requested_version: str | None
+) -> str:
+    if requested_version:
+        return requested_version
+    recorded_policy = receipt_context.document["settings"].get("deduplication_policy")
+    if recorded_policy == DEDUPLICATION_POLICY:
+        return config.dataset_version
+    return Config().dataset_version
 
 
 def _verified_outcomes(
@@ -191,12 +209,14 @@ def _receipt_config(path: Path, out: Path, work: Path) -> tuple[Config, BuildCon
     return config, receipt_context
 
 
-_FINALIZATION_ONLY_SETTINGS = {"dataset_version", "deduplication_policy"}
+_FINALIZATION_ONLY_SETTINGS = {"dataset_version", "code_repository", "deduplication_policy"}
 
 
 def _contexts_compatible(expected: BuildContext, recorded: BuildContext) -> bool:
     expected_document = expected.as_dict()
     recorded_document = recorded.as_dict()
+    expected_document.pop("code_revision", None)
+    recorded_document.pop("code_revision", None)
     expected_document.pop("code_revision", None)
     recorded_document.pop("code_revision", None)
     for document in (expected_document, recorded_document):
@@ -239,6 +259,8 @@ def _context_config(document: dict[str, Any], out: Path, work: Path) -> Config:
 
 def _check_assertions(config: Config, assertions: dict[str, Any]) -> None:
     for name, value in assertions.items():
+        if name == "dataset_version":
+            continue
         actual = getattr(config, name)
         if value is not None and value != actual:
             option = {"source_revision": "revision"}.get(name, name).replace("_", "-")

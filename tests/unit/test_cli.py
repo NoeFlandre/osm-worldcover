@@ -40,8 +40,7 @@ def frame(n: int = 4) -> pd.DataFrame:
         {
             "polygon_id": [f"p{i}" for i in range(n)],
             "document_id": [f"d{i}" for i in range(n)],
-            # Distinct text per row: identical text under one label is a
-            # duplicate, which verify is right to reject.
+            # Distinct text per row keeps this fixture free of duplicate records.
             "text": [" ".join(["word"] * 20) + f" {i}" for i in range(n)],
             "worldcover_code": [10] * n,
             "worldcover_label": ["Tree cover"] * n,
@@ -289,8 +288,8 @@ def test_assemble_turns_shards_into_a_dataset(tmp_path) -> None:
         ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
     )
     assert outcome.exit_code == 0, outcome.output
-    assert (tmp_path / "out" / "v1.0.0" / "train.parquet").exists()
-    assert (tmp_path / "out" / "v1.0.0" / "manifest.json").exists()
+    assert (tmp_path / "out" / "v1.1.0" / "train.parquet").exists()
+    assert (tmp_path / "out" / "v1.1.0" / "manifest.json").exists()
 
 
 def test_assemble_accepts_several_shard_directories(tmp_path) -> None:
@@ -305,7 +304,7 @@ def test_assemble_accepts_several_shard_directories(tmp_path) -> None:
         cli.app, ["assemble", "--allow-unverified-shards", *dirs, "--out", str(tmp_path / "out")]
     )
     assert outcome.exit_code == 0, outcome.output
-    train = pd.read_parquet(tmp_path / "out" / "v1.0.0" / "train.parquet")
+    train = pd.read_parquet(tmp_path / "out" / "v1.1.0" / "train.parquet")
     assert len(train) >= 1
 
 
@@ -402,7 +401,7 @@ def test_assemble_reports_rejections_recorded_by_the_builders(tmp_path) -> None:
         ],
     )
     assert outcome.exit_code == 0, outcome.output
-    manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "out" / "v1.1.0" / "manifest.json").read_text())
     assert manifest["rejections"] == {"below_threshold": 12}
 
 
@@ -429,7 +428,7 @@ def test_assemble_sums_rejections_across_worker_directories(tmp_path) -> None:
         ],
     )
     assert outcome.exit_code == 0, outcome.output
-    manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "out" / "v1.1.0" / "manifest.json").read_text())
     assert manifest["rejections"] == {"below_threshold": 7}
 
 
@@ -463,7 +462,7 @@ def test_assemble_combines_directories_that_share_a_leaf_name(tmp_path) -> None:
         ],
     )
     assert outcome.exit_code == 0, outcome.output
-    manifest = json.loads((tmp_path / "out" / "v1.0.0" / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "out" / "v1.1.0" / "manifest.json").read_text())
     assert manifest["rejections"] == {"too_large": 2}
 
 
@@ -535,7 +534,7 @@ def assemble_args(tmp_path, *directories):
     ]
 
 
-def assembled_manifest(tmp_path, version="1.0.0"):
+def assembled_manifest(tmp_path, version="1.1.0"):
     return json.loads((tmp_path / "out" / f"v{version}" / "manifest.json").read_text())
 
 
@@ -548,6 +547,34 @@ def test_assemble_defaults_refuse_legacy_shards(tmp_path, monkeypatch) -> None:
     assert outcome.exit_code == 1
     assert "unverifiable completion receipt" in outcome.output
     assert not (tmp_path / "out").exists()
+
+
+def test_assemble_reuses_legacy_labeled_shards_for_new_finalization(tmp_path, monkeypatch):
+    directory = tmp_path / "shards"
+    config = Config(source="description", source_revision="a" * 40, dataset_version="1.0.0")
+    verified_shard(directory, config=config)
+    receipt = directory / "alpha.complete.json"
+    document = json.loads(receipt.read_text())
+    document["context"]["settings"].pop("deduplication_policy")
+    document["context"]["settings"]["code_repository"] = (
+        "https://github.com/NoeFlandre/osm-worldcover/tree/3ddd472e7deac10d116fd763cbf612e0d1a9c8db"
+    )
+    document["build_context_sha256"] = BuildContext.from_document(document["context"]).fingerprint
+    receipt.write_text(json.dumps(document))
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha"])
+
+    outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
+
+    assert outcome.exit_code == 0, outcome.output
+    manifest = assembled_manifest(tmp_path, "1.1.0")
+    assert manifest["settings"]["deduplication_policy"] == (
+        "polygon_id+normalized_text+worldcover_code"
+    )
+    assert manifest["processing"]["context"]["settings"]["dataset_version"] == "1.0.0"
+    assert "deduplication_policy" not in manifest["processing"]["context"]["settings"]
+    assert manifest["processing"]["context"]["settings"]["code_repository"].endswith(
+        "3ddd472e7deac10d116fd763cbf612e0d1a9c8db"
+    )
 
 
 def test_legacy_recovery_is_explicitly_unpublishable_without_network(tmp_path, monkeypatch):
@@ -682,7 +709,6 @@ def test_assemble_preserves_mixed_region_code_pins(tmp_path, monkeypatch):
         ("source", "wikidata"),
         ("threshold", "0.7"),
         ("revision", "b" * 40),
-        ("dataset-version", "9.0.0"),
     ],
 )
 def test_assemble_refuses_explicit_conflicting_settings(tmp_path, monkeypatch, option, value):
@@ -710,7 +736,7 @@ def test_assemble_accepts_matching_explicit_settings(tmp_path, monkeypatch):
             "--revision",
             "a" * 40,
             "--dataset-version",
-            "1.0.0",
+            "1.1.0",
         ],
     )
     assert outcome.exit_code == 0, outcome.output

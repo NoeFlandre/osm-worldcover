@@ -129,7 +129,7 @@ def build(tmp_path):
         "rejections": {},
         "deduplication": {
             "duplicate_objects_across_regions": 0,
-            "duplicate_examples": 0,
+            "duplicate_polygon_text_label_records": 0,
             "documents_split_across_splits": 0,
         },
     }
@@ -342,12 +342,24 @@ def test_invalid_release_never_contacts_hub(build, hub, edit, problem):
     assert not (build / RECEIPT_NAME).exists()
 
 
-def test_duplicate_text_label_rejected_before_hub_mutation(build, hub):
+def test_duplicate_polygon_text_label_record_is_rejected_before_hub_mutation(build, hub):
     train = pq.read_table(build / "train.parquet").to_pylist()[0]
-    _mutate_row(build, "test", text=train["text"])
-    with pytest.raises(PublicationError, match="duplicate_text_label"):
+    _mutate_row(build, "test", text=train["text"], polygon_id=train["polygon_id"])
+    with pytest.raises(PublicationError, match="duplicate_polygon_text_label_record"):
         publish_dataset(build, REPO_ID)
     assert not any(call[0] == "init" for call in hub.calls)
+
+
+def test_same_text_and_label_on_distinct_polygons_is_published_with_warning(build, hub):
+    train = pq.read_table(build / "train.parquet").to_pylist()[0]
+    _mutate_row(build, "test", text=train["text"])
+
+    publish_dataset(build, REPO_ID)
+
+    receipt = json.loads((build / RECEIPT_NAME).read_text())
+    assert any(
+        warning["code"] == "identical_text_cross_split" for warning in receipt["audit"]["warnings"]
+    )
 
 
 def test_cross_label_text_collisions_remain_warnings_in_receipt(build, hub):

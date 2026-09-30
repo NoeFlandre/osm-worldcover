@@ -91,11 +91,11 @@ def test_deduplication_counts_are_reported(counts) -> None:
     """How many rows were dropped, and why, belongs in the manifest."""
     counts.deduplication = {
         "duplicate_objects_across_regions": 30,
-        "duplicate_examples": 8821,
+        "duplicate_polygon_text_label_records": 8821,
         "documents_split_across_splits": 30,
     }
     reported = build(counts, settings={})["deduplication"]
-    assert reported["duplicate_examples"] == 8821
+    assert reported["duplicate_polygon_text_label_records"] == 8821
     assert reported["documents_split_across_splits"] == 30
 
 
@@ -106,21 +106,19 @@ def test_deduplication_defaults_to_empty(counts) -> None:
 
 def test_manifest_copies_nested_deduplication_analysis(counts) -> None:
     counts.deduplication_analysis = {
-        "duplicate_text_label_groups": 2,
-        "duplicate_rows_removed": 3,
-        "duplicate_groups_crossing_splits": 1,
-        "duplicate_rows_removed_from_cross_split_groups": 2,
-        "duplicate_rows_removed_by_text_words": {"1": 1, "10+": 2},
+        "duplicate_polygon_text_label_groups": 2,
+        "duplicate_records_removed": 3,
+        "duplicate_records_removed_by_text_words": {"1": 1, "10+": 2},
     }
 
     manifest = build(counts, settings={})
 
-    assert manifest["deduplication_analysis"]["duplicate_rows_removed_by_text_words"] == {
+    assert manifest["deduplication_analysis"]["duplicate_records_removed_by_text_words"] == {
         "1": 1,
         "10+": 2,
     }
-    counts.deduplication_analysis["duplicate_rows_removed_by_text_words"]["1"] = 9
-    assert manifest["deduplication_analysis"]["duplicate_rows_removed_by_text_words"]["1"] == 1
+    counts.deduplication_analysis["duplicate_records_removed_by_text_words"]["1"] = 9
+    assert manifest["deduplication_analysis"]["duplicate_records_removed_by_text_words"]["1"] == 1
 
 
 def test_manifest_keys_are_the_published_contract(counts) -> None:

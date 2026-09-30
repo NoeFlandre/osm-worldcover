@@ -22,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 
+from osm_worldcover.config import DEDUPLICATION_POLICY
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
 from osm_worldcover.domain.splits import SplitRatios, assign_cell
 
@@ -225,13 +226,22 @@ def _check_settings(settings: dict[str, Any], checks: _Checks) -> None:
 
 
 def _valid_setting_values(settings: dict[str, Any]) -> bool:
+    return _valid_processing_settings(settings) and _valid_release_settings(settings)
+
+
+def _valid_processing_settings(settings: dict[str, Any]) -> bool:
     return (
         _valid_dominance_threshold(settings)
         and _valid_word_threshold(settings)
         and _valid_h3_resolution(settings)
         and isinstance(settings["split_seed"], int)
-        and _has_provenance_settings(settings)
     )
+
+
+def _valid_release_settings(settings: dict[str, Any]) -> bool:
+    return settings.get(
+        "deduplication_policy", DEDUPLICATION_POLICY
+    ) == DEDUPLICATION_POLICY and _has_provenance_settings(settings)
 
 
 def _has_provenance_settings(settings: dict[str, Any]) -> bool:
@@ -308,26 +318,12 @@ def _check_context(ledger: dict, manifest: dict) -> None:
     _require(ledger["build_context_sha256"] == digest, "build context hash mismatch")
     version = ledger["schema_version"]
     _require(version in {1, 2}, "unsupported processing ledger schema")
-    if version == 1:
-        _require(context["settings"] == manifest["settings"], "build context settings mismatch")
-        return
     _require(
-        _compatible_release_settings(context["settings"], manifest["settings"]),
+        _processing_settings_match(context["settings"], manifest["settings"]),
         "build context settings mismatch",
     )
-    _check_code_provenance(ledger, context)
-
-
-_FINALIZATION_ONLY_SETTINGS = {"dataset_version", "deduplication_policy"}
-
-
-def _compatible_release_settings(context_settings: dict, release_settings: dict) -> bool:
-    context = dict(context_settings)
-    release = dict(release_settings)
-    for key in _FINALIZATION_ONLY_SETTINGS:
-        context.pop(key, None)
-        release.pop(key, None)
-    return context == release
+    if version == 2:
+        _check_code_provenance(ledger, context)
 
 
 def _check_code_provenance(ledger: dict, context: dict) -> None:
@@ -396,6 +392,13 @@ def _validated_code_group(group: object, expected_repository: str) -> list[str]:
 
 def _matches_processed_regions(regions: list[str], processed: list[str]) -> bool:
     return sorted(regions) == sorted(processed)
+
+
+def _processing_settings_match(processing: dict, release: dict) -> bool:
+    """Ignore fields assigned only when labelled shards become a release."""
+    finalization_settings = {"dataset_version", "code_repository", "deduplication_policy"}
+    keys = (set(processing) | set(release)) - finalization_settings
+    return all(processing.get(key) == release.get(key) for key in keys)
 
 
 _OUTCOME_COUNTS = (
@@ -475,24 +478,30 @@ def _check_deduplication_totals(ledger: dict, manifest: dict) -> None:
 
 
 def _check_deduplication_analysis(drops: dict, analysis: dict) -> None:
-    """Reconcile duplicate-text diagnostics with the rows actually removed."""
+    """Reconcile record-level removals and retained-text diagnostics."""
     if not analysis:
         return
     _check_deduplication_counters(analysis)
     by_length = _deduplication_length_counts(analysis)
     _require(
-        sum(by_length.values()) == analysis["duplicate_rows_removed"],
-        "duplicate-text length counters do not reconcile",
+        sum(by_length.values()) == analysis["duplicate_records_removed"],
+        "duplicate-record length counters do not reconcile",
     )
     _check_deduplication_cross_split(drops, analysis)
 
 
 def _check_deduplication_counters(analysis: dict) -> None:
     keys = (
-        "duplicate_text_label_groups",
-        "duplicate_rows_removed",
-        "duplicate_groups_crossing_splits",
-        "duplicate_rows_removed_from_cross_split_groups",
+        "duplicate_polygon_text_label_groups",
+        "duplicate_records_removed",
+        "duplicate_record_groups_crossing_splits",
+        "duplicate_records_removed_from_cross_split_groups",
+        "retained_identical_text_label_groups",
+        "retained_identical_text_label_rows",
+        "retained_identical_text_label_cross_split_groups",
+        "retained_identical_text_label_cross_split_rows",
+        "identical_text_cross_split_groups",
+        "identical_text_cross_split_rows",
     )
     _require(
         all(_nonnegative_integer(analysis.get(key)) for key in keys),
@@ -501,28 +510,29 @@ def _check_deduplication_counters(analysis: dict) -> None:
 
 
 def _deduplication_length_counts(analysis: dict) -> dict:
-    by_length = analysis.get("duplicate_rows_removed_by_text_words")
-    _require(isinstance(by_length, dict), "invalid duplicate-text length counters")
+    by_length = analysis.get("duplicate_records_removed_by_text_words")
+    _require(isinstance(by_length, dict), "invalid duplicate-record length counters")
     if not isinstance(by_length, dict):
-        raise TypeError("invalid duplicate-text length counters")
+        raise TypeError("invalid duplicate-record length counters")
     expected = {*(str(words) for words in range(1, 10)), "10+"}
     _require(
         set(by_length) == expected and all(_nonnegative_integer(v) for v in by_length.values()),
-        "invalid duplicate-text length counters",
+        "invalid duplicate-record length counters",
     )
     return by_length
 
 
 def _check_deduplication_cross_split(drops: dict, analysis: dict) -> None:
     _require(
-        analysis["duplicate_rows_removed"] == drops.get("duplicate_examples"),
-        "duplicate-text analysis does not match deduplication total",
+        analysis["duplicate_records_removed"] == drops.get("duplicate_polygon_text_label_records"),
+        "duplicate-record analysis does not match deduplication total",
     )
     _require(
-        analysis["duplicate_groups_crossing_splits"] <= analysis["duplicate_text_label_groups"]
-        and analysis["duplicate_rows_removed_from_cross_split_groups"]
-        <= analysis["duplicate_rows_removed"],
-        "duplicate-text split counters are inconsistent",
+        analysis["duplicate_record_groups_crossing_splits"]
+        <= analysis["duplicate_polygon_text_label_groups"]
+        and analysis["duplicate_records_removed_from_cross_split_groups"]
+        <= analysis["duplicate_records_removed"],
+        "duplicate-record split counters are inconsistent",
     )
 
 
@@ -735,8 +745,9 @@ def _check_global(connection, checks, strict_text_leakage) -> None:
             "SELECT polygon_id FROM release GROUP BY polygon_id "
             "HAVING count(DISTINCT (worldcover_code, lat, lon, polygon_area_m2, h3_cell)) > 1"
         ),
-        "duplicate_text_label": (
-            "SELECT hex(text_hash) FROM hashes GROUP BY text_hash, worldcover_code "
+        "duplicate_polygon_text_label_record": (
+            "SELECT polygon_id || ':' || hex(text_hash) || ':' || cast(worldcover_code AS varchar) "
+            "FROM hashes GROUP BY polygon_id, text_hash, worldcover_code "
             "HAVING count(*) > 1"
         ),
     }
@@ -776,8 +787,63 @@ def _check_manifest(connection, manifest, checks) -> None:
             checks.add(f"manifest_count_mismatch:{key}", counts)
     _check_distributions(connection, manifest, checks)
     _check_coverage(connection, manifest, checks)
+    _check_text_diagnostics(connection, manifest, checks)
     if checks.report.rows == 0:
         checks.add("empty_dataset")
+
+
+def _check_text_diagnostics(connection, manifest, checks) -> None:
+    """Reconcile retained text-collision counts with the published rows."""
+    analysis = manifest.get("deduplication_analysis", {})
+    if not analysis:
+        return
+    actual = _retained_text_diagnostics(connection)
+    keys = (
+        "retained_identical_text_label_groups",
+        "retained_identical_text_label_rows",
+        "retained_identical_text_label_cross_split_groups",
+        "retained_identical_text_label_cross_split_rows",
+        "identical_text_cross_split_groups",
+        "identical_text_cross_split_rows",
+    )
+    if any(analysis.get(key) != actual[key] for key in keys):
+        checks.add("deduplication_analysis_mismatch:retained_text")
+
+
+def _retained_text_diagnostics(connection) -> dict[str, int]:
+    label = connection.execute(
+        """
+        WITH grouped AS (
+            SELECT text_hash, worldcover_code, count(*) AS row_count,
+                   count(DISTINCT split) AS split_count
+            FROM hashes GROUP BY text_hash, worldcover_code
+        )
+        SELECT count(*) FILTER (WHERE row_count > 1),
+               coalesce(sum(row_count) FILTER (WHERE row_count > 1), 0),
+               count(*) FILTER (WHERE row_count > 1 AND split_count > 1),
+               coalesce(sum(row_count) FILTER (WHERE row_count > 1 AND split_count > 1), 0)
+        FROM grouped
+        """
+    ).fetchone()
+    text = connection.execute(
+        """
+        WITH grouped AS (
+            SELECT text_hash, count(*) AS row_count, count(DISTINCT split) AS split_count
+            FROM hashes GROUP BY text_hash
+        )
+        SELECT count(*) FILTER (WHERE split_count > 1),
+               coalesce(sum(row_count) FILTER (WHERE split_count > 1), 0)
+        FROM grouped
+        """
+    ).fetchone()
+    return {
+        "retained_identical_text_label_groups": int(label[0]),
+        "retained_identical_text_label_rows": int(label[1]),
+        "retained_identical_text_label_cross_split_groups": int(label[2]),
+        "retained_identical_text_label_cross_split_rows": int(label[3]),
+        "identical_text_cross_split_groups": int(text[0]),
+        "identical_text_cross_split_rows": int(text[1]),
+    }
 
 
 def _check_distributions(connection, manifest, checks) -> None:

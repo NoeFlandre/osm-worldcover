@@ -2,10 +2,10 @@
 
 import pandas as pd
 import pytest
+from tests.conftest import FixedTiles
 
 from osm_worldcover.adapters.source import RegionTables
 from osm_worldcover.config import Config
-from osm_worldcover.domain.tiling import Tile
 from osm_worldcover.pipeline import (
     RegionOutcome,
     label_polygons,
@@ -17,22 +17,6 @@ from osm_worldcover.pipeline import (
 SQUARE_GEOJSON = '{"type":"Polygon","coordinates":[[[0,0],[0,4],[4,4],[4,0],[0,0]]]}'
 LEFT_GEOJSON = '{"type":"Polygon","coordinates":[[[0,0],[0,4],[2,4],[2,0],[0,0]]]}'
 BOWTIE_GEOJSON = '{"type":"Polygon","coordinates":[[[0,0],[1,1],[1,0],[0,1],[0,0]]]}'
-
-
-class FixedTiles:
-    """A tile source that always serves one raster and records its calls."""
-
-    def __init__(self, path):
-        self.path = path
-        self.ensured: list[Tile] = []
-        self.discarded: list[Tile] = []
-
-    def ensure(self, tile: Tile):
-        self.ensured.append(tile)
-        return self.path
-
-    def discard(self, tile: Tile) -> None:
-        self.discarded.append(tile)
 
 
 def polygons_frame(**over) -> pd.DataFrame:
