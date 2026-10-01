@@ -1,0 +1,457 @@
+{
+  "status": "incomplete recovery backup; no merges or publication readiness implied",
+  "archives": [
+    {
+      "file": "00-owc-bundle-base-verify.mWksem.bundle",
+      "bytes": 501608,
+      "sha256": "1813adeda7e3fd9dc12c62fa0a9708a4b0e016161b482d73f21117955aaf22d3",
+      "parts": [
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0000",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0001",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0002",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0003",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0004",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0005",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0006",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0007",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0008",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0009",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0010",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0011",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0012",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0013",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0014",
+        "00-owc-bundle-base-verify.mWksem.bundle.part-0015"
+      ]
+    },
+    {
+      "file": "00-owc-bundle-base-verify.mWksem.tar.gz",
+      "bytes": 82,
+      "sha256": "0448f04e198db0c7dffedc6678a83941065fe3ccf0d7bb960cae8d1776b934b6",
+      "parts": [
+        "00-owc-bundle-base-verify.mWksem.tar.gz.part-0000"
+      ]
+    },
+    {
+      "file": "01-owc-finalizer-release-6ff3.bundle",
+      "bytes": 522627,
+      "sha256": "7ef37f95b55965625dea58a282f59642ffcd61d4a4a4b386acdbed2d8b260a40",
+      "parts": [
+        "01-owc-finalizer-release-6ff3.bundle.part-0000",
+        "01-owc-finalizer-release-6ff3.bundle.part-0001",
+        "01-owc-finalizer-release-6ff3.bundle.part-0002",
+        "01-owc-finalizer-release-6ff3.bundle.part-0003",
+        "01-owc-finalizer-release-6ff3.bundle.part-0004",
+        "01-owc-finalizer-release-6ff3.bundle.part-0005",
+        "01-owc-finalizer-release-6ff3.bundle.part-0006",
+        "01-owc-finalizer-release-6ff3.bundle.part-0007",
+        "01-owc-finalizer-release-6ff3.bundle.part-0008",
+        "01-owc-finalizer-release-6ff3.bundle.part-0009",
+        "01-owc-finalizer-release-6ff3.bundle.part-0010",
+        "01-owc-finalizer-release-6ff3.bundle.part-0011",
+        "01-owc-finalizer-release-6ff3.bundle.part-0012",
+        "01-owc-finalizer-release-6ff3.bundle.part-0013",
+        "01-owc-finalizer-release-6ff3.bundle.part-0014",
+        "01-owc-finalizer-release-6ff3.bundle.part-0015"
+      ]
+    },
+    {
+      "file": "01-owc-finalizer-release-6ff3.tar.gz",
+      "bytes": 297738,
+      "sha256": "480d9d9db0fd8efea3378855349b0d253666dd7793bd1a4ec9901d7f1ddfd80c",
+      "parts": [
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0000",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0001",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0002",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0003",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0004",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0005",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0006",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0007",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0008",
+        "01-owc-finalizer-release-6ff3.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "02-owc-integrated-review.bundle",
+      "bytes": 497993,
+      "sha256": "3431546ba18d54e1dc7a070878d9b6babafaa25234fad5fae235945ce4b59daa",
+      "parts": [
+        "02-owc-integrated-review.bundle.part-0000",
+        "02-owc-integrated-review.bundle.part-0001",
+        "02-owc-integrated-review.bundle.part-0002",
+        "02-owc-integrated-review.bundle.part-0003",
+        "02-owc-integrated-review.bundle.part-0004",
+        "02-owc-integrated-review.bundle.part-0005",
+        "02-owc-integrated-review.bundle.part-0006",
+        "02-owc-integrated-review.bundle.part-0007",
+        "02-owc-integrated-review.bundle.part-0008",
+        "02-owc-integrated-review.bundle.part-0009",
+        "02-owc-integrated-review.bundle.part-0010",
+        "02-owc-integrated-review.bundle.part-0011",
+        "02-owc-integrated-review.bundle.part-0012",
+        "02-owc-integrated-review.bundle.part-0013",
+        "02-owc-integrated-review.bundle.part-0014",
+        "02-owc-integrated-review.bundle.part-0015"
+      ]
+    },
+    {
+      "file": "02-owc-integrated-review.tar.gz",
+      "bytes": 303816,
+      "sha256": "1986ad4bb5bd24f4b21eb1bbdccf89b1167fc2fa37d6367fa9b604dd48e996c6",
+      "parts": [
+        "02-owc-integrated-review.tar.gz.part-0000",
+        "02-owc-integrated-review.tar.gz.part-0001",
+        "02-owc-integrated-review.tar.gz.part-0002",
+        "02-owc-integrated-review.tar.gz.part-0003",
+        "02-owc-integrated-review.tar.gz.part-0004",
+        "02-owc-integrated-review.tar.gz.part-0005",
+        "02-owc-integrated-review.tar.gz.part-0006",
+        "02-owc-integrated-review.tar.gz.part-0007",
+        "02-owc-integrated-review.tar.gz.part-0008",
+        "02-owc-integrated-review.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "03-owc-memory-bound.tar.gz",
+      "bytes": 292123,
+      "sha256": "52407905951dbbbe48853c51a9aca99e6a803678db4ecc9ec0b91a095a137fe0",
+      "parts": [
+        "03-owc-memory-bound.tar.gz.part-0000",
+        "03-owc-memory-bound.tar.gz.part-0001",
+        "03-owc-memory-bound.tar.gz.part-0002",
+        "03-owc-memory-bound.tar.gz.part-0003",
+        "03-owc-memory-bound.tar.gz.part-0004",
+        "03-owc-memory-bound.tar.gz.part-0005",
+        "03-owc-memory-bound.tar.gz.part-0006",
+        "03-owc-memory-bound.tar.gz.part-0007",
+        "03-owc-memory-bound.tar.gz.part-0008"
+      ]
+    },
+    {
+      "file": "04-owc-mixed-provenance.tar.gz",
+      "bytes": 297886,
+      "sha256": "f9ac3d3e7432249dddc977b0371ecbe1066369c21421da8d3ad0ec34d544320d",
+      "parts": [
+        "04-owc-mixed-provenance.tar.gz.part-0000",
+        "04-owc-mixed-provenance.tar.gz.part-0001",
+        "04-owc-mixed-provenance.tar.gz.part-0002",
+        "04-owc-mixed-provenance.tar.gz.part-0003",
+        "04-owc-mixed-provenance.tar.gz.part-0004",
+        "04-owc-mixed-provenance.tar.gz.part-0005",
+        "04-owc-mixed-provenance.tar.gz.part-0006",
+        "04-owc-mixed-provenance.tar.gz.part-0007",
+        "04-owc-mixed-provenance.tar.gz.part-0008",
+        "04-owc-mixed-provenance.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "05-owc-record-dedup.bundle",
+      "bytes": 466888,
+      "sha256": "8ca3c22ac00e227ce87ce38765ef99266733fe6647ab46d88657af261035eba9",
+      "parts": [
+        "05-owc-record-dedup.bundle.part-0000",
+        "05-owc-record-dedup.bundle.part-0001",
+        "05-owc-record-dedup.bundle.part-0002",
+        "05-owc-record-dedup.bundle.part-0003",
+        "05-owc-record-dedup.bundle.part-0004",
+        "05-owc-record-dedup.bundle.part-0005",
+        "05-owc-record-dedup.bundle.part-0006",
+        "05-owc-record-dedup.bundle.part-0007",
+        "05-owc-record-dedup.bundle.part-0008",
+        "05-owc-record-dedup.bundle.part-0009",
+        "05-owc-record-dedup.bundle.part-0010",
+        "05-owc-record-dedup.bundle.part-0011",
+        "05-owc-record-dedup.bundle.part-0012",
+        "05-owc-record-dedup.bundle.part-0013",
+        "05-owc-record-dedup.bundle.part-0014"
+      ]
+    },
+    {
+      "file": "05-owc-record-dedup.tar.gz",
+      "bytes": 295660,
+      "sha256": "ad145462cc20625626a348b9319a2845b100b2368b4ff47804e142401985e2eb",
+      "parts": [
+        "05-owc-record-dedup.tar.gz.part-0000",
+        "05-owc-record-dedup.tar.gz.part-0001",
+        "05-owc-record-dedup.tar.gz.part-0002",
+        "05-owc-record-dedup.tar.gz.part-0003",
+        "05-owc-record-dedup.tar.gz.part-0004",
+        "05-owc-record-dedup.tar.gz.part-0005",
+        "05-owc-record-dedup.tar.gz.part-0006",
+        "05-owc-record-dedup.tar.gz.part-0007",
+        "05-owc-record-dedup.tar.gz.part-0008",
+        "05-owc-record-dedup.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "06-owc-release-3ddd472.bundle",
+      "bytes": 403079,
+      "sha256": "7dfb77759a3f4961dd3546c586af457d1f26716e18a219337601eff30475f067",
+      "parts": [
+        "06-owc-release-3ddd472.bundle.part-0000",
+        "06-owc-release-3ddd472.bundle.part-0001",
+        "06-owc-release-3ddd472.bundle.part-0002",
+        "06-owc-release-3ddd472.bundle.part-0003",
+        "06-owc-release-3ddd472.bundle.part-0004",
+        "06-owc-release-3ddd472.bundle.part-0005",
+        "06-owc-release-3ddd472.bundle.part-0006",
+        "06-owc-release-3ddd472.bundle.part-0007",
+        "06-owc-release-3ddd472.bundle.part-0008",
+        "06-owc-release-3ddd472.bundle.part-0009",
+        "06-owc-release-3ddd472.bundle.part-0010",
+        "06-owc-release-3ddd472.bundle.part-0011",
+        "06-owc-release-3ddd472.bundle.part-0012"
+      ]
+    },
+    {
+      "file": "06-owc-release-3ddd472.tar.gz",
+      "bytes": 270673,
+      "sha256": "27a1817088a254729efd70358b7fc1a86415c6376891fbb62ccbd7a780cbe4a4",
+      "parts": [
+        "06-owc-release-3ddd472.tar.gz.part-0000",
+        "06-owc-release-3ddd472.tar.gz.part-0001",
+        "06-owc-release-3ddd472.tar.gz.part-0002",
+        "06-owc-release-3ddd472.tar.gz.part-0003",
+        "06-owc-release-3ddd472.tar.gz.part-0004",
+        "06-owc-release-3ddd472.tar.gz.part-0005",
+        "06-owc-release-3ddd472.tar.gz.part-0006",
+        "06-owc-release-3ddd472.tar.gz.part-0007",
+        "06-owc-release-3ddd472.tar.gz.part-0008"
+      ]
+    },
+    {
+      "file": "07-owc-release-finalizer-rebased.tar.gz",
+      "bytes": 299160,
+      "sha256": "122c1fae1e2cd41bdb6ac9d96d445edcfdecad02bbc24d05ffef9d7096ad5abc",
+      "parts": [
+        "07-owc-release-finalizer-rebased.tar.gz.part-0000",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0001",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0002",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0003",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0004",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0005",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0006",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0007",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0008",
+        "07-owc-release-finalizer-rebased.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz",
+      "bytes": 306518,
+      "sha256": "84ce62bce806b09ea55170f34cb9395a92b1d8dca51c897da76e5067963ca17a",
+      "parts": [
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0000",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0001",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0002",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0003",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0004",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0005",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0006",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0007",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0008",
+        "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "09-owc-worldcover-pr12-runtime.tar.gz",
+      "bytes": 303634,
+      "sha256": "b858fcbf9ef0c9f70956c0eeeb630a6ae38bee24a4883ef1f9e3d79f76f202d2",
+      "parts": [
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0000",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0001",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0002",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0003",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0004",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0005",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0006",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0007",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0008",
+        "09-owc-worldcover-pr12-runtime.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "10-owc-worldcover-pr13-exact.tar.gz",
+      "bytes": 306419,
+      "sha256": "88678eea0315f85066582e13da049030618bc5d238eeb6798ac838ada89d9b0b",
+      "parts": [
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0000",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0001",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0002",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0003",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0004",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0005",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0006",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0007",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0008",
+        "10-owc-worldcover-pr13-exact.tar.gz.part-0009"
+      ]
+    },
+    {
+      "file": "11-osm-worldcover.tar.gz",
+      "bytes": 293108,
+      "sha256": "20630ef21c6e6b86bf37cea994e08ebda37224fce05c8743552611d7281e7370",
+      "parts": [
+        "11-osm-worldcover.tar.gz.part-0000",
+        "11-osm-worldcover.tar.gz.part-0001",
+        "11-osm-worldcover.tar.gz.part-0002",
+        "11-osm-worldcover.tar.gz.part-0003",
+        "11-osm-worldcover.tar.gz.part-0004",
+        "11-osm-worldcover.tar.gz.part-0005",
+        "11-osm-worldcover.tar.gz.part-0006",
+        "11-osm-worldcover.tar.gz.part-0007",
+        "11-osm-worldcover.tar.gz.part-0008"
+      ]
+    },
+    {
+      "file": "CODE-INVENTORY.json",
+      "bytes": 7504,
+      "sha256": "5cf4daf03735a02e59c97f2737042b91de1ccad8cf3a6cd2078250d2de68025a",
+      "parts": [
+        "CODE-INVENTORY.json.part-0000"
+      ]
+    },
+    {
+      "file": "recovery-helpers.tar.gz",
+      "bytes": 25044,
+      "sha256": "5f284c2e10982b9d904e041c85dd35c6d7967f07d2c3bc9999a7ec9a97855cda",
+      "parts": [
+        "recovery-helpers.tar.gz.part-0000"
+      ]
+    },
+    {
+      "file": "standalone-review-snapshot.tar.gz",
+      "bytes": 292206,
+      "sha256": "cecdff7fb9f08f1aa959cebb587a2fee4531521b27e4fc2d35e9e82dd1260728",
+      "parts": [
+        "standalone-review-snapshot.tar.gz.part-0000",
+        "standalone-review-snapshot.tar.gz.part-0001",
+        "standalone-review-snapshot.tar.gz.part-0002",
+        "standalone-review-snapshot.tar.gz.part-0003",
+        "standalone-review-snapshot.tar.gz.part-0004",
+        "standalone-review-snapshot.tar.gz.part-0005",
+        "standalone-review-snapshot.tar.gz.part-0006",
+        "standalone-review-snapshot.tar.gz.part-0007",
+        "standalone-review-snapshot.tar.gz.part-0008"
+      ]
+    },
+    {
+      "file": "standalone-mutation-snapshot.tar.gz",
+      "bytes": 307876,
+      "sha256": "901f37746757dd46c50beaa30ed2c40d76ae0579030eb613c689e09c53ed7bbb",
+      "parts": [
+        "standalone-mutation-snapshot.tar.gz.part-0000",
+        "standalone-mutation-snapshot.tar.gz.part-0001",
+        "standalone-mutation-snapshot.tar.gz.part-0002",
+        "standalone-mutation-snapshot.tar.gz.part-0003",
+        "standalone-mutation-snapshot.tar.gz.part-0004",
+        "standalone-mutation-snapshot.tar.gz.part-0005",
+        "standalone-mutation-snapshot.tar.gz.part-0006",
+        "standalone-mutation-snapshot.tar.gz.part-0007",
+        "standalone-mutation-snapshot.tar.gz.part-0008",
+        "standalone-mutation-snapshot.tar.gz.part-0009"
+      ]
+    }
+  ],
+  "repositories": [
+    {
+      "workspace": "/tmp/owc-bundle-base-verify.mWksem",
+      "head": "5eba3148ee2bbd83ef8146c62badb106fc221ce0",
+      "status": "D  .dockerignore\nD  .github/workflows/ci.yml\nD  .gitignore\nD  .importlinter\nD  .python-version\nD  Dockerfile\nD  LICENSE\nD  README.md\nD  docs/adr/0001-worldcover-instead-of-corine.md\nD  docs/adr/0002-coverage-relative-to-the-polygon.md\nD  docs/adr/0003-geographic-splits-via-h3.md\nD  docs/adr/0004-streaming-tiles.md\nD  docs/adr/0005-polygon-size-cap.md\nD  docs/adr/0006-source-recipes-and-generic-repository.md\nD  docs/duplication-review.md\nD  docs/index.md\nD  docs/pipeline.md\nD  docs/schema.md\nD  docs/superpowers/plans/2026-09-14-osm-worldcover-generalization.md\nD  docs/superpowers/plans/2026-09-14-worldcover-centroid-map.md\nD  docs/superpowers/specs/2026-09-14-worldcover-centroid-map-design.md\nD  docs/technical-debt.md\nD  mkdocs.yml\nD  pyproject.toml\nD  scripts/crap.py\nD  scripts/mutation_score.py\nD  src/osm_worldcover/__init__.py\nD  src/osm_worldcover/accounting.py\nD  src/osm_worldcover/adapters/__init__.py\nD  src/osm_worldcover/adapters/audit.py\nD  src/osm_worldcover/adapters/coverage_map.py\nD  src/osm_worldcover/adapters/hub.py\nD  src/osm_worldcover/adapters/publish.py\nD  src/osm_worldcover/adapters/source.py\nD  src/osm_worldcover/adapters/source_profiles.py\nD  src/osm_worldcover/adapters/worldcover.py\nD  src/osm_worldcover/adapters/writer.py\nD  src/osm_worldcover/assembly.py\nD  src/osm_worldcover/build.py\nD  src/osm_worldcover/cli.py\nD  src/osm_worldcover/config.py\nD  src/osm_worldcover/domain/__init__.py\nD  src/osm_worldcover/domain/card.py\nD  src/osm_worldcover/domain/dominance.py\nD  src/osm_worldcover/domain/geometry.py\nD  src/osm_worldcover/domain/manifest.py\nD  src/osm_worldcover/domain/nomenclature.py\nD  src/osm_worldcover/domain/splits.py\nD  src/osm_worldcover/domain/text.py\nD  src/osm_worldcover/domain/tiling.py\nD  src/osm_worldcover/domain/validation.py\nD  src/osm_worldcover/finalize.py\nD  src/osm_worldcover/pipeline.py\nD  src/osm_worldcover/sources.py\nD  tests/__init__.py\nD  tests/acceptance/features/dataset_build.feature\nD  tests/acceptance/test_dataset_build.py\nD  tests/acceptance/test_source_recipes.py\nD  tests/conftest.py\nD  tests/fixtures/worldcover-boundary/README.md\nD  tests/fixtures/worldcover-boundary/netherlands-metadata.json\nD  tests/fixtures/worldcover-boundary/netherlands-window.tif\nD  tests/fixtures/worldcover-boundary/netherlands.wkt\nD  tests/fixtures/worldcover-boundary/peru-metadata.json\nD  tests/fixtures/worldcover-boundary/peru-window.tif\nD  tests/fixtures/worldcover-boundary/peru.wkt\nD  tests/property/test_dominance_properties.py\nD  tests/unit/test_accounting.py\nD  tests/unit/test_audit.py\nD  tests/unit/test_build.py\nD  tests/unit/test_card.py\nD  tests/unit/test_cli.py\nD  tests/unit/test_config.py\nD  tests/unit/test_coverage_map.py\nD  tests/unit/test_documentation_contract.py\nD  tests/unit/test_dominance.py\nD  tests/unit/test_finalize_streaming.py\nD  tests/unit/test_geometry.py\nD  tests/unit/test_hub.py\nD  tests/unit/test_hub_download.py\nD  tests/unit/test_manifest.py\nD  tests/unit/test_nomenclature.py\nD  tests/unit/test_pipeline.py\nD  tests/unit/test_publish.py\nD  tests/unit/test_source.py\nD  tests/unit/test_source_text_policy.py\nD  tests/unit/test_sources.py\nD  tests/unit/test_splits.py\nD  tests/unit/test_text.py\nD  tests/unit/test_tile_cache.py\nD  tests/unit/test_tile_download.py\nD  tests/unit/test_tiling.py\nD  tests/unit/test_validation.py\nD  tests/unit/test_worldcover.py\nD  tests/unit/test_writer.py\nD  uv.lock\n",
+      "snapshot": "00-owc-bundle-base-verify.mWksem.tar.gz",
+      "files": 0
+    },
+    {
+      "workspace": "/tmp/owc-finalizer-release-6ff3",
+      "head": "900094703e2d5490e97306e1e4e70fb0606ba173",
+      "status": "",
+      "snapshot": "01-owc-finalizer-release-6ff3.tar.gz",
+      "files": 97
+    },
+    {
+      "workspace": "/tmp/owc-integrated-review",
+      "head": "f3c050a447b77f8d47f26754bd210ae58d633d41",
+      "status": "",
+      "snapshot": "02-owc-integrated-review.tar.gz",
+      "files": 97
+    },
+    {
+      "workspace": "/tmp/owc-memory-bound",
+      "head": "6947ad119864bd66c778f4724c8b7577b4253438",
+      "status": "",
+      "snapshot": "03-owc-memory-bound.tar.gz",
+      "files": 95
+    },
+    {
+      "workspace": "/tmp/owc-mixed-provenance",
+      "head": "c9695137390357236cabef7e5c18ae70cf404ad9",
+      "status": "",
+      "snapshot": "04-owc-mixed-provenance.tar.gz",
+      "files": 95
+    },
+    {
+      "workspace": "/tmp/owc-record-dedup",
+      "head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "status": " M .github/workflows/ci.yml\n M README.md\n M docs/index.md\n M docs/pipeline.md\n M pyproject.toml\n M scripts/crap.py\n M src/osm_worldcover/accounting.py\n M src/osm_worldcover/adapters/audit.py\n M src/osm_worldcover/assembly.py\n M src/osm_worldcover/cli.py\n M src/osm_worldcover/config.py\n M src/osm_worldcover/domain/card.py\n M src/osm_worldcover/domain/manifest.py\n M src/osm_worldcover/domain/text.py\n M src/osm_worldcover/domain/validation.py\n M src/osm_worldcover/finalize.py\n M tests/unit/test_audit.py\n M tests/unit/test_build.py\n M tests/unit/test_card.py\n M tests/unit/test_cli.py\n M tests/unit/test_finalize_streaming.py\n M tests/unit/test_manifest.py\n M tests/unit/test_publish.py\n M tests/unit/test_validation.py\n?? .venv\n?? tests/unit/test_quality_scripts.py\n",
+      "snapshot": "05-owc-record-dedup.tar.gz",
+      "files": 96
+    },
+    {
+      "workspace": "/tmp/owc-release-3ddd472",
+      "head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "status": " M src/osm_worldcover/adapters/hub.py\n M src/osm_worldcover/adapters/publish.py\n M src/osm_worldcover/adapters/source_profiles.py\n M src/osm_worldcover/adapters/worldcover.py\n M src/osm_worldcover/build.py\n M src/osm_worldcover/cli.py\n M src/osm_worldcover/config.py\n M src/osm_worldcover/domain/card.py\n M src/osm_worldcover/domain/geometry.py\n M src/osm_worldcover/domain/manifest.py\n M src/osm_worldcover/finalize.py\n M src/osm_worldcover/pipeline.py\n M src/osm_worldcover/sources.py\n?? preflight/\n?? src/osm_worldcover/accounting.py\n?? src/osm_worldcover/adapters/audit.py\n?? src/osm_worldcover/assembly.py\n",
+      "snapshot": "06-owc-release-3ddd472.tar.gz",
+      "files": 91
+    },
+    {
+      "workspace": "/tmp/owc-release-finalizer-rebased",
+      "head": "99c09fb5a7d8d661f026dd3825782cdf410bd69a",
+      "status": " M src/osm_worldcover/adapters/worldcover.py\n",
+      "snapshot": "07-owc-release-finalizer-rebased.tar.gz",
+      "files": 97
+    },
+    {
+      "workspace": "/tmp/owc-worldcover-alaska-bounded-extraction-20261001",
+      "head": "91a75faef884eba8757da81930a10ed761f6d19b",
+      "status": " M src/osm_worldcover/adapters/worldcover.py\n M tests/unit/test_worldcover.py\n",
+      "snapshot": "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz",
+      "files": 97
+    },
+    {
+      "workspace": "/tmp/owc-worldcover-pr12-runtime",
+      "head": "91a75faef884eba8757da81930a10ed761f6d19b",
+      "status": "",
+      "snapshot": "09-owc-worldcover-pr12-runtime.tar.gz",
+      "files": 97
+    },
+    {
+      "workspace": "/tmp/owc-worldcover-pr13-exact",
+      "head": "504199af81ddb32c6e96317e5b9a5706b17ad207",
+      "status": "",
+      "snapshot": "10-owc-worldcover-pr13-exact.tar.gz",
+      "files": 97
+    },
+    {
+      "workspace": "/workspace/osm-worldcover",
+      "head": "5eba3148ee2bbd83ef8146c62badb106fc221ce0",
+      "status": "",
+      "snapshot": "11-osm-worldcover.tar.gz",
+      "files": 96
+    },
+    {
+      "workspace": "/workspace/worldcover-review-3ddd472",
+      "head": null,
+      "snapshot": "standalone-review-snapshot.tar.gz",
+      "files": 95,
+      "status": "standalone review copy; no Git checkout"
+    },
+    {
+      "workspace": "/tmp/owc-pr13-mutation-isolated-20261001",
+      "head": null,
+      "snapshot": "standalone-mutation-snapshot.tar.gz",
+      "files": 98,
+      "status": "standalone review copy; no Git checkout"
+    }
+  ]
+}

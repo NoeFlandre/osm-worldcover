@@ -1,0 +1,86 @@
+[
+  {
+    "workspace": "/tmp/owc-bundle-base-verify.mWksem",
+    "head": "5eba3148ee2bbd83ef8146c62badb106fc221ce0",
+    "status": "D  .dockerignore\nD  .github/workflows/ci.yml\nD  .gitignore\nD  .importlinter\nD  .python-version\nD  Dockerfile\nD  LICENSE\nD  README.md\nD  docs/adr/0001-worldcover-instead-of-corine.md\nD  docs/adr/0002-coverage-relative-to-the-polygon.md\nD  docs/adr/0003-geographic-splits-via-h3.md\nD  docs/adr/0004-streaming-tiles.md\nD  docs/adr/0005-polygon-size-cap.md\nD  docs/adr/0006-source-recipes-and-generic-repository.md\nD  docs/duplication-review.md\nD  docs/index.md\nD  docs/pipeline.md\nD  docs/schema.md\nD  docs/superpowers/plans/2026-09-14-osm-worldcover-generalization.md\nD  docs/superpowers/plans/2026-09-14-worldcover-centroid-map.md\nD  docs/superpowers/specs/2026-09-14-worldcover-centroid-map-design.md\nD  docs/technical-debt.md\nD  mkdocs.yml\nD  pyproject.toml\nD  scripts/crap.py\nD  scripts/mutation_score.py\nD  src/osm_worldcover/__init__.py\nD  src/osm_worldcover/accounting.py\nD  src/osm_worldcover/adapters/__init__.py\nD  src/osm_worldcover/adapters/audit.py\nD  src/osm_worldcover/adapters/coverage_map.py\nD  src/osm_worldcover/adapters/hub.py\nD  src/osm_worldcover/adapters/publish.py\nD  src/osm_worldcover/adapters/source.py\nD  src/osm_worldcover/adapters/source_profiles.py\nD  src/osm_worldcover/adapters/worldcover.py\nD  src/osm_worldcover/adapters/writer.py\nD  src/osm_worldcover/assembly.py\nD  src/osm_worldcover/build.py\nD  src/osm_worldcover/cli.py\nD  src/osm_worldcover/config.py\nD  src/osm_worldcover/domain/__init__.py\nD  src/osm_worldcover/domain/card.py\nD  src/osm_worldcover/domain/dominance.py\nD  src/osm_worldcover/domain/geometry.py\nD  src/osm_worldcover/domain/manifest.py\nD  src/osm_worldcover/domain/nomenclature.py\nD  src/osm_worldcover/domain/splits.py\nD  src/osm_worldcover/domain/text.py\nD  src/osm_worldcover/domain/tiling.py\nD  src/osm_worldcover/domain/validation.py\nD  src/osm_worldcover/finalize.py\nD  src/osm_worldcover/pipeline.py\nD  src/osm_worldcover/sources.py\nD  tests/__init__.py\nD  tests/acceptance/features/dataset_build.feature\nD  tests/acceptance/test_dataset_build.py\nD  tests/acceptance/test_source_recipes.py\nD  tests/conftest.py\nD  tests/fixtures/worldcover-boundary/README.md\nD  tests/fixtures/worldcover-boundary/netherlands-metadata.json\nD  tests/fixtures/worldcover-boundary/netherlands-window.tif\nD  tests/fixtures/worldcover-boundary/netherlands.wkt\nD  tests/fixtures/worldcover-boundary/peru-metadata.json\nD  tests/fixtures/worldcover-boundary/peru-window.tif\nD  tests/fixtures/worldcover-boundary/peru.wkt\nD  tests/property/test_dominance_properties.py\nD  tests/unit/test_accounting.py\nD  tests/unit/test_audit.py\nD  tests/unit/test_build.py\nD  tests/unit/test_card.py\nD  tests/unit/test_cli.py\nD  tests/unit/test_config.py\nD  tests/unit/test_coverage_map.py\nD  tests/unit/test_documentation_contract.py\nD  tests/unit/test_dominance.py\nD  tests/unit/test_finalize_streaming.py\nD  tests/unit/test_geometry.py\nD  tests/unit/test_hub.py\nD  tests/unit/test_hub_download.py\nD  tests/unit/test_manifest.py\nD  tests/unit/test_nomenclature.py\nD  tests/unit/test_pipeline.py\nD  tests/unit/test_publish.py\nD  tests/unit/test_source.py\nD  tests/unit/test_source_text_policy.py\nD  tests/unit/test_sources.py\nD  tests/unit/test_splits.py\nD  tests/unit/test_text.py\nD  tests/unit/test_tile_cache.py\nD  tests/unit/test_tile_download.py\nD  tests/unit/test_tiling.py\nD  tests/unit/test_validation.py\nD  tests/unit/test_worldcover.py\nD  tests/unit/test_writer.py\nD  uv.lock\n",
+    "snapshot": "00-owc-bundle-base-verify.mWksem.tar.gz",
+    "files": 0
+  },
+  {
+    "workspace": "/tmp/owc-finalizer-release-6ff3",
+    "head": "900094703e2d5490e97306e1e4e70fb0606ba173",
+    "status": "",
+    "snapshot": "01-owc-finalizer-release-6ff3.tar.gz",
+    "files": 97
+  },
+  {
+    "workspace": "/tmp/owc-integrated-review",
+    "head": "f3c050a447b77f8d47f26754bd210ae58d633d41",
+    "status": "",
+    "snapshot": "02-owc-integrated-review.tar.gz",
+    "files": 97
+  },
+  {
+    "workspace": "/tmp/owc-memory-bound",
+    "head": "6947ad119864bd66c778f4724c8b7577b4253438",
+    "status": "",
+    "snapshot": "03-owc-memory-bound.tar.gz",
+    "files": 95
+  },
+  {
+    "workspace": "/tmp/owc-mixed-provenance",
+    "head": "c9695137390357236cabef7e5c18ae70cf404ad9",
+    "status": "",
+    "snapshot": "04-owc-mixed-provenance.tar.gz",
+    "files": 95
+  },
+  {
+    "workspace": "/tmp/owc-record-dedup",
+    "head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+    "status": " M .github/workflows/ci.yml\n M README.md\n M docs/index.md\n M docs/pipeline.md\n M pyproject.toml\n M scripts/crap.py\n M src/osm_worldcover/accounting.py\n M src/osm_worldcover/adapters/audit.py\n M src/osm_worldcover/assembly.py\n M src/osm_worldcover/cli.py\n M src/osm_worldcover/config.py\n M src/osm_worldcover/domain/card.py\n M src/osm_worldcover/domain/manifest.py\n M src/osm_worldcover/domain/text.py\n M src/osm_worldcover/domain/validation.py\n M src/osm_worldcover/finalize.py\n M tests/unit/test_audit.py\n M tests/unit/test_build.py\n M tests/unit/test_card.py\n M tests/unit/test_cli.py\n M tests/unit/test_finalize_streaming.py\n M tests/unit/test_manifest.py\n M tests/unit/test_publish.py\n M tests/unit/test_validation.py\n?? .venv\n?? tests/unit/test_quality_scripts.py\n",
+    "snapshot": "05-owc-record-dedup.tar.gz",
+    "files": 96
+  },
+  {
+    "workspace": "/tmp/owc-release-3ddd472",
+    "head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+    "status": " M src/osm_worldcover/adapters/hub.py\n M src/osm_worldcover/adapters/publish.py\n M src/osm_worldcover/adapters/source_profiles.py\n M src/osm_worldcover/adapters/worldcover.py\n M src/osm_worldcover/build.py\n M src/osm_worldcover/cli.py\n M src/osm_worldcover/config.py\n M src/osm_worldcover/domain/card.py\n M src/osm_worldcover/domain/geometry.py\n M src/osm_worldcover/domain/manifest.py\n M src/osm_worldcover/finalize.py\n M src/osm_worldcover/pipeline.py\n M src/osm_worldcover/sources.py\n?? preflight/\n?? src/osm_worldcover/accounting.py\n?? src/osm_worldcover/adapters/audit.py\n?? src/osm_worldcover/assembly.py\n",
+    "snapshot": "06-owc-release-3ddd472.tar.gz",
+    "files": 91
+  },
+  {
+    "workspace": "/tmp/owc-release-finalizer-rebased",
+    "head": "99c09fb5a7d8d661f026dd3825782cdf410bd69a",
+    "status": " M src/osm_worldcover/adapters/worldcover.py\n",
+    "snapshot": "07-owc-release-finalizer-rebased.tar.gz",
+    "files": 97
+  },
+  {
+    "workspace": "/tmp/owc-worldcover-alaska-bounded-extraction-20261001",
+    "head": "91a75faef884eba8757da81930a10ed761f6d19b",
+    "status": " M src/osm_worldcover/adapters/worldcover.py\n M tests/unit/test_worldcover.py\n",
+    "snapshot": "08-owc-worldcover-alaska-bounded-extraction-20261001.tar.gz",
+    "files": 97
+  },
+  {
+    "workspace": "/tmp/owc-worldcover-pr12-runtime",
+    "head": "91a75faef884eba8757da81930a10ed761f6d19b",
+    "status": "",
+    "snapshot": "09-owc-worldcover-pr12-runtime.tar.gz",
+    "files": 97
+  },
+  {
+    "workspace": "/tmp/owc-worldcover-pr13-exact",
+    "head": "504199af81ddb32c6e96317e5b9a5706b17ad207",
+    "status": "",
+    "snapshot": "10-owc-worldcover-pr13-exact.tar.gz",
+    "files": 97
+  },
+  {
+    "workspace": "/workspace/osm-worldcover",
+    "head": "5eba3148ee2bbd83ef8146c62badb106fc221ce0",
+    "status": "",
+    "snapshot": "11-osm-worldcover.tar.gz",
+    "files": 96
+  }
+]
