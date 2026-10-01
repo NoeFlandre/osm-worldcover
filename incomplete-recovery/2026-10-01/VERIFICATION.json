@@ -1,0 +1,10 @@
+{
+  "tree": "9b45eb7c26e5b1451b13a59bfe981e2291d8f3d5",
+  "commit": "2b44d759a1700dec10f12c82dfe640968a84cabd",
+  "verifiedFiles": 210,
+  "truncated": false,
+  "byteForByteReadbackFiles": 206,
+  "archivesReconstructedAndSha256Verified": 21,
+  "deletedFiles": 0,
+  "huggingFaceStatus": "blocked: HTTP403 on all3 dataset normal commit endpoints; no data upload confirmed"
+}
