@@ -128,29 +128,38 @@ def test_manifest_keys_are_the_published_contract(counts) -> None:
     than something that slips out in a release.
     """
     manifest = build(counts, settings={"dominance_threshold": 0.8})
-    assert set(manifest) == {
-        "counts",
-        "class_distribution",
-        "example_polygons",
-        "language_distribution",
-        "dominant_fraction",
-        "geographic_coverage",
-        "rejections",
-        "deduplication",
-        "deduplication_analysis",
-        "settings",
+    assert _manifest_contract(manifest) == {
+        "top_level": {
+            "counts",
+            "class_distribution",
+            "example_polygons",
+            "language_distribution",
+            "dominant_fraction",
+            "geographic_coverage",
+            "rejections",
+            "deduplication",
+            "deduplication_analysis",
+            "settings",
+        },
+        "count_groups": {"examples", "polygons", "documents"},
+        "count_fields": {"train", "validation", "test", "total"},
+        "class_fields": {"code", "label", "examples", "share"},
+        "language_fields": {"language", "examples", "share"},
+        "coverage_fields": {"h3_cells", "regions", "bbox"},
+        "bbox_fields": {"min_lon", "min_lat", "max_lon", "max_lat"},
     }
-    assert set(manifest["counts"]) == {"examples", "polygons", "documents"}
-    for group in manifest["counts"].values():
-        assert set(group) == {"train", "validation", "test", "total"}
-    assert set(manifest["class_distribution"][0]) == {"code", "label", "examples", "share"}
-    assert set(manifest["language_distribution"][0]) == {"language", "examples", "share"}
-    assert set(manifest["geographic_coverage"]) == {"h3_cells", "regions", "bbox"}
-    assert set(manifest["geographic_coverage"]["bbox"]) == {
-        "min_lon",
-        "min_lat",
-        "max_lon",
-        "max_lat",
+
+
+def _manifest_contract(manifest: dict) -> dict:
+    """Summarize the independently published key sets for one contract check."""
+    return {
+        "top_level": set(manifest),
+        "count_groups": set(manifest["counts"]),
+        "count_fields": set(manifest["counts"]["examples"]),
+        "class_fields": set(manifest["class_distribution"][0]),
+        "language_fields": set(manifest["language_distribution"][0]),
+        "coverage_fields": set(manifest["geographic_coverage"]),
+        "bbox_fields": set(manifest["geographic_coverage"]["bbox"]),
     }
 
 

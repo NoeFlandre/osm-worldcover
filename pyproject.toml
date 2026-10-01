@@ -76,16 +76,25 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["src/osm_worldcover", "scripts"]
+source = ["src/osm_worldcover", "scripts", "tests"]
 branch = true
 
 [tool.mutmut]
-# The whole package is copied so imports resolve, but only the logic is
-# mutated: the adapters and CLI are thin shells over other people's I/O, where
-# a surviving mutant says more about the stub than about our tests.
+# The whole package is copied so imports resolve. The WorldCover raster adapter
+# is included because it contains extraction logic; remaining adapters and the
+# CLI are I/O boundaries whose contracts have focused tests.
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
-    "*/adapters/*",
+	# The WorldCover raster adapter contains the PR13 extraction logic and is
+	# mutation-tested with its real-raster regressions. Other adapters are I/O
+	# boundaries whose behavior is covered by focused contract tests.
+	"*/adapters/audit.py",
+	"*/adapters/coverage_map.py",
+	"*/adapters/hub.py",
+	"*/adapters/publish.py",
+	"*/adapters/source.py",
+	"*/adapters/source_profiles.py",
+	"*/adapters/writer.py",
     "*/cli.py",
     "*/config.py",
     # card.py is a prose template. Its mutants rewrite headings, URLs and join

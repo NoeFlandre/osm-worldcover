@@ -18,6 +18,25 @@ polygon_areas = st.floats(min_value=1e-3, max_value=1e12, allow_nan=False, allow
 thresholds = st.floats(min_value=0.01, max_value=1.0, allow_nan=False, allow_infinity=False)
 
 
+def _assert_accepted_decision(outcome, threshold: float) -> None:
+    assert outcome.code is not None
+    assert is_valid_code(outcome.code)
+    assert outcome.fraction >= threshold
+    assert outcome.reason is None
+
+
+def _assert_rejected_decision(outcome) -> None:
+    assert outcome.reason is not None
+
+
+def _dominant_winners(fractions: dict[int, float], threshold: float) -> list[int]:
+    return [
+        code
+        for code, fraction in fractions.items()
+        if is_valid_code(code) and fraction >= threshold
+    ]
+
+
 @st.composite
 def coverage(draw: st.DrawFn) -> tuple[list[tuple[int, float]], float]:
     """A polygon area plus non-overlapping per-class areas summing to at most it.
@@ -52,23 +71,31 @@ def test_acceptance_implies_a_valid_class_at_or_above_threshold(case, threshold)
     pairs, polygon_area = case
     outcome = decide(dict(pairs), polygon_area, threshold)
     if outcome.accepted:
-        assert outcome.code is not None
-        assert is_valid_code(outcome.code)
-        assert outcome.fraction >= threshold
-        assert outcome.reason is None
+        _assert_accepted_decision(outcome, threshold)
     else:
-        assert outcome.reason is not None
+        _assert_rejected_decision(outcome)
 
 
 @given(coverage(), thresholds)
 def test_rejection_reason_matches_the_state_it_describes(case, threshold) -> None:
     pairs, polygon_area = case
     outcome = decide(dict(pairs), polygon_area, threshold)
+    _assert_rejection_reason(outcome, threshold)
+
+
+def _assert_rejection_reason(outcome, threshold: float) -> None:
     if outcome.reason is RejectionReason.NO_VALID_CLASS:
-        assert outcome.code is None
-    if outcome.reason is RejectionReason.BELOW_THRESHOLD:
-        assert outcome.code is not None
-        assert outcome.fraction < threshold
+        _assert_no_valid_class(outcome)
+    elif outcome.reason is RejectionReason.BELOW_THRESHOLD:
+        _assert_below_threshold(outcome, threshold)
+
+
+def _assert_no_valid_class(outcome) -> None:
+    assert outcome.code is None
+
+
+def _assert_below_threshold(outcome, threshold: float) -> None:
+    assert (outcome.code is not None, outcome.fraction < threshold) == (True, True)
 
 
 @given(coverage(), thresholds)
@@ -85,7 +112,7 @@ def test_above_one_half_at_most_one_class_can_dominate(case) -> None:
     pairs, polygon_area = case
     threshold = 0.51
     fractions = class_fractions(dict(pairs), polygon_area)
-    winners = [c for c, f in fractions.items() if is_valid_code(c) and f >= threshold]
+    winners = _dominant_winners(fractions, threshold)
     assert len(winners) <= 1
     assert decide(dict(pairs), polygon_area, threshold).accepted == bool(winners)
 

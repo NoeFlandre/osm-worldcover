@@ -11,6 +11,34 @@ from osm_worldcover.adapters.source import RegionTables
 from osm_worldcover.sources import recipe_for
 
 
+def _assert_description_polygon(tables: RegionTables) -> None:
+    assert (
+        tables.polygons.loc[0, "polygon_id"],
+        tables.polygons.loc[0, "region"],
+        tables.polygons.loc[0, "lat"],
+        json.loads(tables.polygons.loc[0, "geometry"])["type"],
+    ) == ("luxembourg-latest:way/7", "luxembourg", 49.5, "Polygon")
+
+
+def _assert_description_documents(tables: RegionTables) -> None:
+    assert (
+        set(tables.documents["full_text"]),
+        set(tables.documents["language"].dropna()),
+        tables.documents["language"].isna().sum(),
+    ) == (
+        {"A public garden with trees.", "Un jardin public."},
+        {"fr"},
+        1,
+    )
+
+
+def _assert_description_links(tables: RegionTables) -> None:
+    assert set(tables.links["document_id"]) == {
+        "luxembourg-latest:way/7:description",
+        "luxembourg-latest:way/7:description:fr",
+    }
+
+
 def test_recipes_name_the_three_public_outputs() -> None:
     assert recipe_for("wikidata").output_dataset == "NoeFlandre/osm-wikidata-worldcover"
     assert (
@@ -40,20 +68,9 @@ def test_description_rows_become_one_document_per_description_value(tmp_path) ->
 
     tables = RegionTables.load(tmp_path, "luxembourg-latest", source="description")
 
-    assert tables.polygons.loc[0, "polygon_id"] == "luxembourg-latest:way/7"
-    assert tables.polygons.loc[0, "region"] == "luxembourg"
-    assert tables.polygons.loc[0, "lat"] == 49.5
-    assert json.loads(tables.polygons.loc[0, "geometry"])["type"] == "Polygon"
-    assert set(tables.documents["full_text"]) == {
-        "A public garden with trees.",
-        "Un jardin public.",
-    }
-    assert set(tables.documents["language"].dropna()) == {"fr"}
-    assert tables.documents["language"].isna().sum() == 1
-    assert set(tables.links["document_id"]) == {
-        "luxembourg-latest:way/7:description",
-        "luxembourg-latest:way/7:description:fr",
-    }
+    _assert_description_polygon(tables)
+    _assert_description_documents(tables)
+    _assert_description_links(tables)
 
 
 def test_website_rows_become_successful_website_documents(tmp_path) -> None:

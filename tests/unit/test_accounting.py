@@ -216,31 +216,51 @@ def test_stage_never_overwrites_the_shard_store(tmp_path, context, outcome, exam
 
 def test_subset_completion_is_not_full_source_completion(context, outcome):
     ledger = processing_ledger(["beta", "alpha"], ["alpha"], [outcome], context)
-    assert ledger["selected_complete"]
-    assert not ledger["complete"]
-    assert not ledger["full_source_complete"]
-    assert ledger["scope"] == "subset"
-    assert ledger["missing_regions"] == ["beta"]
-    assert ledger["region_counts"] == {
-        "expected": 2,
-        "selected": 1,
-        "processed": 1,
-        "missing": 1,
-        "unprocessed_selected": 0,
+    assert {
+        "selected_complete": ledger["selected_complete"],
+        "complete": ledger["complete"],
+        "full_source_complete": ledger["full_source_complete"],
+        "scope": ledger["scope"],
+        "missing_regions": ledger["missing_regions"],
+        "region_counts": ledger["region_counts"],
+    } == {
+        "selected_complete": True,
+        "complete": False,
+        "full_source_complete": False,
+        "scope": "subset",
+        "missing_regions": ["beta"],
+        "region_counts": {
+            "expected": 2,
+            "selected": 1,
+            "processed": 1,
+            "missing": 1,
+            "unprocessed_selected": 0,
+        },
     }
 
 
 def test_full_ledger_accounts_for_every_region_and_all_counters(context, outcome):
     outcomes = [replace(outcome, stem="beta"), outcome]
     ledger = processing_ledger(["alpha", "beta"], ["beta", "alpha"], outcomes, context)
-    assert ledger["full_source_complete"]
-    assert ledger["scope"] == "full"
-    assert ledger["totals"]["polygons_seen"] == 24
-    assert ledger["totals"]["polygons_with_examples"] == 4
-    assert ledger["totals"]["rejections"] == {"below_threshold": 6}
-    assert ledger["totals"]["text_rejections"] == {"empty_text": 4, "text_too_short": 8}
-    assert [row["stem"] for row in ledger["regions"]] == ["alpha", "beta"]
-    assert outcome_from_record(ledger["regions"][0]) == outcome
+    assert {
+        "complete": ledger["full_source_complete"],
+        "scope": ledger["scope"],
+        "polygons_seen": ledger["totals"]["polygons_seen"],
+        "polygons_with_examples": ledger["totals"]["polygons_with_examples"],
+        "rejections": ledger["totals"]["rejections"],
+        "text_rejections": ledger["totals"]["text_rejections"],
+        "regions": [row["stem"] for row in ledger["regions"]],
+        "first_outcome": outcome_from_record(ledger["regions"][0]),
+    } == {
+        "complete": True,
+        "scope": "full",
+        "polygons_seen": 24,
+        "polygons_with_examples": 4,
+        "rejections": {"below_threshold": 6},
+        "text_rejections": {"empty_text": 4, "text_too_short": 8},
+        "regions": ["alpha", "beta"],
+        "first_outcome": outcome,
+    }
 
 
 def test_processing_ledger_groups_exact_region_code_revisions(context, outcome):

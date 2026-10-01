@@ -33,34 +33,47 @@ def shard(
     lat=49.6,
     lon=6.1,
 ):
-    texts = [text or f"{TEXT} {i}" for i in range(start, start + n)]
-    pd.DataFrame(
-        {
-            "polygon_id": [f"{region}-latest:way:{i}" for i in range(start, start + n)],
-            "osm_type": ["way"] * n,
-            "osm_id": list(range(start, start + n)),
-            "region": [region] * n,
-            "name": ["N"] * n,
-            "wikidata": ["Q1"] * n,
-            "document_id": [f"d{i}" for i in range(start, start + n)],
-            "project": ["wikipedia"] * n,
-            "language": ["en"] * n,
-            "title": ["T"] * n,
-            "url": ["u"] * n,
-            "text": texts,
-            "lead_text": ["lead"] * n,
-            "text_words": [text_words or len(value.split()) for value in texts],
-            "worldcover_code": [code] * n,
-            "worldcover_label": ["Tree cover" if code == 10 else "Built-up"] * n,
-            "dominant_fraction": [0.95] * n,
-            "observed_fraction": [1.0] * n,
-            "lat": [lat] * n,
-            "lon": [lon] * n,
-            "centroid_wkt": ["POINT (6.1 49.6)"] * n,
-            "polygon_area_m2": [1000.0] * n,
-            "source_pbf": [f"{region}-latest.osm.pbf"] * n,
-        }
-    ).to_parquet(path, index=False)
+    pd.DataFrame(_shard_rows(n, start, region, code, text, text_words, lat, lon)).to_parquet(
+        path, index=False
+    )
+
+
+def _shard_texts(text, ids: range) -> list[str]:
+    return [text or f"{TEXT} {index}" for index in ids]
+
+
+def _shard_text_words(text_words, texts: list[str]) -> list[int]:
+    return [text_words or len(value.split()) for value in texts]
+
+
+def _shard_rows(n, start, region, code, text, text_words, lat, lon) -> dict:
+    ids = range(start, start + n)
+    texts = _shard_texts(text, ids)
+    return {
+        "polygon_id": [f"{region}-latest:way:{index}" for index in ids],
+        "osm_type": "way",
+        "osm_id": list(ids),
+        "region": region,
+        "name": "N",
+        "wikidata": "Q1",
+        "document_id": [f"d{index}" for index in ids],
+        "project": "wikipedia",
+        "language": "en",
+        "title": "T",
+        "url": "u",
+        "text": texts,
+        "lead_text": "lead",
+        "text_words": _shard_text_words(text_words, texts),
+        "worldcover_code": code,
+        "worldcover_label": {10: "Tree cover"}.get(code, "Built-up"),
+        "dominant_fraction": 0.95,
+        "observed_fraction": 1.0,
+        "lat": lat,
+        "lon": lon,
+        "centroid_wkt": "POINT (6.1 49.6)",
+        "polygon_area_m2": 1000.0,
+        "source_pbf": f"{region}-latest.osm.pbf",
+    }
 
 
 @pytest.fixture
@@ -136,12 +149,14 @@ def test_repeated_records_of_the_same_polygon_text_and_label_are_removed(shards,
 
     result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
 
-    assert result.rows == 1
-    assert result.duplicate_records == 1
-    assert result.manifest["deduplication"]["duplicate_polygon_text_label_records"] == 1
     analysis = result.manifest["deduplication_analysis"]
-    assert analysis["duplicate_polygon_text_label_groups"] == 1
-    assert analysis["duplicate_records_removed"] == 1
+    assert (
+        result.rows,
+        result.duplicate_records,
+        result.manifest["deduplication"]["duplicate_polygon_text_label_records"],
+        analysis["duplicate_polygon_text_label_groups"],
+        analysis["duplicate_records_removed"],
+    ) == (1, 1, 1, 1, 1)
 
 
 def test_record_removals_and_retained_cross_split_text_are_reported(shards, tmp_path) -> None:

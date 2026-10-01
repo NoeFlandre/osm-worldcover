@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 
 def _repository_root(test_path: Path) -> Path:
     """Resolve the checkout root for regular and mutmut-copied test paths."""
@@ -30,33 +32,44 @@ def _workflow(path: Path) -> str:
     return next(block for block in blocks if "regions-a.txt" in block)
 
 
+def _assert_split_commands_are_in_order(workflow: str) -> None:
+    partition_position = workflow.index(PARTITION_COMMAND)
+    assert f"SOURCE_REVISION={WEBSITE_REVISION}" in workflow
+    assert workflow.index(REGION_COMMAND) < partition_position
+    assert all(
+        workflow.index(region_file) > partition_position
+        for region_file in ("regions-a.txt", "regions-b.txt")
+    )
+
+
+def _pinned_build_commands(workflow: str) -> list[str]:
+    return [
+        line.strip()
+        for line in workflow.splitlines()
+        if line.strip().startswith("uv run owc build")
+        or line.strip().startswith("uv run owc assemble")
+    ]
+
+
+def _assert_build_commands_are_pinned(commands: list[str]) -> None:
+    assert commands
+    assert all("--source website" in command for command in commands)
+    assert all('--revision "$SOURCE_REVISION"' in command for command in commands)
+
+
 def test_documentation_root_escapes_mutmut_staging_directory() -> None:
     """Copied tests must read documentation from the real checkout."""
     staged_test = Path("/checkout/mutants/tests/unit/test_documentation_contract.py")
     assert _repository_root(staged_test) == Path("/checkout")
 
 
-def test_split_workflow_creates_region_files_before_consuming_them() -> None:
+@pytest.mark.parametrize("path", WORKFLOW_DOCS)
+def test_split_workflow_creates_region_files_before_consuming_them(path: Path) -> None:
     """Every documented split run must show its deterministic partition step."""
-    for path in WORKFLOW_DOCS:
-        workflow = _workflow(path)
-        assert f"SOURCE_REVISION={WEBSITE_REVISION}" in workflow
-        regions_position = workflow.index(REGION_COMMAND)
-        partition_position = workflow.index(PARTITION_COMMAND)
-        assert regions_position < partition_position
-        for region_file in ("regions-a.txt", "regions-b.txt"):
-            assert workflow.index(region_file) > partition_position
+    _assert_split_commands_are_in_order(_workflow(path))
 
 
 def test_technical_debt_workflow_pins_every_build_and_assemble_command() -> None:
     """Technical-debt examples must remain reproducible at the pinned website head."""
     workflow = _workflow(ROOT / "docs/technical-debt.md")
-    commands = [
-        line.strip()
-        for line in workflow.splitlines()
-        if line.strip().startswith("uv run owc build")
-        or line.strip().startswith("uv run owc assemble")
-    ]
-    assert commands
-    assert all("--source website" in command for command in commands)
-    assert all('--revision "$SOURCE_REVISION"' in command for command in commands)
+    _assert_build_commands_are_pinned(_pinned_build_commands(workflow))

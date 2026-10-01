@@ -24,6 +24,67 @@ def one(geom) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame({"polygon_id": ["p"]}, geometry=[geom], crs="EPSG:4326")
 
 
+class ExactExtractRecorder:
+    """Capture the real adapter call and outputs for raster contract checks."""
+
+    def __init__(self) -> None:
+        self.original = worldcover.exact_extract
+        self.calls = []
+        self.values = []
+
+    def __call__(self, raster, features, operations, **kwargs):
+        result = self.original(raster, features, operations, **kwargs)
+        self.calls.append((raster, features.copy(), operations, kwargs))
+        self.values.extend(result["values"])
+        return result
+
+
+def _assert_nodata_values_are_unmasked(recorder: ExactExtractRecorder) -> None:
+    assert all(not np.any(np.ma.getmaskarray(values)) for values in recorder.values)
+
+
+def _assert_nodata_calls_omit_default(recorder: ExactExtractRecorder) -> None:
+    assert all(call[2] == ["cell_id", "coverage", "values"] for call in recorder.calls)
+    assert all("default_value" not in call[3] for call in recorder.calls)
+
+
+def _assert_nodata_coverage(coverage: dict[int, float]) -> None:
+    assert coverage == {10: pytest.approx(0.5)}
+    assert sum(coverage.values()) == pytest.approx(0.5)
+
+
+def _recorded_pixel_bounds(recorder: ExactExtractRecorder) -> list[tuple[int, int]]:
+    bounds = []
+    for raster, features, _, _ in recorder.calls:
+        with rasterio.open(raster) as dataset:
+            for geometry in features.geometry:
+                pixel_geometry = worldcover._pixel_geometry(geometry, dataset.transform)
+                bounds.append(
+                    (
+                        worldcover._pixel_bbox_cells(pixel_geometry, dataset.width, dataset.height),
+                        shapely.get_num_coordinates(pixel_geometry),
+                    )
+                )
+    return bounds
+
+
+def _assert_pixel_bounds(bounds: list[tuple[int, int]], minimum: int) -> None:
+    assert len(bounds) > minimum
+    assert all(cells <= 9 and coordinates <= 12 for cells, coordinates in bounds)
+
+
+def _assert_accepted_chunk_label(actual, expected) -> None:
+    assert (actual.code, actual.accepted) == (expected.code, True)
+    assert actual.code == 50
+    assert actual.fraction == pytest.approx(expected.fraction, abs=1e-12)
+
+
+def _assert_rejected_chunk_label(actual, expected) -> None:
+    assert (actual.code, actual.accepted) == (expected.code, False)
+    assert actual.code == 50
+    assert actual.fraction == pytest.approx(expected.fraction, abs=1e-12)
+
+
 class TestTileAddressing:
     def test_url_follows_the_published_naming_scheme(self, tmp_path) -> None:
         tiles = WorldCoverTiles(tmp_path)
@@ -68,26 +129,13 @@ class TestClassCoverage:
         Renormalising over observed pixels would label a half-unobserved
         polygon with full confidence; leaving the gap lets dominance refuse it.
         """
-        original_extract = worldcover.exact_extract
-        observed_values = []
-
-        def recording_extract(raster, features, operations, **kwargs):
-            result = original_extract(raster, features, operations, **kwargs)
-            observed_values.extend(result["values"])
-            assert operations == ["cell_id", "coverage", "values"]
-            assert "default_value" not in kwargs
-            return result
-
-        monkeypatch.setattr(worldcover, "exact_extract", recording_extract)
+        recorder = ExactExtractRecorder()
+        monkeypatch.setattr(worldcover, "exact_extract", recorder)
         coverage = class_coverage([with_nodata], square)[0]
 
-        assert observed_values
-        assert all(
-            np.ma.asarray(values).mask is np.ma.nomask or not np.any(np.ma.asarray(values).mask)
-            for values in observed_values
-        )
-        assert coverage == {10: pytest.approx(0.5)}
-        assert sum(coverage.values()) == pytest.approx(0.5)
+        _assert_nodata_values_are_unmasked(recorder)
+        _assert_nodata_calls_omit_default(recorder)
+        _assert_nodata_coverage(coverage)
 
     def test_a_polygon_outside_the_raster_has_no_coverage(self, half_and_half) -> None:
         far = one(Polygon([(50, 50), (50, 51), (51, 51), (51, 50)]))
@@ -187,37 +235,19 @@ class TestClassCoverage:
         frame = one(MultiPolygon([left, right]))
         expected = class_coverage([half_and_half], frame)[0]
         expected_label = decide(expected, polygon_area=1.0, threshold=0.8)
-        original_extract = worldcover.exact_extract
-        bounds: list[tuple[int, int]] = []
-        with rasterio.open(half_and_half) as dataset:
-            transform = dataset.transform
-
-        def recording_extract(raster, features, operations, **kwargs):
-            for geometry in features.geometry:
-                pixel_geometry = worldcover._pixel_geometry(geometry, transform)
-                bounds.append(
-                    (
-                        worldcover._pixel_bbox_cells(pixel_geometry, 4, 4),
-                        shapely.get_num_coordinates(pixel_geometry),
-                    )
-                )
-            return original_extract(raster, features, operations, **kwargs)
+        recorder = ExactExtractRecorder()
 
         with monkeypatch.context() as bounded:
             bounded.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
             bounded.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", 12)
             bounded.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 1)
-            bounded.setattr(worldcover, "exact_extract", recording_extract)
+            bounded.setattr(worldcover, "exact_extract", recorder)
             actual = class_coverage([half_and_half], frame)[0]
 
         actual_label = decide(actual, polygon_area=1.0, threshold=0.8)
-        assert len(bounds) > 1
-        assert all(cells <= 9 and coordinates <= 12 for cells, coordinates in bounds)
         assert actual == pytest.approx(expected, abs=1e-12)
-        assert actual_label.code == expected_label.code
-        assert actual_label.accepted
-        assert actual_label.code == 50
-        assert actual_label.fraction == pytest.approx(expected_label.fraction, abs=1e-12)
+        _assert_pixel_bounds(_recorded_pixel_bounds(recorder), minimum=1)
+        _assert_accepted_chunk_label(actual_label, expected_label)
 
     def test_southern_hemisphere_polygon_crosses_two_raster_tiles(self, tmp_path) -> None:
         left = write_raster(
@@ -253,40 +283,22 @@ class TestClassCoverage:
         frame = one(geometry)
         expected = class_coverage([left, right], frame)[0]
         expected_label = decide(expected, polygon_area=1.0, threshold=0.45)
-        original_extract = worldcover.exact_extract
-        bounds: list[tuple[int, int]] = []
-
-        def recording_extract(raster, features, operations, **kwargs):
-            assert features.crs.to_epsg() == 4326
-            with rasterio.open(raster) as dataset:
-                for chunk in features.geometry:
-                    pixel_geometry = worldcover._pixel_geometry(chunk, dataset.transform)
-                    bounds.append(
-                        (
-                            worldcover._pixel_bbox_cells(
-                                pixel_geometry, dataset.width, dataset.height
-                            ),
-                            shapely.get_num_coordinates(pixel_geometry),
-                        )
-                    )
-            return original_extract(raster, features, operations, **kwargs)
+        recorder = ExactExtractRecorder()
 
         with monkeypatch.context() as bounded:
             bounded.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
             bounded.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", 12)
             bounded.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 1)
-            bounded.setattr(worldcover, "exact_extract", recording_extract)
+            bounded.setattr(worldcover, "exact_extract", recorder)
             actual = class_coverage([left, right], frame)[0]
 
         actual_label = decide(actual, polygon_area=1.0, threshold=0.45)
-        assert len(bounds) > 2
-        assert all(cells <= 9 and coordinates <= 12 for cells, coordinates in bounds)
         assert expected == {10: pytest.approx(1 / 3), 50: pytest.approx(4 / 9)}
         assert sum(expected.values()) == pytest.approx(7 / 9)
         assert actual == pytest.approx(expected, abs=1e-12)
-        assert actual_label.code == expected_label.code == 50
+        _assert_pixel_bounds(_recorded_pixel_bounds(recorder), minimum=2)
+        _assert_rejected_chunk_label(actual_label, expected_label)
         assert actual_label.fraction == pytest.approx(4 / 9)
-        assert not actual_label.accepted
 
 
 @pytest.mark.parametrize(

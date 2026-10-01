@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -172,16 +173,25 @@ def test_audit_reports_warnings_and_writes_json_report(tmp_path, monkeypatch) ->
         ],
     )
 
-    assert outcome.exit_code == 0, outcome.output
-    assert seen["build_dir"] == build_dir
-    assert seen["options"] == {
-        "require_complete": True,
-        "require_card": True,
-        "strict_text_leakage": True,
-    }
-    assert "WARNING identical_text_cross_split: 2" in outcome.output
-    assert "independent release audit passed" in outcome.output
-    assert json.loads(report_file.read_text()) == {"ok": True, "rows": 4}
+    assert (
+        outcome.exit_code,
+        seen["build_dir"],
+        seen["options"],
+        "WARNING identical_text_cross_split: 2" in outcome.output,
+        "independent release audit passed" in outcome.output,
+        json.loads(report_file.read_text()),
+    ) == (
+        0,
+        build_dir,
+        {
+            "require_complete": True,
+            "require_card": True,
+            "strict_text_leakage": True,
+        },
+        True,
+        True,
+        {"ok": True, "rows": 4},
+    )
 
 
 def test_audit_fails_when_report_contains_a_problem(monkeypatch, tmp_path) -> None:
@@ -538,6 +548,98 @@ def assembled_manifest(tmp_path, version="1.1.0"):
     return json.loads((tmp_path / "out" / f"v{version}" / "manifest.json").read_text())
 
 
+def _legacy_reuse_summary(manifest: dict) -> dict:
+    settings = manifest["processing"]["context"]["settings"]
+    return {
+        "policy": manifest["settings"]["deduplication_policy"],
+        "source_dataset_version": settings["dataset_version"],
+        "legacy_policy_absent": "deduplication_policy" not in settings,
+        "code_repository": settings["code_repository"],
+    }
+
+
+def _recovery_status(outcome, processing: dict) -> tuple:
+    return (
+        outcome.exit_code,
+        "UNVERIFIED" in outcome.output,
+        "not publishable" in outcome.output,
+        processing["scope"],
+        processing["full_source_complete"],
+        processing["complete"],
+    )
+
+
+def _derived_settings_summary(manifest: dict, config: Config, seen: list) -> dict:
+    return {
+        "settings": manifest["settings"],
+        "min_words": manifest["settings"]["min_words"],
+        "complete": manifest["processing"]["full_source_complete"],
+        "context": manifest["processing"]["context"],
+        "inventory_calls": seen,
+        "expected_context": BuildContext.from_config(config).as_dict(),
+    }
+
+
+def _worker_receipt_summary(manifest: dict) -> dict:
+    ledger = manifest["processing"]
+    return {
+        "processed_regions": ledger["processed_regions"],
+        "complete": ledger["full_source_complete"],
+        "examples": ledger["totals"]["examples"],
+        "polygons_seen": ledger["totals"]["polygons_seen"],
+        "text_rejections": ledger["totals"]["text_rejections"],
+        "rejections": manifest["rejections"],
+    }
+
+
+def _mixed_receipt_workers(tmp_path, monkeypatch):
+    config = Config(source="description", source_revision="a" * 40)
+    legacy_document = BuildContext.from_config(config).as_dict()
+    legacy_document.pop("code_revision", None)
+    current_document = BuildContext.from_config(config).as_dict()
+    current_document["code_revision"] = "b" * 40
+    first, second = tmp_path / "w0", tmp_path / "w1"
+    verified_shard(
+        first,
+        config=config,
+        receipt_context=BuildContext.from_document(legacy_document),
+    )
+    verified_shard(
+        second,
+        stem="beta",
+        config=config,
+        receipt_context=BuildContext.from_document(current_document),
+    )
+    monkeypatch.setattr(accounting, "_current_code_revision", lambda: "c" * 40)
+    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta"])
+    return config, first, second
+
+
+def _mixed_provenance_summary(ledger: dict) -> dict:
+    return {
+        "schema": ledger["schema_version"],
+        "provenance": ledger["code_provenance"],
+        "assembly": ledger["assembly_code_revision"],
+    }
+
+
+def _damage_receipt(receipt: Path, shard: Path, directory: Path, damage: str) -> None:
+    actions = {
+        "receipt": lambda: receipt.unlink(),
+        "shard": lambda: shard.unlink(),
+        "bytes": lambda: shard.write_bytes(shard.read_bytes() + b"changed"),
+        "orphan": lambda: (directory / "beta.complete.json").write_text(receipt.read_text()),
+        "schema": lambda: _damage_receipt_schema(receipt),
+    }
+    actions[damage]()
+
+
+def _damage_receipt_schema(receipt: Path) -> None:
+    document = json.loads(receipt.read_text())
+    document["context"]["pipeline_schema_version"] = 999
+    receipt.write_text(json.dumps(document))
+
+
 def test_assemble_defaults_refuse_legacy_shards(tmp_path, monkeypatch) -> None:
     directory = tmp_path / "shards"
     directory.mkdir()
@@ -565,16 +667,14 @@ def test_assemble_reuses_legacy_labeled_shards_for_new_finalization(tmp_path, mo
 
     outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
 
-    assert outcome.exit_code == 0, outcome.output
     manifest = assembled_manifest(tmp_path, "1.1.0")
-    assert manifest["settings"]["deduplication_policy"] == (
-        "polygon_id+normalized_text+worldcover_code"
-    )
-    assert manifest["processing"]["context"]["settings"]["dataset_version"] == "1.0.0"
-    assert "deduplication_policy" not in manifest["processing"]["context"]["settings"]
-    assert manifest["processing"]["context"]["settings"]["code_repository"].endswith(
-        "3ddd472e7deac10d116fd763cbf612e0d1a9c8db"
-    )
+    assert outcome.exit_code == 0, outcome.output
+    assert _legacy_reuse_summary(manifest) == {
+        "policy": "polygon_id+normalized_text+worldcover_code",
+        "source_dataset_version": "1.0.0",
+        "legacy_policy_absent": True,
+        "code_repository": "https://github.com/NoeFlandre/osm-worldcover/tree/3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+    }
 
 
 def test_legacy_recovery_is_explicitly_unpublishable_without_network(tmp_path, monkeypatch):
@@ -585,13 +685,8 @@ def test_legacy_recovery_is_explicitly_unpublishable_without_network(tmp_path, m
     outcome = runner.invoke(
         cli.app, [*assemble_args(tmp_path, directory), "--allow-unverified-shards"]
     )
-    assert outcome.exit_code == 0, outcome.output
-    assert "UNVERIFIED" in outcome.output
-    assert "not publishable" in outcome.output
     processing = assembled_manifest(tmp_path)["processing"]
-    assert processing["scope"] == "unverified"
-    assert processing["full_source_complete"] is False
-    assert processing["complete"] is False
+    assert _recovery_status(outcome, processing) == (0, True, True, "unverified", False, False)
 
 
 def test_assemble_derives_all_settings_from_verified_receipts(tmp_path, monkeypatch):
@@ -622,13 +717,16 @@ def test_assemble_derives_all_settings_from_verified_receipts(tmp_path, monkeypa
 
     monkeypatch.setattr(cli.hub, "list_region_stems", inventory)
     outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
-    assert outcome.exit_code == 0, outcome.output
     manifest = assembled_manifest(tmp_path, "2.1.0")
-    assert manifest["settings"] == config.as_manifest_settings()
-    assert manifest["settings"]["min_words"] == 10
-    assert manifest["processing"]["full_source_complete"] is True
-    assert manifest["processing"]["context"] == BuildContext.from_config(config).as_dict()
-    assert seen == [("owner/custom-description", "a" * 40, "description")]
+    assert outcome.exit_code == 0, outcome.output
+    assert _derived_settings_summary(manifest, config, seen) == {
+        "settings": config.as_manifest_settings(),
+        "min_words": 10,
+        "complete": True,
+        "context": BuildContext.from_config(config).as_dict(),
+        "inventory_calls": [("owner/custom-description", "a" * 40, "description")],
+        "expected_context": BuildContext.from_config(config).as_dict(),
+    }
 
 
 def test_assemble_aggregates_worker_receipts_including_empty_regions(tmp_path, monkeypatch):
@@ -642,41 +740,26 @@ def test_assemble_aggregates_worker_receipts_including_empty_regions(tmp_path, m
     (first / "alpha.rejections.json").write_text('{"too_large": 999}')
     monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta", "empty"])
     outcome = runner.invoke(cli.app, assemble_args(tmp_path, first, second))
-    assert outcome.exit_code == 0, outcome.output
     manifest = assembled_manifest(tmp_path)
-    ledger = manifest["processing"]
-    assert ledger["processed_regions"] == ["alpha", "beta", "empty"]
-    assert ledger["full_source_complete"] is True
-    assert ledger["totals"]["examples"] == 4
-    assert ledger["totals"]["polygons_seen"] == 14
-    assert ledger["totals"]["text_rejections"] == {"empty_text": 2}
-    assert manifest["rejections"] == {"below_threshold": 6}
+    assert outcome.exit_code == 0, outcome.output
+    assert _worker_receipt_summary(manifest) == {
+        "processed_regions": ["alpha", "beta", "empty"],
+        "complete": True,
+        "examples": 4,
+        "polygons_seen": 14,
+        "text_rejections": {"empty_text": 2},
+        "rejections": {"below_threshold": 6},
+    }
 
 
 def test_assemble_preserves_mixed_region_code_pins(tmp_path, monkeypatch):
-    config = Config(source="description", source_revision="a" * 40)
-    legacy_document = BuildContext.from_config(config).as_dict()
-    legacy_document.pop("code_revision", None)
-    current_document = BuildContext.from_config(config).as_dict()
-    current_document["code_revision"] = "b" * 40
-    first, second = tmp_path / "w0", tmp_path / "w1"
-    verified_shard(
-        first,
-        config=config,
-        receipt_context=BuildContext.from_document(legacy_document),
-    )
-    verified_shard(
-        second,
-        stem="beta",
-        config=config,
-        receipt_context=BuildContext.from_document(current_document),
-    )
-    monkeypatch.setattr(accounting, "_current_code_revision", lambda: "c" * 40)
-    monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta"])
+    config, first, second = _mixed_receipt_workers(tmp_path, monkeypatch)
     unpinned = runner.invoke(cli.app, assemble_args(tmp_path, first, second))
-    assert unpinned.exit_code == 1
-    assert "provide --legacy-code-revision" in unpinned.output
-    assert not (tmp_path / "out").exists()
+    assert (
+        unpinned.exit_code,
+        "provide --legacy-code-revision" in unpinned.output,
+        (tmp_path / "out").exists(),
+    ) == (1, True, False)
     outcome = runner.invoke(
         cli.app,
         [
@@ -685,22 +768,24 @@ def test_assemble_preserves_mixed_region_code_pins(tmp_path, monkeypatch):
             "a" * 40,
         ],
     )
-    assert outcome.exit_code == 0, outcome.output
     ledger = assembled_manifest(tmp_path)["processing"]
-    assert ledger["schema_version"] == 2
-    assert ledger["code_provenance"] == [
-        {
-            "repository": config.as_manifest_settings()["code_repository"],
-            "revision": "a" * 40,
-            "regions": ["alpha"],
-        },
-        {
-            "repository": config.as_manifest_settings()["code_repository"],
-            "revision": "b" * 40,
-            "regions": ["beta"],
-        },
-    ]
-    assert ledger["assembly_code_revision"] == "c" * 40
+    assert outcome.exit_code == 0, outcome.output
+    assert _mixed_provenance_summary(ledger) == {
+        "schema": 2,
+        "provenance": [
+            {
+                "repository": config.as_manifest_settings()["code_repository"],
+                "revision": "a" * 40,
+                "regions": ["alpha"],
+            },
+            {
+                "repository": config.as_manifest_settings()["code_repository"],
+                "revision": "b" * 40,
+                "regions": ["beta"],
+            },
+        ],
+        "assembly": "c" * 40,
+    }
 
 
 @pytest.mark.parametrize(
@@ -786,12 +871,14 @@ def test_assemble_marks_subset_as_incomplete(tmp_path, monkeypatch):
     verified_shard(directory)
     monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta"])
     outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
-    assert outcome.exit_code == 0, outcome.output
     ledger = assembled_manifest(tmp_path)["processing"]
-    assert ledger["selected_complete"] is True
-    assert ledger["full_source_complete"] is False
-    assert ledger["missing_regions"] == ["beta"]
-    assert "incomplete source inventory" in outcome.output
+    assert (
+        outcome.exit_code,
+        ledger["selected_complete"],
+        ledger["full_source_complete"],
+        ledger["missing_regions"],
+        "incomplete source inventory" in outcome.output,
+    ) == (0, True, False, ["beta"], True)
 
 
 def test_assemble_rejects_regions_outside_pinned_inventory(tmp_path, monkeypatch):
@@ -809,18 +896,7 @@ def test_assemble_rejects_damaged_or_incomplete_receipts(tmp_path, monkeypatch, 
     verified_shard(directory)
     receipt = directory / "alpha.complete.json"
     shard = directory / "alpha.parquet"
-    if damage == "receipt":
-        receipt.unlink()
-    elif damage == "shard":
-        shard.unlink()
-    elif damage == "bytes":
-        shard.write_bytes(shard.read_bytes() + b"changed")
-    elif damage == "orphan":
-        (directory / "beta.complete.json").write_text(receipt.read_text())
-    else:
-        document = json.loads(receipt.read_text())
-        document["context"]["pipeline_schema_version"] = 999
-        receipt.write_text(json.dumps(document))
+    _damage_receipt(receipt, shard, directory, damage)
     monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: pytest.fail("no network"))
     outcome = runner.invoke(cli.app, assemble_args(tmp_path, directory))
     assert outcome.exit_code == 1

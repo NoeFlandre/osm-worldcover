@@ -23,6 +23,10 @@ def checks_in(rows, **kw) -> set[Check]:
     return {v.check for v in validate(rows, **kw).violations}
 
 
+def _find_violation(rows, check: Check):
+    return next(violation for violation in validate(rows).violations if violation.check is check)
+
+
 def test_a_clean_dataset_passes() -> None:
     report = validate([row(), row(polygon_id="p2", document_id="d2", text="x " * 40)])
     assert report.ok
@@ -113,7 +117,7 @@ def test_violations_are_ordered_deterministically() -> None:
 def test_only_a_handful_of_examples_are_reported_per_check() -> None:
     """The report samples offenders; it must not grow with the dataset."""
     rows = [row(polygon_id=f"p{i}", document_id=f"d{i}", text="tiny") for i in range(20)]
-    violation = next(v for v in validate(rows).violations if v.check is Check.UNUSABLE_TEXT)
+    violation = _find_violation(rows, Check.UNUSABLE_TEXT)
     assert violation.count == 20
     assert len(violation.examples) == 5
 

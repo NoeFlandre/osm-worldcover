@@ -38,12 +38,12 @@ jobs:
 
       # One coverage pass over every suite: CRAP is computed from it, and
       # splitting the runs would make code covered only by the acceptance
-      # tests look untested.
+      # tests look untested. Test helpers are included in the CRAP inventory.
       - name: Tests (unit, property, acceptance)
         run: uv run pytest --cov --cov-report=json -q
 
       - name: CRAP score
-        run: uv run python scripts/crap.py src scripts
+        run: uv run python scripts/crap.py src scripts tests
 
       - name: Docs build
         run: uv run mkdocs build --strict

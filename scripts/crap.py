@@ -23,7 +23,7 @@ def crap(complexity: int, coverage: float) -> float:
 
 
 def blocks(targets: Sequence[str]) -> list[dict[str, Any]]:
-    """Return every Radon block from all requested source roots."""
+    """Return every function, method, and closure in the requested roots."""
     raw = subprocess.run(
         [sys.executable, "-m", "radon", "cc", "-j", *targets],
         capture_output=True,
@@ -32,7 +32,39 @@ def blocks(targets: Sequence[str]) -> list[dict[str, Any]]:
     ).stdout
     report = json.loads(raw)
     _reject_radon_errors(report)
-    return [{**item, "path": path} for path, items in report.items() for item in items]
+    blocks = []
+    seen = set()
+    for path, items in report.items():
+        for item in items:
+            for function in _function_blocks(item):
+                identity = _block_identity(path, function)
+                if identity not in seen:
+                    seen.add(identity)
+                    blocks.append({**function, "path": path})
+    return blocks
+
+
+def _function_blocks(item: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
+    """Walk Radon's nested class methods and function closures recursively."""
+    blocks = []
+    if item.get("type") in {"function", "method"}:
+        blocks.append(item)
+    for child_key in ("methods", "closures"):
+        for child in item.get(child_key, ()):
+            blocks.extend(_function_blocks(child))
+    return blocks
+
+
+def _block_identity(path: str, item: Mapping[str, Any]) -> tuple:
+    """Identify duplicate Radon representations of a function or method."""
+    return (
+        path,
+        item.get("type"),
+        item.get("classname"),
+        item.get("name"),
+        item.get("lineno"),
+        item.get("endline"),
+    )
 
 
 def _reject_radon_errors(report: Mapping[str, Any]) -> None:
@@ -64,6 +96,9 @@ def _score_rows(measured: Sequence[dict[str, Any]], files: Mapping[str, Any]) ->
 
 def _print_report(rows: Sequence[tuple]) -> int:
     """Print the highest scores and every strict-gate violation."""
+    if not rows:
+        print("CRAP gate failed: no code blocks were measured", file=sys.stderr)
+        return 2
     violations = [row for row in rows if row[0] >= THRESHOLD]
     _print_rows(rows[:15])
     _print_violations(violations)

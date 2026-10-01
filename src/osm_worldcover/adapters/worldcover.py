@@ -550,20 +550,18 @@ def _accumulate_corrected(
         return
     ids = np.asarray(cell_ids, dtype=np.int64)
     fractions = np.asarray(coverage, dtype=float)
-    raw_values = np.ma.asarray(values)
-    classes = np.asarray(raw_values.data)
-    mask = None if raw_values.mask is np.ma.nomask else np.asarray(raw_values.mask, dtype=bool)
+    # exactextract omits NoData cells by default; this call never sets default_value.
+    classes = np.asarray(values)
     pixel_geometry = _pixel_geometry(geometry, dataset.transform)
     scale = cell_area / polygon_area
-    excluded = _accumulate_boundary_cells(into, ids, classes, mask, pixel_geometry, dataset, scale)
-    _accumulate_stable_cells(into, classes, mask, fractions, excluded, scale)
+    excluded = _accumulate_boundary_cells(into, ids, classes, pixel_geometry, dataset, scale)
+    _accumulate_stable_cells(into, classes, fractions, excluded, scale)
 
 
 def _accumulate_boundary_cells(
     into: defaultdict[int, float],
     ids: np.ndarray,
     classes: np.ndarray,
-    mask: np.ndarray | None,
     pixel_geometry: shapely.Geometry,
     dataset: rasterio.DatasetReader,
     scale: float,
@@ -575,9 +573,7 @@ def _accumulate_boundary_cells(
     ):
         present, positions = _find_candidates(ids, candidate_ids)
         excluded[positions[present]] = True
-        candidate_classes = _matched_candidate_classes(
-            candidate_ids, classes, mask, present, positions
-        )
+        candidate_classes = _matched_candidate_classes(candidate_ids, classes, present, positions)
         missing = ~present & (corrected > 0.0)
         _read_missing_classes(
             dataset,
@@ -593,7 +589,6 @@ def _accumulate_boundary_cells(
 def _matched_candidate_classes(
     candidate_ids: np.ndarray,
     classes: np.ndarray,
-    mask: np.ndarray | None,
     present: np.ndarray,
     positions: np.ndarray,
 ) -> np.ndarray:
@@ -601,13 +596,7 @@ def _matched_candidate_classes(
     candidate_classes = np.full(len(candidate_ids), np.nan)
     matched_candidates = np.flatnonzero(present)
     matched_positions = positions[matched_candidates]
-    if mask is None:
-        candidate_classes[matched_candidates] = classes[matched_positions]
-        return candidate_classes
-    valid_candidates = ~mask[matched_positions]
-    candidate_classes[matched_candidates[valid_candidates]] = classes[
-        matched_positions[valid_candidates]
-    ]
+    candidate_classes[matched_candidates] = classes[matched_positions]
     return candidate_classes
 
 
@@ -724,7 +713,6 @@ def _chunk_follows(previous: int | None, chunk: np.ndarray) -> bool:
 def _accumulate_stable_cells(
     into: defaultdict[int, float],
     classes: np.ndarray,
-    mask: np.ndarray | None,
     fractions: np.ndarray,
     excluded: np.ndarray,
     scale: float,
@@ -735,8 +723,6 @@ def _accumulate_stable_cells(
         valid = ~excluded[start:stop]
         valid &= np.isfinite(classes[start:stop]) & np.isfinite(fractions[start:stop])
         valid &= fractions[start:stop] > 0.0
-        if mask is not None:
-            valid &= ~mask[start:stop]
         _add_class_coverage(into, classes[start:stop][valid], fractions[start:stop][valid], scale)
 
 

@@ -135,6 +135,63 @@ def tables_for(labelled_id: str = "p1", **over) -> RegionTables:
     )
 
 
+def _region_result_summary(examples: pd.DataFrame, outcome: RegionOutcome) -> dict:
+    """Expose output shape and counters as one region-level contract value."""
+    row = examples.iloc[0]
+    return {
+        "seen": outcome.polygons_seen,
+        "examples": outcome.examples,
+        "label": row["worldcover_code"],
+        "label_name": row["worldcover_label"],
+        "dominance": row["dominant_fraction"],
+        "text_words": row["text_words"],
+        "centroid": row["centroid_wkt"],
+        "area": row["polygon_area_m2"],
+    }
+
+
+def _invalid_geometry_summary(examples: pd.DataFrame, outcome: RegionOutcome, tiles) -> dict:
+    return {
+        "examples_empty": examples.empty,
+        "seen": outcome.polygons_seen,
+        "invalid": outcome.polygons_invalid,
+        "accepted": outcome.polygons_accepted,
+        "with_examples": outcome.polygons_with_examples,
+        "text_rejections": outcome.text_rejections,
+        "rejections": outcome.rejections,
+        "source_links": outcome.source_links,
+        "source_documents": outcome.source_documents,
+        "tiles_ensured": tiles.ensured,
+    }
+
+
+def _text_rejection_summary(examples: pd.DataFrame, outcome: RegionOutcome) -> dict:
+    return {
+        "polygon_ids": examples["polygon_id"].tolist(),
+        "seen": outcome.polygons_seen,
+        "accepted": outcome.polygons_accepted,
+        "invalid": outcome.polygons_invalid,
+        "rejections": outcome.rejections,
+        "source_links": outcome.source_links,
+        "source_documents": outcome.source_documents,
+        "examples": outcome.examples,
+        "with_examples": outcome.polygons_with_examples,
+        "text_rejections": outcome.text_rejections,
+    }
+
+
+def _usable_document_summary(examples: pd.DataFrame, outcome: RegionOutcome) -> dict:
+    return {
+        "document_ids": set(examples["document_id"]),
+        "examples": outcome.examples,
+        "accepted": outcome.polygons_accepted,
+        "with_examples": outcome.polygons_with_examples,
+        "source_links": outcome.source_links,
+        "source_documents": outcome.source_documents,
+        "text_rejections": outcome.text_rejections,
+    }
+
+
 class TestToExamples:
     def _labelled(self) -> pd.DataFrame:
         frame = polygons_frame()
@@ -175,15 +232,16 @@ class TestRunRegion:
         )
         config = Config()
         examples, outcome = run_region(config, tables, FixedTiles(half_and_half))
-        assert outcome.polygons_seen == 1
-        assert outcome.examples == 1
-        row = examples.iloc[0]
-        assert row["worldcover_code"] == 10
-        assert row["worldcover_label"] == "Tree cover"
-        assert row["dominant_fraction"] == pytest.approx(1.0)
-        assert row["text_words"] == 40
-        assert row["centroid_wkt"] == "POINT (2 2)"
-        assert row["polygon_area_m2"] == 1000.0
+        assert _region_result_summary(examples, outcome) == {
+            "seen": 1,
+            "examples": 1,
+            "label": 10,
+            "label_name": "Tree cover",
+            "dominance": pytest.approx(1.0),
+            "text_words": 40,
+            "centroid": "POINT (2 2)",
+            "area": 1000.0,
+        }
 
     def test_a_region_whose_polygons_are_all_rejected_yields_no_examples(
         self, half_and_half
@@ -207,12 +265,18 @@ class TestRunRegion:
 
         examples, outcome = run_region(Config(), tables, tiles)
 
-        assert examples.empty
-        assert outcome.polygons_seen == outcome.polygons_invalid == 1
-        assert outcome.polygons_accepted == outcome.polygons_with_examples == 0
-        assert outcome.text_rejections == outcome.rejections == {}
-        assert outcome.source_links == outcome.source_documents == 1
-        assert tiles.ensured == []
+        assert _invalid_geometry_summary(examples, outcome, tiles) == {
+            "examples_empty": True,
+            "seen": 1,
+            "invalid": 1,
+            "accepted": 0,
+            "with_examples": 0,
+            "text_rejections": {},
+            "rejections": {},
+            "source_links": 1,
+            "source_documents": 1,
+            "tiles_ensured": [],
+        }
 
 
 class TestTextRejectionAccounting:
@@ -243,23 +307,24 @@ class TestTextRejectionAccounting:
 
         examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
 
-        assert examples["polygon_id"].tolist() == ["kept"]
-        assert outcome.polygons_seen == outcome.polygons_accepted == 6
-        assert outcome.polygons_invalid == 0
-        assert outcome.rejections == {}
-        assert outcome.source_links == 5
-        assert outcome.source_documents == 4
-        assert outcome.examples == outcome.polygons_with_examples == 1
-        assert outcome.text_rejections == {
-            "no_source_document": 1,
-            "missing_document": 1,
-            "document_fetch_failed": 1,
-            "empty_text": 1,
-            "text_too_short": 1,
+        assert _text_rejection_summary(examples, outcome) == {
+            "polygon_ids": ["kept"],
+            "seen": 6,
+            "accepted": 6,
+            "invalid": 0,
+            "rejections": {},
+            "source_links": 5,
+            "source_documents": 4,
+            "examples": 1,
+            "with_examples": 1,
+            "text_rejections": {
+                "no_source_document": 1,
+                "missing_document": 1,
+                "document_fetch_failed": 1,
+                "empty_text": 1,
+                "text_too_short": 1,
+            },
         }
-        assert outcome.polygons_accepted == (
-            outcome.polygons_with_examples + sum(outcome.text_rejections.values())
-        )
 
     def test_one_usable_document_prevents_counting_a_polygon_as_rejected(
         self, half_and_half
@@ -285,12 +350,15 @@ class TestTextRejectionAccounting:
 
         examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
 
-        assert set(examples["document_id"]) == {"kept-a", "kept-b"}
-        assert outcome.examples == 2
-        assert outcome.polygons_accepted == outcome.polygons_with_examples == 1
-        assert outcome.source_links == 6
-        assert outcome.source_documents == 5
-        assert outcome.text_rejections == {}
+        assert _usable_document_summary(examples, outcome) == {
+            "document_ids": {"kept-a", "kept-b"},
+            "examples": 2,
+            "accepted": 1,
+            "with_examples": 1,
+            "source_links": 6,
+            "source_documents": 5,
+            "text_rejections": {},
+        }
 
     def test_last_surviving_document_determines_polygon_rejection_stage(
         self, half_and_half

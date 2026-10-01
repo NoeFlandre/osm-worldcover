@@ -281,10 +281,13 @@ def test_identical_text_different_labels_is_visible_and_optionally_fatal(build):
     mutate(build, "test", text=text, worldcover_code=20, worldcover_label="Shrubland")
     report = audit_build(build)
     risks = Counter({warning.code: warning.count for warning in report.warnings})
-    assert risks["identical_text_cross_split"] == 1
-    assert risks["identical_text_conflicting_labels"] == 1
-    assert "identical_text_cross_split" not in problems(report)
-    assert "identical_text_cross_split" in problems(audit_build(build, strict_text_leakage=True))
+    strict_problems = problems(audit_build(build, strict_text_leakage=True))
+    assert (
+        risks["identical_text_cross_split"],
+        risks["identical_text_conflicting_labels"],
+        "identical_text_cross_split" in problems(report),
+        "identical_text_cross_split" in strict_problems,
+    ) == (1, 1, False, True)
 
 
 def test_identical_text_and_label_on_distinct_polygons_is_a_diagnostic(build):
@@ -315,7 +318,7 @@ def test_card_is_required_only_when_requested(build):
     assert "invalid_card_or_map" in problems(audit_build(build, require_card=True))
 
 
-def test_card_metadata_and_assets_are_audited(build):
+def _card_front_matter() -> str:
     metadata = {
         "license": "cc-by-sa-4.0",
         "configs": [
@@ -325,21 +328,31 @@ def test_card_metadata_and_assets_are_audited(build):
             }
         ],
     }
-    front_matter = yaml.safe_dump(metadata, sort_keys=False)
-    (build / "README.md").write_text(
-        f"---\n{front_matter}---\n{SETTINGS['source_dataset']} "
-        f"{SETTINGS['source_revision']} ![map](worldcover_centroids.png)"
+    return yaml.safe_dump(metadata, sort_keys=False)
+
+
+def _write_card_and_map(build, front_matter: str, body: str, image: bytes) -> None:
+    (build / "README.md").write_text(f"---\n{front_matter}---\n{body}")
+    (build / "worldcover_centroids.png").write_bytes(image)
+
+
+def test_card_metadata_and_assets_are_audited(build):
+    front_matter = _card_front_matter()
+    valid_body = (
+        f"{SETTINGS['source_dataset']} {SETTINGS['source_revision']} "
+        "![map](worldcover_centroids.png)"
     )
-    (build / "worldcover_centroids.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    _write_card_and_map(build, front_matter, valid_body, b"\x89PNG\r\n\x1a\n")
     assert audit_build(build, require_card=True).ok
 
-    (build / "README.md").write_text("---\n" + front_matter + "---\n")
-    (build / "worldcover_centroids.png").write_bytes(b"not a png")
+    _write_card_and_map(build, front_matter, "", b"not a png")
     codes = problems(audit_build(build, require_card=True))
-    assert "card_missing_provenance:source_revision" in codes
-    assert "card_missing_provenance:source_dataset" in codes
-    assert "card_missing_coverage_map" in codes
-    assert "invalid_coverage_map_png" in codes
+    assert {
+        "card_missing_provenance:source_revision",
+        "card_missing_provenance:source_dataset",
+        "card_missing_coverage_map",
+        "invalid_coverage_map_png",
+    } <= codes
 
 
 def test_required_card_matches_mixed_code_provenance(build):

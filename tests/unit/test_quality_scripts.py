@@ -17,12 +17,112 @@ def test_blocks_collects_every_requested_root(monkeypatch) -> None:
         assert command[-2:] == ["src", "scripts"]
         assert kwargs["check"] is True
         return SimpleNamespace(
-            stdout=json.dumps({"src/module.py": [{"name": "run"}], "scripts/tool.py": []})
+            stdout=json.dumps(
+                {
+                    "src/module.py": [
+                        {
+                            "type": "function",
+                            "name": "run",
+                            "complexity": 1,
+                            "lineno": 1,
+                            "endline": 2,
+                        }
+                    ],
+                    "scripts/tool.py": [],
+                }
+            )
         )
 
     monkeypatch.setattr(crap.subprocess, "run", fake_run)
 
-    assert crap.blocks(["src", "scripts"]) == [{"name": "run", "path": "src/module.py"}]
+    assert crap.blocks(["src", "scripts"]) == [
+        {
+            "type": "function",
+            "name": "run",
+            "complexity": 1,
+            "lineno": 1,
+            "endline": 2,
+            "path": "src/module.py",
+        }
+    ]
+
+
+def test_blocks_include_nested_closures_and_class_methods_once(monkeypatch) -> None:
+    branchy_method = {
+        "type": "method",
+        "name": "branchy",
+        "complexity": 7,
+        "lineno": 10,
+        "endline": 18,
+        "classname": "Example",
+        "closures": [],
+    }
+    report = {
+        "src/module.py": [
+            {
+                "type": "function",
+                "name": "outer",
+                "complexity": 1,
+                "lineno": 1,
+                "endline": 8,
+                "closures": [
+                    {
+                        "type": "function",
+                        "name": "nested",
+                        "complexity": 7,
+                        "lineno": 2,
+                        "endline": 7,
+                        "closures": [],
+                    }
+                ],
+            },
+            branchy_method,
+            {
+                "type": "class",
+                "name": "Example",
+                "complexity": 4,
+                "lineno": 9,
+                "endline": 20,
+                "methods": [
+                    {
+                        "type": "method",
+                        "name": "simple",
+                        "complexity": 1,
+                        "lineno": 19,
+                        "endline": 20,
+                        "classname": "Example",
+                        "closures": [],
+                    },
+                    branchy_method,
+                ],
+            },
+        ]
+    }
+
+    monkeypatch.setattr(
+        crap.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(report)),
+    )
+
+    blocks = crap.blocks(["src"])
+
+    assert [(block["name"], block["complexity"]) for block in blocks] == [
+        ("outer", 1),
+        ("nested", 7),
+        ("branchy", 7),
+        ("simple", 1),
+    ]
+
+
+def test_crap_gate_rejects_an_empty_measured_inventory(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "coverage.json").write_text(json.dumps({"files": {}}))
+    monkeypatch.setattr(sys, "argv", ["crap.py", "src", "scripts", "tests"])
+    monkeypatch.setattr(crap, "blocks", lambda targets: [])
+
+    assert crap.main() == 2
+    assert "no code blocks were measured" in capsys.readouterr().err
 
 
 def test_radon_errors_are_not_silently_ignored(monkeypatch) -> None:
@@ -84,24 +184,30 @@ def test_crap_gate_reports_a_clean_single_score(monkeypatch, tmp_path, capsys) -
 
 
 @pytest.mark.parametrize(
-    ("stats", "expected"),
+    ("stats", "expected", "stdout", "stderr"),
     [
-        (None, 2),
-        ({"killed": 0, "timeout": 0, "survived": 0}, 2),
-        ({"killed": 7, "timeout": 1, "survived": 2}, 0),
-        ({"killed": 6, "timeout": 0, "survived": 2}, 1),
+        ({"killed": 0, "timeout": 0, "survived": 0}, 2, "", "no mutants were run"),
+        ({"killed": 7, "timeout": 1, "survived": 2}, 0, "80.0%", ""),
+        ({"killed": 6, "timeout": 0, "survived": 2}, 1, "", "below the 80% floor"),
     ],
 )
-def test_mutation_score_gate(tmp_path, monkeypatch, capsys, stats, expected) -> None:
+def test_mutation_score_gate_reports_the_floor(
+    tmp_path, monkeypatch, capsys, stats, expected, stdout, stderr
+) -> None:
     stats_path = tmp_path / "mutmut-cicd-stats.json"
     monkeypatch.setattr(mutation_score, "STATS", stats_path)
     monkeypatch.setattr(mutation_score.subprocess, "run", lambda *args, **kwargs: None)
-    if stats is not None:
-        stats_path.write_text(json.dumps(stats))
+    stats_path.write_text(json.dumps(stats))
 
     assert mutation_score.main() == expected
     output = capsys.readouterr()
-    if stats == {"killed": 7, "timeout": 1, "survived": 2}:
-        assert "mutation score: 80.0%" in output.out
-    if stats == {"killed": 6, "timeout": 0, "survived": 2}:
-        assert "below the 80% floor" in output.err
+    assert stdout in output.out
+    assert stderr in output.err
+
+
+def test_mutation_score_gate_requires_a_report(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(mutation_score, "STATS", tmp_path / "missing.json")
+    monkeypatch.setattr(mutation_score.subprocess, "run", lambda *args, **kwargs: None)
+
+    assert mutation_score.main() == 2
+    assert "no mutation stats" in capsys.readouterr().err
