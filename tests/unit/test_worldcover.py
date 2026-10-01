@@ -61,14 +61,31 @@ class TestClassCoverage:
         ]
 
     def test_nodata_is_absent_and_leaves_the_polygon_only_half_covered(
-        self, with_nodata, square
+        self, with_nodata, square, monkeypatch
     ) -> None:
         """No-data is not a class, so it is reported as missing coverage.
 
         Renormalising over observed pixels would label a half-unobserved
         polygon with full confidence; leaving the gap lets dominance refuse it.
         """
+        original_extract = worldcover.exact_extract
+        observed_values = []
+
+        def recording_extract(raster, features, operations, **kwargs):
+            result = original_extract(raster, features, operations, **kwargs)
+            observed_values.extend(result["values"])
+            assert operations == ["cell_id", "coverage", "values"]
+            assert "default_value" not in kwargs
+            return result
+
+        monkeypatch.setattr(worldcover, "exact_extract", recording_extract)
         coverage = class_coverage([with_nodata], square)[0]
+
+        assert observed_values
+        assert all(
+            np.ma.asarray(values).mask is np.ma.nomask or not np.any(np.ma.asarray(values).mask)
+            for values in observed_values
+        )
         assert coverage == {10: pytest.approx(0.5)}
         assert sum(coverage.values()) == pytest.approx(0.5)
 
