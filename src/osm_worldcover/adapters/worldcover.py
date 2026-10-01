@@ -592,7 +592,7 @@ def _matched_candidate_classes(
     present: np.ndarray,
     positions: np.ndarray,
 ) -> np.ndarray:
-    """Map exactextract values onto candidate cells, leaving masked cells empty."""
+    """Map exactextract values onto candidate cells, leaving unmatched cells empty."""
     candidate_classes = np.full(len(candidate_ids), np.nan)
     matched_candidates = np.flatnonzero(present)
     matched_positions = positions[matched_candidates]

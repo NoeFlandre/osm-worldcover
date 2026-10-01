@@ -2,117 +2,117 @@
 
 import json
 import sys
-from types import SimpleNamespace
 
 import pytest
 from scripts import crap, mutation_score
+
+NESTED_CALLABLE_SOURCE = """\
+class Outer:
+    class Inner:
+        def compute(self, value):
+            if value:
+                return 1
+            return 2
+
+    def outer_method(self, value):
+        def inner(item):
+            if item:
+                return 3
+            return 4
+        return inner(value)
+
+def factory(value):
+    class Local:
+        async def compute(self, item):
+            if item:
+                return 5
+            return 6
+
+        class Deep:
+            def measure(self, item):
+                if item:
+                    return 7
+                return 8
+
+    async def nested_async(item):
+        if item:
+            return 9
+        return 10
+    return value
+"""
+
+
+def _nested_blocks(tmp_path):
+    source = tmp_path / "nested.py"
+    source.write_text(NESTED_CALLABLE_SOURCE)
+    return crap.blocks([str(source)])
 
 
 def test_crap_formula() -> None:
     assert crap.crap(3, 0.5) == pytest.approx(4.125)
 
 
-def test_blocks_collects_every_requested_root(monkeypatch) -> None:
-    def fake_run(command, **kwargs):
-        assert command[-2:] == ["src", "scripts"]
-        assert kwargs["check"] is True
-        return SimpleNamespace(
-            stdout=json.dumps(
-                {
-                    "src/module.py": [
-                        {
-                            "type": "function",
-                            "name": "run",
-                            "complexity": 1,
-                            "lineno": 1,
-                            "endline": 2,
-                        }
-                    ],
-                    "scripts/tool.py": [],
-                }
-            )
-        )
+def test_blocks_collects_every_requested_root(tmp_path) -> None:
+    src = tmp_path / "src"
+    scripts = tmp_path / "scripts"
+    src.mkdir()
+    scripts.mkdir()
+    (src / "module.py").write_text("def run():\n    return 1\n")
+    (scripts / "tool.py").write_text("async def check():\n    return 2\n")
+    (tmp_path / "notes.txt").write_text("not Python source")
 
-    monkeypatch.setattr(crap.subprocess, "run", fake_run)
+    blocks = crap.blocks([str(tmp_path), str(src), str(scripts), str(tmp_path / "notes.txt")])
 
-    assert crap.blocks(["src", "scripts"]) == [
-        {
-            "type": "function",
-            "name": "run",
-            "complexity": 1,
-            "lineno": 1,
-            "endline": 2,
-            "path": "src/module.py",
-        }
+    assert [(block["name"], block["type"]) for block in blocks] == [
+        ("check", "function"),
+        ("run", "function"),
     ]
 
 
-def test_blocks_include_nested_closures_and_class_methods_once(monkeypatch) -> None:
-    branchy_method = {
-        "type": "method",
-        "name": "branchy",
-        "complexity": 7,
-        "lineno": 10,
-        "endline": 18,
-        "classname": "Example",
-        "closures": [],
-    }
-    report = {
-        "src/module.py": [
-            {
-                "type": "function",
-                "name": "outer",
-                "complexity": 1,
-                "lineno": 1,
-                "endline": 8,
-                "closures": [
-                    {
-                        "type": "function",
-                        "name": "nested",
-                        "complexity": 7,
-                        "lineno": 2,
-                        "endline": 7,
-                        "closures": [],
-                    }
-                ],
-            },
-            branchy_method,
-            {
-                "type": "class",
-                "name": "Example",
-                "complexity": 4,
-                "lineno": 9,
-                "endline": 20,
-                "methods": [
-                    {
-                        "type": "method",
-                        "name": "simple",
-                        "complexity": 1,
-                        "lineno": 19,
-                        "endline": 20,
-                        "classname": "Example",
-                        "closures": [],
-                    },
-                    branchy_method,
-                ],
-            },
-        ]
-    }
+def test_blocks_include_nested_classes_local_classes_and_async_functions(tmp_path) -> None:
+    blocks = _nested_blocks(tmp_path)
+    qualified_names = [block["qualified_name"] for block in blocks]
 
-    monkeypatch.setattr(
-        crap.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(stdout=json.dumps(report)),
-    )
-
-    blocks = crap.blocks(["src"])
-
-    assert [(block["name"], block["complexity"]) for block in blocks] == [
-        ("outer", 1),
-        ("nested", 7),
-        ("branchy", 7),
-        ("simple", 1),
+    assert qualified_names == [
+        "Outer.Inner.compute",
+        "Outer.outer_method",
+        "Outer.outer_method.inner",
+        "factory",
+        "factory.Local.compute",
+        "factory.Local.Deep.measure",
+        "factory.nested_async",
     ]
+    assert len({(block["path"], block["lineno"]) for block in blocks}) == len(blocks)
+
+
+def test_callable_complexity_does_not_include_nested_bodies(tmp_path) -> None:
+    blocks = _nested_blocks(tmp_path)
+    complexities = {block["qualified_name"]: block["complexity"] for block in blocks}
+
+    assert complexities == {
+        "Outer.Inner.compute": 2,
+        "Outer.outer_method": 1,
+        "Outer.outer_method.inner": 2,
+        "factory": 1,
+        "factory.Local.compute": 2,
+        "factory.Local.Deep.measure": 2,
+        "factory.nested_async": 2,
+    }
+
+
+def test_blocks_distinguish_methods_from_nested_functions(tmp_path) -> None:
+    blocks = _nested_blocks(tmp_path)
+    callable_types = {block["qualified_name"]: block["type"] for block in blocks}
+
+    assert callable_types == {
+        "Outer.Inner.compute": "method",
+        "Outer.outer_method": "method",
+        "Outer.outer_method.inner": "function",
+        "factory": "function",
+        "factory.Local.compute": "method",
+        "factory.Local.Deep.measure": "method",
+        "factory.nested_async": "function",
+    }
 
 
 def test_crap_gate_rejects_an_empty_measured_inventory(monkeypatch, tmp_path, capsys) -> None:
@@ -125,15 +125,42 @@ def test_crap_gate_rejects_an_empty_measured_inventory(monkeypatch, tmp_path, ca
     assert "no code blocks were measured" in capsys.readouterr().err
 
 
-def test_radon_errors_are_not_silently_ignored(monkeypatch) -> None:
-    monkeypatch.setattr(
-        crap.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(stdout='{"broken.py": {"error": "syntax"}}'),
-    )
+def test_source_syntax_errors_are_not_silently_ignored(tmp_path) -> None:
+    source = tmp_path / "broken.py"
+    source.write_text("def broken(:\n    pass\n")
 
-    with pytest.raises(ValueError, match=r"broken\.py: syntax"):
-        crap.blocks(["src", "scripts"])
+    with pytest.raises(ValueError, match=r"broken\.py: invalid syntax"):
+        crap.blocks([str(source)])
+
+
+def test_missing_source_root_is_reported(tmp_path) -> None:
+    with pytest.raises(FileNotFoundError):
+        crap.blocks([str(tmp_path / "missing")])
+
+
+def test_coverage_excludes_nested_callable_and_local_class_bodies(tmp_path) -> None:
+    source = tmp_path / "owned.py"
+    source.write_text(
+        "def factory():\n"
+        "    def nested():\n"
+        "        if False:\n"
+        "            return 1\n"
+        "    class Local:\n"
+        "        def method(self):\n"
+        "            if False:\n"
+        "                return 2\n"
+        "    return nested\n"
+    )
+    factory = crap.blocks([str(source)])[0]
+    coverage_files = {
+        str(source): {
+            "executed_lines": [1, 2, 5, 9],
+            "missing_lines": [3, 4, 6, 7, 8],
+        }
+    }
+
+    assert factory["owned_lines"] == [1, 2, 5, 9]
+    assert crap._coverage(factory, coverage_files) == 1.0
 
 
 def test_crap_gate_counts_unmeasured_functions_as_uncovered(monkeypatch, tmp_path, capsys) -> None:
