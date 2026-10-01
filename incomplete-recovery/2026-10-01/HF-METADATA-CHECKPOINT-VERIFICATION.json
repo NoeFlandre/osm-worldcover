@@ -1,0 +1,171 @@
+{
+  "description": {
+    "repo": "NoeFlandre/osm-polygon-description-tag-worldcover",
+    "revision": "1b146b5dcb92bb7304fe9cd69124d61b11564d67",
+    "commits": [
+      "1285fa2eabbc5bc67fca3bdbcf88d9c929777ecf",
+      "209abfaf235930390ac284ac5155cc9201186de4",
+      "922d572986d05252a9e81afb762a53fc9cebef38",
+      "650c50a0f18c13abd58fbc392ffa2c041e14bb64",
+      "f61cc3b64e1c69e63f5fec9e6025ff78ac18a260",
+      "4f9e9eb6aa292b33af841ecaf2bae18f732e712f",
+      "94cd390dac5d5935811b82fc20d65b419f1f2bf0",
+      "dd47ee1e4621f0ddc6056c9f44ccd6435c7f11ba",
+      "023e5f99966de345ed4406aa5c3ce471a753fd82",
+      "eebdf1bae437bfb0b23b1ebcee9c2151ee7b90ae"
+    ],
+    "prefix": "incomplete-recovery/2026-10-01-backup",
+    "ordinary_files_verified_by_remote_git_blob_sha": 877,
+    "verified_parquet_files": 0,
+    "parquet_files_pending": 2181,
+    "control_files_verified": [
+      {
+        "file": "REMOTE-STAGING-STATUS.json",
+        "size": 717198,
+        "git_blob_sha": "491c942f82128d4545e8503587dd40b648ee9914"
+      },
+      {
+        "file": "RECOVERY-README.md",
+        "size": 278,
+        "git_blob_sha": "8d70ef70c5625a14759b4641b6ffb8d71a02d609"
+      },
+      {
+        "file": "BACKUP-MANIFEST.json",
+        "size": 1530678,
+        "git_blob_sha": "65f5887ac55bf9479d308e1a5efa479055c750bd"
+      }
+    ],
+    "complete_release": false,
+    "download_readback": "verified",
+    "initial_metadata_commit": "eebdf1bae437bfb0b23b1ebcee9c2151ee7b90ae",
+    "status_controls_commit": "1b146b5dcb92bb7304fe9cd69124d61b11564d67",
+    "control_readbacks": [
+      {
+        "path": "BACKUP-MANIFEST.json",
+        "size": 1530791,
+        "sha1": "f1b22a24432861a90271e3010f6ef15d2ff4e8c3",
+        "byte_readback": true
+      },
+      {
+        "path": "REMOTE-STAGING-STATUS.json",
+        "size": 717362,
+        "sha1": "6a8b60960d2eab127bfb3762cacdc63368d4e39e",
+        "byte_readback": true
+      }
+    ],
+    "parquet_upload_blocker": "HTTP proxy 403 to hf-hub-lfs-us-east-1.s3-accelerate.amazonaws.com (signed upload URL host; no file data sent in diagnosis)",
+    "parquet_files_uploaded": 0,
+    "all_original_local_checkpoints_preserved": true
+  },
+  "website": {
+    "repo": "NoeFlandre/osm-polygon-website-tag-worldcover",
+    "revision": "dacfdea30a045cff244be79a7e7ce462a0fa0d95",
+    "commits": [
+      "89f2e6398581341bcd30a38bc256e3cf96294cf3",
+      "783e3ebb76c420b9331819b92f85666d0cddb75d",
+      "12102cdd748caa4430ada14e6a4ff9faa87e2a39",
+      "439a00eb902a9ec2c43531ff9dc8e596fed166fe",
+      "4ef9c90a6365625697a7b1cb1d82a8a87b98d302",
+      "ca2a46aec9026798d0ea1aec88b1fe2c55601d9c",
+      "5346324c5057587b68c9cab821c9f3c7123b656b",
+      "3b8881c7945afce750d1a595a5c1ea370e633866",
+      "67eb4139d31156eb7ef4f2c020766b1ed2748343",
+      "a8121d31186b45c1659d0e60864ebf4b40e25440",
+      "127548126758a9ddd50682f9c804d86651fa5f88",
+      "9da6f16d659b529c86b5feb344ff88c539214526"
+    ],
+    "prefix": "incomplete-recovery/2026-10-01-backup",
+    "ordinary_files_verified_by_remote_git_blob_sha": 1002,
+    "verified_parquet_files": 0,
+    "parquet_files_pending": 2129,
+    "control_files_verified": [
+      {
+        "file": "REMOTE-STAGING-STATUS.json",
+        "size": 727583,
+        "git_blob_sha": "2babcbdb45c204a739a6d1b841b13b1ef8365c10"
+      },
+      {
+        "file": "BACKUP-MANIFEST.json",
+        "size": 1526669,
+        "git_blob_sha": "1f0a8ed28701e8e73a4bb805cf9fef006d2df2bc"
+      },
+      {
+        "file": "RECOVERY-README.md",
+        "size": 278,
+        "git_blob_sha": "8d70ef70c5625a14759b4641b6ffb8d71a02d609"
+      }
+    ],
+    "complete_release": false,
+    "download_readback": "verified",
+    "initial_metadata_commit": "9da6f16d659b529c86b5feb344ff88c539214526",
+    "status_controls_commit": "dacfdea30a045cff244be79a7e7ce462a0fa0d95",
+    "control_readbacks": [
+      {
+        "path": "BACKUP-MANIFEST.json",
+        "size": 1526782,
+        "sha1": "a64f0e755c418f70afe38ad1d6b6b0dc08808ecc",
+        "byte_readback": true
+      },
+      {
+        "path": "REMOTE-STAGING-STATUS.json",
+        "size": 727747,
+        "sha1": "d01079297a9b84fa6f61267143f29581d9d4270e",
+        "byte_readback": true
+      }
+    ],
+    "parquet_upload_blocker": "HTTP proxy 403 to hf-hub-lfs-us-east-1.s3-accelerate.amazonaws.com (signed upload URL host; no file data sent in diagnosis)",
+    "parquet_files_uploaded": 0,
+    "all_original_local_checkpoints_preserved": true
+  },
+  "wikidata": {
+    "repo": "NoeFlandre/osm-wikidata-worldcover",
+    "revision": "e59c5f01bbe59864b78b09eb2b5ffbbefbfe3ef1",
+    "commits": [
+      "7973bcce0d3ba492938c5301bb51564a8bc23242",
+      "ee76c015ff04e610ff51d9ed4ee57b697ea0deb4",
+      "0dfee76c07fdc0fd3a14b28bb9e51a843f5feb1e"
+    ],
+    "prefix": "incomplete-recovery/2026-10-01-backup",
+    "ordinary_files_verified_by_remote_git_blob_sha": 131,
+    "verified_parquet_files": 0,
+    "parquet_files_pending": 373,
+    "control_files_verified": [
+      {
+        "file": "REMOTE-STAGING-STATUS.json",
+        "size": 123029,
+        "git_blob_sha": "5f3c417815143e7fc51c4b08187cfdc743c674a6"
+      },
+      {
+        "file": "BACKUP-MANIFEST.json",
+        "size": 261234,
+        "git_blob_sha": "b6904f8f5d42e918c873cd554adb7697bc4dcf06"
+      },
+      {
+        "file": "RECOVERY-README.md",
+        "size": 278,
+        "git_blob_sha": "8d70ef70c5625a14759b4641b6ffb8d71a02d609"
+      }
+    ],
+    "complete_release": false,
+    "download_readback": "verified",
+    "initial_metadata_commit": "0dfee76c07fdc0fd3a14b28bb9e51a843f5feb1e",
+    "status_controls_commit": "e59c5f01bbe59864b78b09eb2b5ffbbefbfe3ef1",
+    "control_readbacks": [
+      {
+        "path": "BACKUP-MANIFEST.json",
+        "size": 261347,
+        "sha1": "3c159fabf15d8ebe791148d5d1e186d63c0b850b",
+        "byte_readback": true
+      },
+      {
+        "path": "REMOTE-STAGING-STATUS.json",
+        "size": 123193,
+        "sha1": "b8087b19a5fcc22085cdda85801d5cde3bc11681",
+        "byte_readback": true
+      }
+    ],
+    "parquet_upload_blocker": "HTTP proxy 403 to hf-hub-lfs-us-east-1.s3-accelerate.amazonaws.com (signed upload URL host; no file data sent in diagnosis)",
+    "parquet_files_uploaded": 0,
+    "all_original_local_checkpoints_preserved": true
+  }
+}
