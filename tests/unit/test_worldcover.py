@@ -14,6 +14,7 @@ from tests.conftest import write_raster
 
 import osm_worldcover.adapters.worldcover as worldcover
 from osm_worldcover.adapters.worldcover import WorldCoverTiles, class_coverage
+from osm_worldcover.domain.dominance import decide
 from osm_worldcover.domain.tiling import Tile
 
 BOUNDARY_FIXTURES = Path(__file__).parents[1] / "fixtures" / "worldcover-boundary"
@@ -161,6 +162,46 @@ class TestClassCoverage:
         coverage = class_coverage([half_and_half], one(MultiPolygon([left, right])))[0]
         assert coverage == {10: pytest.approx(0.5), 50: pytest.approx(0.5)}
 
+    def test_spatially_chunked_geometry_preserves_coverage_and_label(
+        self, half_and_half, monkeypatch
+    ) -> None:
+        left = Polygon([(0.2, 0.2), (0.2, 0.8), (0.8, 0.8), (0.8, 0.2)])
+        right = Polygon([(2.1, 0.25), (2.1, 3.75), (3.8, 3.75), (3.8, 0.25)])
+        frame = one(MultiPolygon([left, right]))
+        expected = class_coverage([half_and_half], frame)[0]
+        expected_label = decide(expected, polygon_area=1.0, threshold=0.8)
+        original_extract = worldcover.exact_extract
+        bounds: list[tuple[int, int]] = []
+        with rasterio.open(half_and_half) as dataset:
+            transform = dataset.transform
+
+        def recording_extract(raster, features, operations, **kwargs):
+            for geometry in features.geometry:
+                pixel_geometry = worldcover._pixel_geometry(geometry, transform)
+                bounds.append(
+                    (
+                        worldcover._pixel_bbox_cells(pixel_geometry, 4, 4),
+                        shapely.get_num_coordinates(pixel_geometry),
+                    )
+                )
+            return original_extract(raster, features, operations, **kwargs)
+
+        with monkeypatch.context() as bounded:
+            bounded.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
+            bounded.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", 12)
+            bounded.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 1)
+            bounded.setattr(worldcover, "exact_extract", recording_extract)
+            actual = class_coverage([half_and_half], frame)[0]
+
+        actual_label = decide(actual, polygon_area=1.0, threshold=0.8)
+        assert len(bounds) > 1
+        assert all(cells <= 9 and coordinates <= 12 for cells, coordinates in bounds)
+        assert actual == pytest.approx(expected, abs=1e-12)
+        assert actual_label.code == expected_label.code
+        assert actual_label.accepted
+        assert actual_label.code == 50
+        assert actual_label.fraction == pytest.approx(expected_label.fraction, abs=1e-12)
+
     def test_southern_hemisphere_polygon_crosses_two_raster_tiles(self, tmp_path) -> None:
         left = write_raster(
             tmp_path / "south-west.tif",
@@ -175,6 +216,60 @@ class TestClassCoverage:
         across_seam = one(Polygon([(1, -6), (1, -2), (3, -2), (3, -6)]))
         coverage = class_coverage([left, right], across_seam)[0]
         assert coverage == {10: pytest.approx(0.5), 50: pytest.approx(0.5)}
+
+    def test_spatially_chunked_polygon_preserves_tile_boundary_nodata_and_purity(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        left = write_raster(
+            tmp_path / "west.tif",
+            np.full((6, 4), 10, dtype="uint8"),
+            origin=(0, -2),
+        )
+        east_values = np.full((6, 4), 50, dtype="uint8")
+        east_values[:, 1:] = 0
+        right = write_raster(
+            tmp_path / "east.tif",
+            east_values,
+            origin=(4, -2),
+        )
+        geometry = Polygon([(3.25, -7.5), (3.25, -2.5), (5.5, -2.5), (5.5, -7.5)])
+        frame = one(geometry)
+        expected = class_coverage([left, right], frame)[0]
+        expected_label = decide(expected, polygon_area=1.0, threshold=0.45)
+        original_extract = worldcover.exact_extract
+        bounds: list[tuple[int, int]] = []
+
+        def recording_extract(raster, features, operations, **kwargs):
+            assert features.crs.to_epsg() == 4326
+            with rasterio.open(raster) as dataset:
+                for chunk in features.geometry:
+                    pixel_geometry = worldcover._pixel_geometry(chunk, dataset.transform)
+                    bounds.append(
+                        (
+                            worldcover._pixel_bbox_cells(
+                                pixel_geometry, dataset.width, dataset.height
+                            ),
+                            shapely.get_num_coordinates(pixel_geometry),
+                        )
+                    )
+            return original_extract(raster, features, operations, **kwargs)
+
+        with monkeypatch.context() as bounded:
+            bounded.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
+            bounded.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", 12)
+            bounded.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 1)
+            bounded.setattr(worldcover, "exact_extract", recording_extract)
+            actual = class_coverage([left, right], frame)[0]
+
+        actual_label = decide(actual, polygon_area=1.0, threshold=0.45)
+        assert len(bounds) > 2
+        assert all(cells <= 9 and coordinates <= 12 for cells, coordinates in bounds)
+        assert expected == {10: pytest.approx(1 / 3), 50: pytest.approx(4 / 9)}
+        assert sum(expected.values()) == pytest.approx(7 / 9)
+        assert actual == pytest.approx(expected, abs=1e-12)
+        assert actual_label.code == expected_label.code == 50
+        assert actual_label.fraction == pytest.approx(4 / 9)
+        assert not actual_label.accepted
 
 
 @pytest.mark.parametrize(

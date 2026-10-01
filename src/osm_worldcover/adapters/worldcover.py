@@ -61,6 +61,10 @@ _BOUNDARY_ROW_CHUNK: Final[int] = 256
 _MAX_FEATURES_PER_BATCH: Final[int] = 128
 _MAX_BATCH_AREA_M2: Final[float] = 2_000_000_000.0
 _MAX_CELLS_IN_MEMORY: Final[int] = 2_000_000
+_MAX_BATCH_PIXEL_BBOX_CELLS: Final[int] = 2_000_000
+_MAX_GEOMETRY_COORDINATES: Final[int] = 25_000
+_MAX_GEOMETRY_SPLIT_DEPTH: Final[int] = 32
+_BOUNDARY_CELLS_PER_CHUNK: Final[int] = 16_384
 _ACCUMULATION_CELL_CHUNK: Final[int] = 1_000_000
 
 
@@ -197,46 +201,316 @@ def _add_raster(
     with rasterio.open(path) as dataset:
         transform = dataset.transform
         cell_area = abs(transform.a * transform.e - transform.b * transform.d)
-        for start, stop in _feature_batches(frame):
-            batch = frame.iloc[start:stop]
-            result = exact_extract(
-                str(path),
-                batch,
-                list(_OPS),
-                max_cells_in_memory=_MAX_CELLS_IN_MEMORY,
-                output="pandas",
+        for start, stop in _feature_batches(frame, transform, dataset.width, dataset.height):
+            ordinary, spatial = _partition_feature_batch(
+                frame, start, stop, transform, dataset.width, dataset.height
             )
-            for index, (cell_ids, coverage, values) in enumerate(
-                zip(result["cell_id"], result["coverage"], result["values"], strict=True),
-                start=start,
-            ):
-                _accumulate_corrected(
-                    totals[index],
-                    cell_ids,
-                    coverage,
-                    values,
-                    frame.geometry.iloc[index],
+            _add_ordinary_features(totals, path, frame, ordinary, dataset, cell_area, areas)
+            for index, pixel_geometry in spatial:
+                _add_spatial_feature(
+                    totals,
+                    path,
+                    frame.crs,
+                    index,
+                    pixel_geometry,
+                    transform,
                     dataset,
                     cell_area,
                     areas[index],
                 )
 
 
-def _feature_batches(frame: gpd.GeoDataFrame) -> Iterator[tuple[int, int]]:
-    """Yield feature ranges with bounded count and total source area."""
+def _partition_feature_batch(
+    frame: gpd.GeoDataFrame,
+    start: int,
+    stop: int,
+    transform: rasterio.Affine,
+    width: int,
+    height: int,
+) -> tuple[list[int], list[tuple[int, shapely.Geometry]]]:
+    """Separate ordinary features from geometries requiring spatial chunks."""
+    ordinary = []
+    spatial = []
+    for index in range(start, stop):
+        pixel_geometry = _pixel_geometry(frame.geometry.iloc[index], transform)
+        if _needs_spatial_chunks(pixel_geometry, width, height):
+            spatial.append((index, pixel_geometry))
+        else:
+            ordinary.append(index)
+    return ordinary, spatial
+
+
+def _add_ordinary_features(
+    totals: list[defaultdict[int, float]],
+    path: Path,
+    frame: gpd.GeoDataFrame,
+    indices: list[int],
+    dataset: rasterio.DatasetReader,
+    cell_area: float,
+    areas: np.ndarray,
+) -> None:
+    """Extract one bounded feature batch and accumulate its class coverage."""
+    if indices:
+        _extract_and_accumulate(
+            totals,
+            path,
+            frame.iloc[indices],
+            indices,
+            list(frame.geometry.iloc[indices]),
+            dataset,
+            cell_area,
+            [float(areas[index]) for index in indices],
+        )
+
+
+def _add_spatial_feature(
+    totals: list[defaultdict[int, float]],
+    path: Path,
+    crs,
+    index: int,
+    pixel_geometry: shapely.Geometry,
+    transform: rasterio.Affine,
+    dataset: rasterio.DatasetReader,
+    cell_area: float,
+    polygon_area: float,
+) -> None:
+    """Extract bounded spatial pieces while retaining the original area denominator."""
+    for pixel_chunk in _bounded_pixel_chunks(pixel_geometry, dataset.width, dataset.height):
+        geometry_chunk = _map_geometry(pixel_chunk, transform)
+        chunk_frame = gpd.GeoDataFrame(geometry=[geometry_chunk], crs=crs)
+        _extract_and_accumulate(
+            totals,
+            path,
+            chunk_frame,
+            [index],
+            [geometry_chunk],
+            dataset,
+            cell_area,
+            [polygon_area],
+        )
+
+
+def _extract_and_accumulate(
+    totals: list[defaultdict[int, float]],
+    path: Path,
+    frame: gpd.GeoDataFrame,
+    indices: list[int],
+    geometries: list[shapely.Geometry],
+    dataset: rasterio.DatasetReader,
+    cell_area: float,
+    polygon_areas: Sequence[float],
+) -> None:
+    """Keep exactextract output batches small and accumulate each feature in order."""
+    result = exact_extract(
+        str(path),
+        frame,
+        list(_OPS),
+        max_cells_in_memory=_MAX_CELLS_IN_MEMORY,
+        output="pandas",
+    )
+    for index, geometry, polygon_area, cell_ids, coverage, values in zip(
+        indices,
+        geometries,
+        polygon_areas,
+        result["cell_id"],
+        result["coverage"],
+        result["values"],
+        strict=True,
+    ):
+        _accumulate_corrected(
+            totals[index],
+            cell_ids,
+            coverage,
+            values,
+            geometry,
+            dataset,
+            cell_area,
+            polygon_area,
+        )
+
+
+def _feature_batches(
+    frame: gpd.GeoDataFrame,
+    transform: rasterio.Affine | None = None,
+    width: int | None = None,
+    height: int | None = None,
+) -> Iterator[tuple[int, int]]:
+    """Yield feature ranges bounded by count, source area, and raster envelope."""
     areas = _feature_areas(frame)
+    pixel_cells = _feature_pixel_cells(frame, transform, width, height)
+    yield from _yield_feature_batches(areas, pixel_cells)
+
+
+def _feature_pixel_cells(
+    frame: gpd.GeoDataFrame,
+    transform: rasterio.Affine | None,
+    width: int | None,
+    height: int | None,
+) -> np.ndarray:
+    """Return each feature's raster-envelope cell bound, or zero without a raster."""
+    if transform is None or width is None or height is None:
+        return np.zeros(len(frame), dtype=np.int64)
+    return np.fromiter(
+        (
+            _pixel_bbox_cells(_pixel_geometry(geometry, transform), width, height)
+            for geometry in frame.geometry
+        ),
+        dtype=np.int64,
+        count=len(frame),
+    )
+
+
+def _yield_feature_batches(areas: np.ndarray, pixel_cells: np.ndarray) -> Iterator[tuple[int, int]]:
+    """Yield consecutive ranges within both per-batch budgets."""
     start = 0
     batch_area = 0.0
-    for index, value in enumerate(areas):
+    batch_pixel_cells = 0
+    for index, (value, cells) in enumerate(zip(areas, pixel_cells, strict=True)):
         area = float(value)
         feature_count = index - start
-        if feature_count and _batch_exceeds_limits(feature_count, batch_area, area):
+        if feature_count and _batch_exceeds_limits(
+            feature_count, batch_area, area, batch_pixel_cells, int(cells)
+        ):
             yield start, index
             start = index
             batch_area = 0.0
+            batch_pixel_cells = 0
         batch_area += area
-    if start < len(frame):
-        yield start, len(frame)
+        batch_pixel_cells += int(cells)
+    if start < len(areas):
+        yield start, len(areas)
+
+
+def _pixel_bbox_cells(geometry: shapely.Geometry, width: int, height: int) -> int:
+    """Bound all candidate cells in a geometry's raster-space envelope."""
+    if geometry.is_empty:
+        return 0
+    min_x, min_y, max_x, max_y = geometry.bounds
+    left = max(0, math.floor(min_x) - 1)
+    right = min(width, math.ceil(max_x) + 1)
+    top = max(0, math.floor(min_y) - 1)
+    bottom = min(height, math.ceil(max_y) + 1)
+    return max(0, right - left) * max(0, bottom - top)
+
+
+def _needs_spatial_chunks(geometry: shapely.Geometry, width: int, height: int) -> bool:
+    """Whether one feature can exceed the per-result cell or coordinate budget."""
+    return (
+        _pixel_bbox_cells(geometry, width, height) > _MAX_BATCH_PIXEL_BBOX_CELLS
+        or shapely.get_num_coordinates(geometry) > _MAX_GEOMETRY_COORDINATES
+    )
+
+
+def _bounded_pixel_chunks(
+    geometry: shapely.Geometry, width: int, height: int
+) -> Iterator[shapely.Geometry]:
+    """Yield raster-clipped pieces with bounded raster envelopes and coordinates."""
+    clipped = shapely.intersection(geometry, box(0, 0, width, height))
+    if not clipped.is_empty:
+        yield from _split_pixel_geometry(clipped, width, height, depth=0)
+
+
+def _split_pixel_geometry(
+    geometry: shapely.Geometry, width: int, height: int, depth: int
+) -> Iterator[shapely.Geometry]:
+    """Recursively split a large feature on pixel-aligned lines."""
+    if _geometry_is_bounded(geometry, width, height):
+        yield geometry
+        return
+    if depth >= _MAX_GEOMETRY_SPLIT_DEPTH:
+        raise ValueError(
+            "could not bound a WorldCover geometry after "
+            f"{_MAX_GEOMETRY_SPLIT_DEPTH} spatial splits"
+        )
+    first, second = _split_pixel_geometry_once(geometry)
+    if _split_is_stalled(geometry, first, second):
+        raise ValueError("WorldCover geometry split did not reduce its spatial extent")
+    yield from _nonempty_pixel_children(first, second, width, height, depth + 1)
+
+
+def _geometry_is_bounded(geometry: shapely.Geometry, width: int, height: int) -> bool:
+    """Return whether one geometry fits both spatial memory budgets."""
+    pixel_cells = _pixel_bbox_cells(geometry, width, height)
+    coordinates = shapely.get_num_coordinates(geometry)
+    return pixel_cells <= _MAX_BATCH_PIXEL_BBOX_CELLS and coordinates <= _MAX_GEOMETRY_COORDINATES
+
+
+def _split_pixel_geometry_once(
+    geometry: shapely.Geometry,
+) -> tuple[shapely.Geometry, shapely.Geometry]:
+    """Bisect a geometry along its longest pixel-space axis."""
+    min_x, min_y, max_x, max_y = geometry.bounds
+    x_midpoint = _pixel_aligned_midpoint(min_x, max_x)
+    y_midpoint = _pixel_aligned_midpoint(min_y, max_y)
+    split_x = _choose_split_axis(max_x - min_x, max_y - min_y, x_midpoint, y_midpoint)
+    if split_x:
+        middle = x_midpoint if x_midpoint is not None else (min_x + max_x) / 2.0
+        first_box = box(min_x - 1.0, min_y - 1.0, middle, max_y + 1.0)
+        second_box = box(middle, min_y - 1.0, max_x + 1.0, max_y + 1.0)
+    else:
+        middle = y_midpoint if y_midpoint is not None else (min_y + max_y) / 2.0
+        first_box = box(min_x - 1.0, min_y - 1.0, max_x + 1.0, middle)
+        second_box = box(min_x - 1.0, middle, max_x + 1.0, max_y + 1.0)
+    first = shapely.intersection(geometry, first_box)
+    second = shapely.intersection(geometry, second_box)
+    return first, second
+
+
+def _pixel_aligned_midpoint(minimum: float, maximum: float) -> float | None:
+    """Return an interior integer pixel boundary near the midpoint, if one exists."""
+    midpoint = (minimum + maximum) / 2.0
+    for candidate in (math.floor(midpoint), math.ceil(midpoint)):
+        if minimum < candidate < maximum:
+            return float(candidate)
+    return None
+
+
+def _choose_split_axis(
+    x_span: float,
+    y_span: float,
+    x_midpoint: float | None,
+    y_midpoint: float | None,
+) -> bool:
+    """Prefer the longest axis with an integer pixel split; fall back if needed."""
+    if x_midpoint is None and y_midpoint is None:
+        return x_span >= y_span
+    if x_midpoint is None:
+        return False
+    if y_midpoint is None:
+        return True
+    return x_span >= y_span
+
+
+def _split_is_stalled(
+    geometry: shapely.Geometry,
+    first: shapely.Geometry,
+    second: shapely.Geometry,
+) -> bool:
+    """Detect a split that fails to create any smaller geometry."""
+    return (first.is_empty and second.is_empty) or (
+        first.equals(geometry) and second.equals(geometry)
+    )
+
+
+def _nonempty_pixel_children(
+    first: shapely.Geometry,
+    second: shapely.Geometry,
+    width: int,
+    height: int,
+    depth: int,
+) -> Iterator[shapely.Geometry]:
+    """Yield bounded chunks from the nonempty halves of one spatial split."""
+    for piece in (first, second):
+        if not piece.is_empty:
+            yield from _split_pixel_geometry(piece, width, height, depth)
+
+
+def _map_geometry(geometry: shapely.Geometry, transform: rasterio.Affine) -> shapely.Geometry:
+    """Return a pixel-space geometry to the raster's map coordinates."""
+    return affine_transform(
+        geometry,
+        [transform.a, transform.b, transform.d, transform.e, transform.c, transform.f],
+    )
 
 
 def _feature_areas(frame: gpd.GeoDataFrame) -> np.ndarray:
@@ -246,9 +520,19 @@ def _feature_areas(frame: gpd.GeoDataFrame) -> np.ndarray:
     return np.zeros(len(frame), dtype=float)
 
 
-def _batch_exceeds_limits(feature_count: int, batch_area: float, next_area: float) -> bool:
+def _batch_exceeds_limits(
+    feature_count: int,
+    batch_area: float,
+    next_area: float,
+    batch_pixel_cells: int = 0,
+    next_pixel_cells: int = 0,
+) -> bool:
     """Whether adding another feature would exceed either extraction bound."""
-    return feature_count >= _MAX_FEATURES_PER_BATCH or batch_area + next_area > _MAX_BATCH_AREA_M2
+    return (
+        feature_count >= _MAX_FEATURES_PER_BATCH
+        or batch_area + next_area > _MAX_BATCH_AREA_M2
+        or batch_pixel_cells + next_pixel_cells > _MAX_BATCH_PIXEL_BBOX_CELLS
+    )
 
 
 def _accumulate_corrected(
@@ -270,31 +554,61 @@ def _accumulate_corrected(
     classes = np.asarray(raw_values.data)
     mask = None if raw_values.mask is np.ma.nomask else np.asarray(raw_values.mask, dtype=bool)
     pixel_geometry = _pixel_geometry(geometry, dataset.transform)
-    candidate_ids, rows, columns, corrected = _boundary_cells(
-        pixel_geometry, dataset.width, dataset.height
-    )
-    present, positions = _find_candidates(ids, candidate_ids)
-    candidate_positions = np.sort(positions[present])
     scale = cell_area / polygon_area
+    excluded = _accumulate_boundary_cells(into, ids, classes, mask, pixel_geometry, dataset, scale)
+    _accumulate_stable_cells(into, classes, mask, fractions, excluded, scale)
+
+
+def _accumulate_boundary_cells(
+    into: defaultdict[int, float],
+    ids: np.ndarray,
+    classes: np.ndarray,
+    mask: np.ndarray | None,
+    pixel_geometry: shapely.Geometry,
+    dataset: rasterio.DatasetReader,
+    scale: float,
+) -> np.ndarray:
+    """Replace candidate boundary pixels and return ids excluded from stable sums."""
+    excluded = np.zeros(len(ids), dtype=bool)
+    for candidate_ids, rows, columns, corrected in _boundary_cell_chunks(
+        pixel_geometry, dataset.width, dataset.height
+    ):
+        present, positions = _find_candidates(ids, candidate_ids)
+        excluded[positions[present]] = True
+        candidate_classes = _matched_candidate_classes(
+            candidate_ids, classes, mask, present, positions
+        )
+        missing = ~present & (corrected > 0.0)
+        _read_missing_classes(
+            dataset,
+            rows[missing],
+            columns[missing],
+            candidate_classes,
+            np.flatnonzero(missing),
+        )
+        _add_class_coverage(into, candidate_classes, corrected, scale)
+    return excluded
+
+
+def _matched_candidate_classes(
+    candidate_ids: np.ndarray,
+    classes: np.ndarray,
+    mask: np.ndarray | None,
+    present: np.ndarray,
+    positions: np.ndarray,
+) -> np.ndarray:
+    """Map exactextract values onto candidate cells, leaving masked cells empty."""
     candidate_classes = np.full(len(candidate_ids), np.nan)
     matched_candidates = np.flatnonzero(present)
     matched_positions = positions[matched_candidates]
     if mask is None:
         candidate_classes[matched_candidates] = classes[matched_positions]
-    else:
-        valid_candidates = ~mask[matched_positions]
-        candidate_classes[matched_candidates[valid_candidates]] = classes[
-            matched_positions[valid_candidates]
-        ]
-    _accumulate_stable_cells(into, classes, mask, fractions, candidate_positions, scale)
-    _read_missing_classes(
-        dataset,
-        rows[~present & (corrected > 0.0)],
-        columns[~present & (corrected > 0.0)],
-        candidate_classes,
-        np.flatnonzero(~present & (corrected > 0.0)),
-    )
-    _add_class_coverage(into, candidate_classes, corrected, scale)
+        return candidate_classes
+    valid_candidates = ~mask[matched_positions]
+    candidate_classes[matched_candidates[valid_candidates]] = classes[
+        matched_positions[valid_candidates]
+    ]
+    return candidate_classes
 
 
 def _pixel_geometry(geometry: shapely.Geometry, transform: rasterio.Affine) -> shapely.Geometry:
@@ -306,29 +620,29 @@ def _pixel_geometry(geometry: shapely.Geometry, transform: rasterio.Affine) -> s
     )
 
 
-def _boundary_cells(
+def _boundary_cell_chunks(
     geometry: shapely.Geometry, width: int, height: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return raster cells near the polygon boundary and GEOS coverage for each."""
+) -> Iterator[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
+    """Yield boundary-cell coverage in bounded candidate arrays."""
     if geometry.is_empty:
-        empty = np.array([], dtype=np.int64)
-        return empty, empty, empty, empty.astype(float)
+        return
     min_x, min_y, max_x, max_y = geometry.bounds
     col_start = max(0, math.floor(min_x) - 1)
     col_stop = min(width, math.ceil(max_x) + 1)
     row_start = max(0, math.floor(min_y) - 1)
     row_stop = min(height, math.ceil(max_y) + 1)
     if col_start >= col_stop or row_start >= row_stop:
-        empty = np.array([], dtype=np.int64)
-        return empty, empty, empty, empty.astype(float)
+        return
     boundary = shapely.buffer(geometry.boundary, _BOUNDARY_HALO_PIXELS)
-    cell_ids = _rasterized_boundary_ids(
+    candidate_ids = _rasterized_boundary_ids(
         boundary, col_start, col_stop, row_start, row_stop, width, height
     )
-    rows, columns = cell_ids // width, cell_ids % width
-    cells = shapely.box(columns, rows, columns + 1, rows + 1)
-    corrected = np.asarray(shapely.area(shapely.intersection(geometry, cells)), dtype=float)
-    return cell_ids, rows, columns, corrected
+    for start in range(0, len(candidate_ids), _BOUNDARY_CELLS_PER_CHUNK):
+        cell_ids = candidate_ids[start : start + _BOUNDARY_CELLS_PER_CHUNK]
+        rows, columns = cell_ids // width, cell_ids % width
+        cells = shapely.box(columns, rows, columns + 1, rows + 1)
+        corrected = np.asarray(shapely.area(shapely.intersection(geometry, cells)), dtype=float)
+        yield cell_ids, rows, columns, corrected
 
 
 def _rasterized_boundary_ids(
@@ -418,11 +732,8 @@ def _accumulate_stable_cells(
     """Accumulate non-boundary cells in bounded slices of exactextract output."""
     for start in range(0, len(classes), _ACCUMULATION_CELL_CHUNK):
         stop = min(start + _ACCUMULATION_CELL_CHUNK, len(classes))
-        stable = np.ones(stop - start, dtype=bool)
-        left = np.searchsorted(excluded, start, side="left")
-        right = np.searchsorted(excluded, stop, side="left")
-        stable[excluded[left:right] - start] = False
-        valid = stable & np.isfinite(classes[start:stop]) & np.isfinite(fractions[start:stop])
+        valid = ~excluded[start:stop]
+        valid &= np.isfinite(classes[start:stop]) & np.isfinite(fractions[start:stop])
         valid &= fractions[start:stop] > 0.0
         if mask is not None:
             valid &= ~mask[start:stop]
