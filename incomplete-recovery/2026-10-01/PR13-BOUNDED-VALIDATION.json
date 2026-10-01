@@ -1,0 +1,34 @@
+{
+  "checked_utc": "2026-10-01 18:13:13 UTC",
+  "pull_request": 13,
+  "head": "504199af81ddb32c6e96317e5b9a5706b17ad207",
+  "state": "open_draft",
+  "focused_mutation": {
+    "total": 12,
+    "killed": 11,
+    "survivors": 1,
+    "survivor": "mask=None in _accumulate_corrected"
+  },
+  "survivor_review": "Equivalent on the configured production path: exactextract operations are cell_id, coverage, values with no default_value. A real NoData raster call yielded np.ma.nomask and class coverage {10: 0.5}. No synthetic mask fixture was introduced.",
+  "bounded_tests": {
+    "address_space_limit_gib": 8,
+    "passed": 3,
+    "tests": [
+      "test_nodata_is_absent_and_leaves_the_polygon_only_half_covered",
+      "test_spatially_chunked_polygon_preserves_tile_boundary_nodata_and_purity",
+      "test_spatially_chunked_geometry_preserves_coverage_and_label"
+    ]
+  },
+  "existing_andalucia_pilot": {
+    "code_revision": "504199af81ddb32c6e96317e5b9a5706b17ad207",
+    "source_revision": "d6fc058ccf4643bc5fe5bfd5c1c0bc403d3da801",
+    "receipt_sha256_matches": true,
+    "rows": 4487,
+    "independent_audit_ok": true,
+    "audit_problems": 0,
+    "diagnostic_identical_text_conflicting_labels": 18,
+    "full_source_complete": false
+  },
+  "merge_attempted": false,
+  "release_claimed": false
+}
