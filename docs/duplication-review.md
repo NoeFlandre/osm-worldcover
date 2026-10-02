@@ -78,9 +78,12 @@ methods in nested/local classes. Radon measures each callable independently;
 coverage for an enclosing callable excludes child callable and local-class
 bodies, so nested code cannot dilute its score. Empty inventories still fail.
 
-The full `src/`, `scripts/`, and `tests/` inventory measured 1,053 callables.
+The full `src/`, `scripts/`, and `tests/` inventory measured 1,346 callables.
 The highest CRAP score was 5.58; zero scores were at or above 6, with no
 allowlisted exceptions.
+
+A refresh of the clone scan on the PR13 tree reports the same three matches.
+It found no new duplication.
 
 ## Verification
 
@@ -91,5 +94,8 @@ allowlisted exceptions.
 - `mkdocs build --strict` passed. It reported the existing three unlisted
   planning pages and the Material for MkDocs notice; neither caused the build
   to fail.
+- Mutation gate: a full local run generated 4,969 mutants. It killed 4,529
+  (91.1%), above the 80% floor. Every mutant had a result. The CI check run
+  is the source of truth for each candidate commit.
 - Mutation scope and the 80% floor remain configured in CI; the PR check run
   is the source of truth for each candidate commit.
