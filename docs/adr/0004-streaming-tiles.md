@@ -4,27 +4,28 @@
 
 ## Context
 
-WorldCover ships as 3°x3° GeoTIFFs of roughly 94 MB. The source polygons touch
-**2,499** of them — about 229 GB. Staging that up front would dominate both the
-runtime and the disk budget before a single polygon was labelled.
+WorldCover ships as 3°x3° GeoTIFFs of about 94 MB each. The source polygons touch
+**2,499** of them. This is about 229 GB. If the build stages them first, this
+step uses most of the runtime and the disk budget before the build labels one
+polygon.
 
 ## Decision
 
-Group polygons by the tiles they touch, then for each group: download the
-tiles, label every polygon over them, and discard the tiles immediately.
-Region shards are written to disk as they complete.
+Group the polygons by the tiles they touch. For each group: download the tiles,
+label every polygon over them, and discard the tiles immediately. Write the
+region shards to disk when they are complete.
 
 ## Consequences
 
-- Peak disk stays near a single tile instead of 229 GB; the 229 GB is
-  bandwidth, not storage.
-- Grouping means each tile is fetched once for all the polygons over it, rather
-  than once per polygon.
-- Per-region shards bound memory to one region and make the build resumable: an
-  interrupted run skips whatever already finished. A region that produced no
-  examples still writes a shard, because that is a finished result and without
-  it every restart would retry the empty regions forever.
-- Downloaded source tables are deleted once a region's shard is written; the
-  full source snapshot is ~21 GB and is never needed twice.
-- `--keep-tiles` retains them, which is worth it when repeatedly rebuilding one
-  region.
+- The peak disk use stays near one tile and not 229 GB. The 229 GB is
+  bandwidth and not storage.
+- Grouping fetches each tile one time for all the polygons over it. It does not
+  fetch the tile for each polygon.
+- The shards of each region limit the memory to one region. They make the build
+  resumable. A run that stops skips the regions that are finished. A region
+  that gives no examples still writes a shard. This is a finished result. Without
+  the shard, each restart tries the empty regions again without end.
+- The build deletes the downloaded source tables when it writes the shard of a
+  region. The full source snapshot is about 21 GB. The build never needs it
+  twice.
+- `--keep-tiles` keeps the tiles. Use it when you rebuild one region many times.
