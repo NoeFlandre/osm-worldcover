@@ -1,104 +1,110 @@
 # How it works
 
-## Shape
+## Structure
 
 ```text
 cli  ->  build  ->  finalize  ->  pipeline  ->  adapters  ->  domain
 ```
 
-Dependencies point one way only, and that is checked automatically by
-`lint-imports` on every run. `domain/` is pure: no network, no filesystem, no
-clock. Everything that touches the outside world lives in `adapters/`.
+The dependencies go in one direction only. `lint-imports` checks this on every
+run. `domain/` is pure. It does not use the network, the filesystem or the
+clock. The code in `adapters/` does all the work that touches the outside
+world.
 
-## A region at a time
+## One region at a time
 
-A global run touches 2,499 WorldCover tiles, about 229 GB. Nothing is staged up
-front (ADR 0004):
+A global run uses 2,499 WorldCover tiles. This is about 229 GB. The build does
+not stage the tiles first (ADR 0004).
 
-1. Download one region's polygons and source-specific text fields.
-2. Parse the geometries; drop the invalid ones and count them.
-3. Group polygons by the tiles they touch.
-4. For each group: fetch the tiles, measure coverage, discard the tiles.
-5. Keep polygons one class dominates; join those to their source text.
-6. Write the region's shard, then delete its downloaded tables.
+1. Download the polygons and the source-specific text fields of one region.
+2. Parse the geometries. Drop the invalid geometries and count them.
+3. Group the polygons by the tiles they touch.
+4. For each group: fetch the tiles, measure the coverage, and discard the tiles.
+5. Keep the polygons that one class dominates. Join these polygons to their
+   source text.
+6. Write the shard of the region. Then delete the downloaded tables.
 
-Peak disk stays near a single tile. An interrupted run resumes by skipping
-regions whose shard already exists.
+The peak disk use stays near the size of one tile. A run that stops can
+continue. It skips the regions that already have a shard.
 
 ## Measuring coverage
 
-`exactextract` supplies per-cell values and coverage. Cells near each polygon
-boundary are selected in pixel coordinates, then their areas are recomputed by
-GEOS against the original polygon and unit pixel squares. This corrects corner
-cases where exactextract can report a full exterior cell or omit an interior
-cell. The small pixel-space halo only selects cells for checking; it does not
-change the polygon or its area. The corrected class areas are divided by the
-polygon's own area, so no-data and raster gaps remain unobserved (ADR 0002).
+`exactextract` gives the values and the coverage of each cell. The build
+selects the cells near the polygon boundary in pixel coordinates. GEOS then
+computes the areas of these cells again. It uses the original polygon and unit
+pixel squares. This corrects the corner cases where `exactextract` can report a
+full exterior cell or omit an interior cell. The small pixel-space halo only
+selects cells for the check. It does not change the polygon or its area. The
+build divides the corrected class areas by the area of the polygon. Because of
+this, no-data and raster gaps stay unobserved (ADR 0002).
 
-Coverage is additive across tiles, so a polygon straddling a tile boundary is
-just a sum — no mosaic. Shares are never clamped or renormalized. Shares
-summing past one remain a validation failure, and `OverlappingCoverageError`
-reports them.
+Coverage is additive across tiles. A polygon on a tile boundary needs only a
+sum. It does not need a mosaic. The build never clamps or renormalizes the
+shares. If the shares add to more than one, validation fails.
+`OverlappingCoverageError` reports this error.
 
 ## Deciding the label
 
-`domain/dominance.py` is the whole rule:
+`domain/dominance.py` contains the complete rule.
 
-- Shares are taken against the **polygon's** area, never the observed area.
-- No-data is not a class and can never win — but it still consumes the polygon,
-  so a mostly-unobserved polygon is refused.
-- The highest share wins; ties break on the lowest class code, so the result
-  never depends on iteration order.
-- Accepted only at or above the threshold (default 0.8).
+- The build computes the shares against the area of the **polygon**. It never
+  uses the observed area.
+- No-data is not a class. It can never win. It still uses part of the polygon.
+  The build therefore refuses a polygon that is mostly unobserved.
+- The highest share wins. A tie goes to the lowest class code. The result then
+  never depends on the iteration order.
+- The build accepts a polygon only at or above the threshold. The default is
+  0.8.
 
 ## Source-specific text eligibility
 
-Description tags are concise labels and descriptions, not articles. Their
-default minimum is **1 whitespace-separated word**, preserving useful short
-base and localized descriptions, including scripts that do not separate words
-with spaces. Empty and whitespace-only values are never examples.
+Description tags are short labels and descriptions. They are not articles. The
+default minimum is **1 whitespace-separated word**. This keeps useful short base
+descriptions and localized descriptions. It also keeps scripts that do not use
+spaces between words. An empty value or a whitespace-only value is never an
+example.
 
-Wikipedia/Wikivoyage and website text retain the **10-word** minimum. A build
-can override its recipe's policy with a positive integer `Config.min_words`
-(or the `min_words` YAML setting); `null` selects the recipe default. The
-resolved integer is recorded as `settings.min_words` in the manifest and used
-for both example selection and validation. No text is expanded to meet the
-threshold; normalization only trims and collapses whitespace.
+Wikipedia/Wikivoyage text and website text keep the **10-word** minimum. A
+build can override the policy of its recipe. Use a positive integer
+`Config.min_words` or the `min_words` YAML setting. The value `null` selects the
+default of the recipe. The manifest records the resolved integer as
+`settings.min_words`. The build uses it to select examples and to validate
+them. The build does not expand a text to reach the threshold. The
+normalization only trims and collapses whitespace.
 
 ## Assembling the dataset
 
-Three different problems are resolved, and conflating them would get at least
-one wrong:
+The build solves three different problems. Do not treat them as one problem.
+Otherwise at least one result is wrong.
 
-1. Geofabrik extracts overlap, so one OSM object appears under several
-   `polygon_id`s. One region is chosen per object.
-2. Repeated rows are removed only when stable polygon identity, normalized text
-   and WorldCover label all match. Different polygons with identical text and
-   labels remain separate examples.
-3. One article can describe several distant places, which fall in different
-   cells and so different splits. The split holding most of that document's
-   rows keeps them; the rest are dropped, because moving them would break the
-   geographic blocking.
+1. Geofabrik extracts overlap. One OSM object can then have several
+   `polygon_id` values. The build chooses one region for each object.
+2. The build removes a repeated row only when the stable polygon identity, the
+   normalized text and the WorldCover label all match. Different polygons that
+   have identical text and labels stay separate examples.
+3. One article can describe several distant places. These places are in
+   different cells and so in different splits. The split that has most rows of
+   the document keeps its rows. The build drops the other rows. Moving them
+   would break the geographic blocking.
 
-The manifest and generated card report exact same-polygon record removals and
+The manifest and the generated card report the exact same-polygon removals and
 their word counts. They also report repeated normalized text across polygons
-and splits as diagnostics. Identical text on distinct polygons is retained;
-cross-split text collisions do not trigger broad row deletion. The audit warns
-when those collisions span splits, while polygon, document and H3 leakage
-remain failures.
+and splits as diagnostics. The build keeps identical text on different
+polygons. Cross-split text collisions do not cause a broad deletion of rows.
+The audit gives a warning when such collisions span splits. Polygon leakage,
+document leakage and H3 leakage stay failures.
 
-### Nothing is held whole
+### The build never holds the whole dataset in memory
 
-A global build is several times the memory of the machine that produces it —
-measured at 4.9 KB per row. So:
+A global build is several times larger than the memory of the machine. The
+measured size is 4.9 KB for each row. Therefore:
 
-- row-local work (H3 cell, split, duplicate keys) happens **one shard at a
-  time**, bounded by a single region;
-- the global work — de-duplication and ordering — is left to **DuckDB over
-  files**;
-- each split is **streamed** from DuckDB to Parquet in Arrow batches;
-- validation reads the written files **back** a batch at a time, so what is
-  checked is what was actually published.
+- The build does the row-local work (H3 cell, split, duplicate keys) **for one
+  shard at a time**. One region limits the size.
+- **DuckDB over files** does the global work (de-duplication and ordering).
+- The build **streams** each split from DuckDB to Parquet in Arrow batches.
+- Validation reads the written files **back** one batch at a time. It then
+  checks the files that the build actually published.
 
-Rebuilding the same inputs still produces byte-identical files, which is the
-cheapest check that none of this changed the data.
+A rebuild with the same inputs produces byte-identical files. This is the
+cheapest check that these methods did not change the data.

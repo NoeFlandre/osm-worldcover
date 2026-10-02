@@ -15,6 +15,7 @@ nav:
   - Home: index.md
   - How it works: pipeline.md
   - Dataset schema: schema.md
+  - Glossary: glossary.md
   - Technical debt: technical-debt.md
   - Duplication review: duplication-review.md
   - Decisions:

@@ -4,37 +4,40 @@
 
 ## Context
 
-`exactextract` reports, for each polygon, the distinct raster values under it
-and each one's share — normalised over the cells it actually read. Those shares
-always sum to 1.0, even when most of the polygon was never observed: cells
-outside the raster are not read at all, and WorldCover marks unobserved ground
-with a no-data value that is masked out.
+For each polygon, `exactextract` reports the distinct raster values under the
+polygon and the share of each value. It normalises the shares over the cells
+that it actually read. The shares therefore always add to 1.0. This is true also
+when the build never observed most of the polygon. The tool does not read cells
+outside the raster. WorldCover marks unobserved ground with a no-data value,
+and the tool masks this value.
 
-Taken at face value, a polygon 95% over open ocean and 5% over a wooded islet
-would be reported as 100% `Tree cover` and sail through the 80% filter.
+Take a polygon that is 95% over open ocean and 5% over a wooded islet. If the
+build uses the raw shares, it reports 100% `Tree cover`. The polygon then passes
+the 80% filter.
 
 ## Decision
 
-Rescale every share by the fraction of the polygon that was actually observed:
+Scale each share by the fraction of the polygon that the raster observed:
 
 ```
 share_of_polygon = share_of_observed x (observed_cells x cell_area / polygon_area)
 ```
 
-Shares therefore sum to **at most** one, and the shortfall is exactly the
-unobserved part. No-data is never emitted as a class.
+The shares then add to **at most** one. The shortfall is exactly the unobserved
+part. The build never emits no-data as a class.
 
 ## Consequences
 
-- A polygon that was mostly not observed fails dominance and is refused, which
-  is the honest outcome — the evidence for a label simply is not there.
-- Shares are relative to the polygon, so contributions from different tiles
-  **add**. A polygon straddling a tile boundary needs no mosaic or VRT, just a
-  sum over the tiles it touches. This removed a whole class of machinery.
-- Because the parts can no longer exceed the whole, coverage summing past 1.0
-  means the caller double-counted — a real bug. `OverlappingCoverageError`
-  fails loudly rather than clamping, which is how the duplicate-raster defect
-  in `_fetch` was caught.
-- Areas are measured in the raster's own planar units for both the cells and
-  the polygon. Only their ratio is used, so the result is exact even though the
-  units are degrees.
+- The build refuses a polygon that is mostly unobserved because it fails the
+  dominance test. This is the correct result. The evidence for a label does not
+  exist.
+- The shares are relative to the polygon. The contributions from different tiles
+  **add**. A polygon on a tile boundary needs no mosaic and no VRT. It needs only
+  a sum over the tiles that it touches. This removed a whole class of machinery.
+- The parts cannot be larger than the whole. If the coverage adds to more than
+  1.0, the caller counted a part twice. This is a real bug.
+  `OverlappingCoverageError` fails with a clear error and does not clamp. This is
+  how the build found the duplicate-raster defect in `_fetch`.
+- The build measures the areas of the cells and of the polygon in the planar
+  units of the raster. It uses only their ratio. The result is exact although
+  the units are degrees.
