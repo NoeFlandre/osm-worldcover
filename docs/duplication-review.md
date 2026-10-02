@@ -53,12 +53,13 @@ cross-repository duplicates:
 Each source repository should own extraction and the meaning of its raw
 fields. `osm-worldcover` owns canonicalization after ingest, WorldCover
 labeling, geographic splits, and release auditing. Before comparing sibling
-repositories, the parent should approve a read-only review and identify the
-maintainers for those source contracts. If an algorithm is genuinely shared,
+repositories, repository maintainers should authorize a read-only review and
+identify the owners for those source contracts. If an algorithm is genuinely shared,
 its owners should agree on one existing canonical owner and compatibility
-tests before code moves. No new package should be introduced without that
-ownership decision, a stable API, and an agreed release/versioning plan. The
-geoparser remains out of scope.
+tests before code moves. Repository maintainers should authorize any
+cross-repository review and identify the owners of those contracts. No new
+package should be introduced without that ownership decision, a stable API,
+and an agreed release/versioning plan. The geoparser remains out of scope.
 
 ## Recursive callable and CRAP inventory
 

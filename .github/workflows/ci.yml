@@ -58,11 +58,31 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen
-      - name: Mutate the domain logic
-        run: uv run mutmut run
+      - id: mutate
+        name: Mutate the domain logic
+        run: |
+          echo "started_ns=$(date +%s%N)" >> "$GITHUB_OUTPUT"
+          uv run mutmut run
 
       - name: Mutation score
+        if: always()
+        env:
+          MUTATION_RUN_OUTCOME: ${{ steps.mutate.outcome }}
+          MUTATION_RUN_STARTED_NS: ${{ steps.mutate.outputs.started_ns }}
+          MUTATION_EXPECTED_GIT_SHA: ${{ github.sha }}
         run: uv run python scripts/mutation_score.py
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-evidence-${{ github.sha }}
+          path: |
+            mutants/mutmut-cicd-stats.json
+            mutants/mutation-score.json
+            mutants/worldcover-raster-mutants.json
+          if-no-files-found: warn
+          retention-days: 90
 
   docker:
     name: Docker image
