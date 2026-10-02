@@ -1,0 +1,267 @@
+{
+  "created_utc": "2026-10-02 07:54:45 UTC",
+  "branch": "codex/worldcover-pause-handoff-20261002",
+  "base_commit": "89bd7ad5e795755dce8ee9e3228b912d23653111",
+  "files": [
+    {
+      "source_worktree": "alaska-bounded-extraction-20261001",
+      "source_head": "91a75faef884eba8757da81930a10ed761f6d19b",
+      "source_path": "src/osm_worldcover/adapters/worldcover.py",
+      "status": "modified",
+      "git_blob_sha1": "a166de3ef64a970d6d9cffcfe1de0793688093bf",
+      "sha256": "3e50c7bdb7b690a7bf131d970b161915627832311f9e50e1f08b466ef46b6299",
+      "bytes": 28940,
+      "branch_path": "recovery/local-code-snapshots/alaska-bounded-extraction-20261001/src/osm_worldcover/adapters/worldcover.py"
+    },
+    {
+      "source_worktree": "alaska-bounded-extraction-20261001",
+      "source_head": "91a75faef884eba8757da81930a10ed761f6d19b",
+      "source_path": "tests/unit/test_worldcover.py",
+      "status": "modified",
+      "git_blob_sha1": "b7c2c7bf8b7cd2bb066108890805b6feb5ad3bbe",
+      "sha256": "578076b5f246e5eb02f66bee826d8b5f45ee5610cc84b7b2ccbb5bc2dfe579e4",
+      "bytes": 14371,
+      "branch_path": "recovery/local-code-snapshots/alaska-bounded-extraction-20261001/tests/unit/test_worldcover.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "src/osm_worldcover/accounting.py",
+      "status": "modified",
+      "git_blob_sha1": "980b22034bb8979552822fe8774a69bbabd1c95e",
+      "sha256": "9cfe7cb985230f5baf8db2761a4dc96643acfc4836ff5d1a024f1687c3eee22b",
+      "bytes": 11078,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/src/osm_worldcover/accounting.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "src/osm_worldcover/adapters/audit.py",
+      "status": "modified",
+      "git_blob_sha1": "f04dff24d30f77d697799d539e3b992466e7338a",
+      "sha256": "ccb83db078d0b37c5f900a2683a4cac8842b89e20ffc2e7f43fd62ec68bdea33",
+      "bytes": 32451,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/src/osm_worldcover/adapters/audit.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "src/osm_worldcover/assembly.py",
+      "status": "modified",
+      "git_blob_sha1": "9e25b3fc6819bca8407e8ffb0b1ce9881333ea9a",
+      "sha256": "b0e87750da90bc09ce39c62fa0d17edbcfaa7ae829d9e617c06781f9185e02ca",
+      "bytes": 8505,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/src/osm_worldcover/assembly.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "src/osm_worldcover/cli.py",
+      "status": "modified",
+      "git_blob_sha1": "bc39df5089a3a2fb10d5d5260bd73e12703b853a",
+      "sha256": "0e1ba2efa63d199ce716594b0ebf6dd691d227d125ca0270f4ec250cfc7a41c4",
+      "bytes": 15316,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/src/osm_worldcover/cli.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "src/osm_worldcover/domain/card.py",
+      "status": "modified",
+      "git_blob_sha1": "e84197560aa9bb71a2105bff74d5f6146c77bae3",
+      "sha256": "2d3ab92945416a7f4453db003773b45e2cd3cf9241a96be557cbb85ffa7fa2c9",
+      "bytes": 13450,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/src/osm_worldcover/domain/card.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "tests/unit/test_audit.py",
+      "status": "modified",
+      "git_blob_sha1": "b7aebfcacef97f2e4df042c385aefb29c487e80a",
+      "sha256": "3eacdf8305c0fe8b96f7e36fb9d5f9201c1b02f095c7f3056a1b525711baabd5",
+      "bytes": 13686,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/tests/unit/test_audit.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "tests/unit/test_card.py",
+      "status": "modified",
+      "git_blob_sha1": "49bb16fa16fe358a24a448b44c0159f4c5805700",
+      "sha256": "00e25e468e155454c8e50a57383ede17c68f8bebd11453097e74a0e71bbf0a91",
+      "bytes": 7055,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/tests/unit/test_card.py"
+    },
+    {
+      "source_worktree": "record-dedup",
+      "source_head": "3ddd472e7deac10d116fd763cbf612e0d1a9c8db",
+      "source_path": "tests/unit/test_cli.py",
+      "status": "modified",
+      "git_blob_sha1": "219abb29d86656f1a14fc14a0ab17a21ef041da7",
+      "sha256": "247223a9e1254e30a5995da921ba95ca5044fd622cc77fa199b7792ccb0bcceb",
+      "bytes": 29156,
+      "branch_path": "recovery/local-code-snapshots/record-dedup/tests/unit/test_cli.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/accounting.py",
+      "status": "untracked",
+      "git_blob_sha1": "a9aba6cc135a0010f92471e6c8fe8c5c2d4664bf",
+      "sha256": "0eaa20e17cf8779b1d5a5b1b3049ecd35ccabea2a35249d02e420d1b25822fc9",
+      "bytes": 10847,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/accounting.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/adapters/audit.py",
+      "status": "untracked",
+      "git_blob_sha1": "b59a8b67d71d32d2726a7ba3e159a39e46ab3d33",
+      "sha256": "5a0242ac0ca2a615cdfad07679f7788b376e9b6a817fb819006dd632c77892f5",
+      "bytes": 28886,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/adapters/audit.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/adapters/source_profiles.py",
+      "status": "modified",
+      "git_blob_sha1": "b428b5dea8e80bd1bb642ffb8397487f3a71dccb",
+      "sha256": "d80ba56c9c07ef1d6c55c430517213ee6ae48193f4511d688bbd5f653bed8a55",
+      "bytes": 11411,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/adapters/source_profiles.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/adapters/worldcover.py",
+      "status": "modified",
+      "git_blob_sha1": "8e947c8ebdb92b0fb5a965e6f9269e2d9a354865",
+      "sha256": "6af89c96b9d83f0b36ce01a283d920840a33e4e591871111677cedffc0b36f0c",
+      "bytes": 13950,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/adapters/worldcover.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/assembly.py",
+      "status": "untracked",
+      "git_blob_sha1": "284f6742d773f927b060f716b4958aa7eb7c41c1",
+      "sha256": "316c9fa48a55bce87196aef70254ef45458a7998ed8372c78a8a1551999525cc",
+      "bytes": 6516,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/assembly.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/cli.py",
+      "status": "modified",
+      "git_blob_sha1": "62ef2dc08c74b404f334ae69ea0a7517572ea8a6",
+      "sha256": "cb0d185a70560833e9115242eb4645b61891af53fb630bc212140d3b6e33deca",
+      "bytes": 15316,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/cli.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/config.py",
+      "status": "modified",
+      "git_blob_sha1": "dd068c82863ccbdce6648a0c2109eee844886dce",
+      "sha256": "2bdd30423a92c24bb63cd86fa41e3fe09c8a9fe6146e927d3f46f0a9f5900cd4",
+      "bytes": 6123,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/config.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/domain/card.py",
+      "status": "modified",
+      "git_blob_sha1": "af0584ae08e0b5cc397e9a78962c5759d2daac1e",
+      "sha256": "da297ba2d1278e80d4a37a0dd53e27adbf329ee6b278df8da35a0d37149961db",
+      "bytes": 12220,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/domain/card.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/domain/manifest.py",
+      "status": "modified",
+      "git_blob_sha1": "fc2426b6393cbc20c11677c6a93a92871160739e",
+      "sha256": "0bd732d28bd732948c0e2a09405cf1ef3ffb8b4b65a2bc8a273732e80d41d75f",
+      "bytes": 4174,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/domain/manifest.py"
+    },
+    {
+      "source_worktree": "release-3ddd472",
+      "source_head": "17ead70663ccf304e4bd3c47dcf182ec186276b8",
+      "source_path": "src/osm_worldcover/finalize.py",
+      "status": "modified",
+      "git_blob_sha1": "11fe9068d828c90c574ccee8ba01bfe2c8448e7b",
+      "sha256": "43f66a204c8d73053ea0f3191dc700e0c68b57f0f2a1d99827617ad281a2ba7c",
+      "bytes": 16337,
+      "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/finalize.py"
+    },
+    {
+      "source_worktree": "workspace-root",
+      "source_head": null,
+      "source_path": "prepare_non_lfs_hf_backup.py",
+      "status": "untracked outside repository",
+      "git_blob_sha1": "c506da6a8a1ddac0287b13604bbc052adae3a0b8",
+      "sha256": "cb70c4b0f198ec9aa82306cb2f8862036aa0d5c56ffc33143c2278be7098d010",
+      "bytes": 1811,
+      "branch_path": "recovery/local-helper-snapshots/workspace-root/prepare_non_lfs_hf_backup.py"
+    },
+    {
+      "source_worktree": "workspace-root",
+      "source_head": null,
+      "source_path": "prepare_recovery_backup.py",
+      "status": "untracked outside repository",
+      "git_blob_sha1": "9359c416704b6750511e43b55a104f598f5c7a9e",
+      "sha256": "ad898d6b6992cde63798635fc1c90e607af2e52f64ba2e85e65f42fe1824796b",
+      "bytes": 5276,
+      "branch_path": "recovery/local-helper-snapshots/workspace-root/prepare_recovery_backup.py"
+    },
+    {
+      "source_worktree": "workspace-root",
+      "source_head": null,
+      "source_path": "refine_hf_backup_status.py",
+      "status": "untracked outside repository",
+      "git_blob_sha1": "07bd934755385fe066af91d7d1342eb8bec65ba3",
+      "sha256": "e25774e138160b40828b29d466cef36049484a5ffac963c6a75312e2256aa02c",
+      "bytes": 929,
+      "branch_path": "recovery/local-helper-snapshots/workspace-root/refine_hf_backup_status.py"
+    },
+    {
+      "source_worktree": "workspace-root",
+      "source_head": null,
+      "source_path": "restore_worldcover_code_backup.py",
+      "status": "untracked outside repository",
+      "git_blob_sha1": "2eb969d2339acaea01c8ee3aa6de581d0b5eec85",
+      "sha256": "2b97cd9c61d3ac93000c7969d68476a7e28c047a7061159c2a8bb9895d777c24",
+      "bytes": 864,
+      "branch_path": "recovery/local-helper-snapshots/workspace-root/restore_worldcover_code_backup.py"
+    },
+    {
+      "source_worktree": "workspace-root",
+      "source_head": null,
+      "source_path": "upload_hf_metadata_checkpoints.py",
+      "status": "untracked outside repository",
+      "git_blob_sha1": "b39fa18f922fa4ae522c89cfb474d0cc0162de4c",
+      "sha256": "cc4792fb5e0f151f62e22c014b1f6db3fa67dc0cbedcb7e71ce1132a65637773",
+      "bytes": 5400,
+      "branch_path": "recovery/local-helper-snapshots/workspace-root/upload_hf_metadata_checkpoints.py"
+    },
+    {
+      "source_worktree": "workspace-root",
+      "source_head": null,
+      "source_path": "upload_recovery_backup.py",
+      "status": "untracked outside repository",
+      "git_blob_sha1": "86fbb347828fc82f68aeff96696ceb36dd2dd7bf",
+      "sha256": "cde7219b418578e48f290cbda020f64de3f35926a100b21c4b5d01a8cb054e04",
+      "bytes": 4513,
+      "branch_path": "recovery/local-helper-snapshots/workspace-root/upload_recovery_backup.py"
+    }
+  ]
+}

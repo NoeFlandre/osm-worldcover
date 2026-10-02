@@ -1,0 +1,146 @@
+"""Run configuration.
+
+Every knob that changes the published data lives here and is copied into the
+manifest, so a dataset can always be traced back to the settings that made it.
+"""
+
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, Self
+
+import yaml
+
+from osm_worldcover.adapters.worldcover import DEFAULT_CACHED_TILES
+from osm_worldcover.domain.dominance import DEFAULT_THRESHOLD
+from osm_worldcover.domain.splits import DEFAULT_RATIOS, DEFAULT_RESOLUTION, DEFAULT_SEED
+from osm_worldcover.sources import DEFAULT_SOURCE, SourceRecipe, recipe_for
+
+__all__ = ["DEFAULT_SOURCE", "DEFAULT_SOURCE_DATASET", "Config"]
+
+DEFAULT_SOURCE_DATASET = recipe_for(DEFAULT_SOURCE).source_dataset
+
+#: Polygons larger than this are refused before any raster is read.
+#: Zonal-statistics cost is linear in area: 10,000 km2 is ~10^8 pixels and
+#: about 1.4 s, while the largest polygon in the source -- 10.2 million km2 --
+#: would need ~100 tiles and 10^11 pixels for a single row. Capping here bounds
+#: the worst case to roughly a second and costs 1,099 of 1,259,424 polygons
+#: (0.087%), which are provinces, countries and continents whose articles
+#: describe history and governance rather than the ground beneath them.
+DEFAULT_MAX_POLYGON_AREA_M2 = 1e10
+
+#: Equal-area projection used whenever a real-world area is needed.
+EQUAL_AREA_CRS = "EPSG:6933"
+CODE_REPOSITORY = "https://github.com/NoeFlandre/osm-worldcover"
+
+
+@dataclass(frozen=True, slots=True)
+class Config:
+    """Settings for one dataset build."""
+
+    out_dir: Path = Path("data/out")
+    cache_dir: Path = Path("data/cache")
+
+    worldcover_version: str = "v200"
+    worldcover_year: int = 2021
+    cached_tiles: int = DEFAULT_CACHED_TILES
+
+    source: str = DEFAULT_SOURCE
+    source_dataset: str = DEFAULT_SOURCE_DATASET
+    source_revision: str | None = None
+    regions: tuple[str, ...] | None = None
+
+    threshold: float = DEFAULT_THRESHOLD
+    max_polygon_area_m2: float | None = DEFAULT_MAX_POLYGON_AREA_M2
+    # None selects the source recipe's policy; an explicit integer overrides it.
+    min_words: int | None = None
+    h3_resolution: int = DEFAULT_RESOLUTION
+    split_seed: int = DEFAULT_SEED
+    train_ratio: float = DEFAULT_RATIOS.train
+    validation_ratio: float = DEFAULT_RATIOS.validation
+    test_ratio: float = DEFAULT_RATIOS.test
+
+    dataset_version: str = "1.0.0"
+    extra: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Resolve the named recipe while retaining custom repository overrides."""
+        recipe_for(self.source)
+        if self.source != DEFAULT_SOURCE and self.source_dataset == DEFAULT_SOURCE_DATASET:
+            object.__setattr__(self, "source_dataset", recipe_for(self.source).source_dataset)
+        if self.min_words is not None:
+            _validate_min_words(self.min_words)
+
+    @property
+    def source_recipe(self) -> SourceRecipe:
+        """Return the immutable metadata for this build's source."""
+        return recipe_for(self.source)
+
+    @property
+    def effective_min_words(self) -> int:
+        """Resolve a text-length override or the source-specific default."""
+        return self.source_recipe.min_words if self.min_words is None else self.min_words
+
+    @classmethod
+    def from_yaml(cls, path: Path) -> Self:
+        """Load a config from ``path``, filling unset keys with defaults."""
+        raw = yaml.safe_load(path.read_text()) or {}
+        return cls.from_mapping(raw)
+
+    @classmethod
+    def from_mapping(cls, raw: dict[str, Any]) -> Self:
+        """Build a config from a plain mapping, rejecting unknown keys."""
+        known = {f.name for f in cls.__dataclass_fields__.values()}
+        unknown = set(raw) - known
+        if unknown:
+            raise ValueError(f"unknown config keys: {sorted(unknown)}")
+        return cls(**_coerce(dict(raw)))
+
+    def with_overrides(self, **over: Any) -> Self:
+        """Return a copy with ``over`` applied, ignoring ``None`` values."""
+        return replace(self, **{k: v for k, v in over.items() if v is not None})
+
+    def as_manifest_settings(self) -> dict[str, Any]:
+        """The subset of settings recorded in the manifest."""
+        return {
+            "dataset_version": self.dataset_version,
+            "source": self.source,
+            "worldcover_version": self.worldcover_version,
+            "worldcover_year": self.worldcover_year,
+            "source_dataset": self.source_dataset,
+            "source_revision": self.source_revision,
+            "source_url": self.source_recipe.source_url,
+            "code_repository": CODE_REPOSITORY,
+            "source_display_name": self.source_recipe.display_name,
+            "source_text_description": self.source_recipe.text_description,
+            "output_dataset": self.source_recipe.output_dataset,
+            "dataset_license": self.source_recipe.dataset_license,
+            "text_license": self.source_recipe.text_license,
+            "dominance_threshold": self.threshold,
+            "max_polygon_area_m2": self.max_polygon_area_m2,
+            "min_words": self.effective_min_words,
+            "h3_resolution": self.h3_resolution,
+            "split_seed": self.split_seed,
+            "split_ratios": {
+                "train": self.train_ratio,
+                "validation": self.validation_ratio,
+                "test": self.test_ratio,
+            },
+            "equal_area_crs": EQUAL_AREA_CRS,
+        }
+
+
+def _validate_min_words(value: int) -> None:
+    """Require a positive integer so an override can never admit empty text."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("min_words must be a positive integer or null for the source default")
+
+
+def _coerce(data: dict[str, Any]) -> dict[str, Any]:
+    """Turn YAML's strings and lists into the types the dataclass declares."""
+    for key in ("out_dir", "cache_dir"):
+        if key in data:
+            data[key] = Path(data[key])
+    regions = data.get("regions")
+    if regions is not None:
+        data["regions"] = tuple(regions)
+    return data
