@@ -4,31 +4,33 @@
 
 ## Context
 
-One place often has many articles — the same monument in twelve languages — and
-neighbouring places share their surroundings, hence their land cover. Splitting
-examples at random would put the English article about a church in train and the
-German article about the same church in test. A model could score by recognising
-the place, not by reading the text.
+One place often has many articles. For example, the same monument can have
+twelve languages. Neighbouring places have the same surroundings and so the same
+land cover. A random split of the examples can put the English article about a
+church in train and the German article about the same church in test. A model
+can then get a good score because it recognises the place. It does not need to
+read the text.
 
 ## Decision
 
-Assign every example an **H3 resolution-5 cell** (~252 km², roughly 8 km across)
-from its centroid, and assign the *cell* to a split by hashing its id with a
-seed. Every row in a cell lands in the same split.
+Give each example an **H3 resolution-5 cell** (about 252 km², about 8 km across)
+from its centroid. Assign the *cell* to a split. Hash the cell id with a seed.
+All rows in a cell go to the same split.
 
-Ratios (80/10/10) are targets for **cells**, not rows, so realised row counts
-drift from them — the more so for geographically concentrated builds.
+The ratios (80/10/10) are targets for **cells** and not for rows. The realised
+row counts therefore differ from the ratios. The difference is larger for
+geographically concentrated builds.
 
 ## Consequences
 
-- No polygon and no document can straddle a split. Both are checked as
-  published guarantees in `domain/validation.py`, not merely assumed.
-- The same OSM object appearing in two overlapping Geofabrik extracts shares a
-  centroid, hence a cell, hence a split — so regional overlap cannot leak even
-  before de-duplication removes it.
-- Assignment depends only on the cell id and the seed, so it is reproducible
-  and independent of iteration order or how many rows a cell holds.
-- **Residual weakness:** two polygons a metre apart on opposite sides of a cell
-  boundary can still land in different splits. Resolution 5 keeps this to a
-  small perimeter effect rather than eliminating it; see
+- No polygon and no document can be in two splits. `domain/validation.py`
+  checks both as published guarantees. The project does not only assume them.
+- The same OSM object can be in two overlapping Geofabrik extracts. It has the
+  same centroid, the same cell and the same split. Regional overlap therefore
+  cannot leak, also before de-duplication removes the overlap.
+- The assignment depends only on the cell id and the seed. It is reproducible.
+  It does not depend on the iteration order or on the number of rows in a cell.
+- **Remaining weakness:** Two polygons that are one metre apart on opposite
+  sides of a cell boundary can be in different splits. Resolution 5 limits this
+  to a small perimeter effect. It does not remove it. See
   `docs/technical-debt.md`.

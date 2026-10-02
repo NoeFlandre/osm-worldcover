@@ -1,14 +1,15 @@
 # Technical debt and known weaknesses
 
-Recorded deliberately, with why each exists and how it would be cleaned up.
+This page records each weakness on purpose. For each weakness, it gives the
+reason and the way to remove it.
 
 ## The one-off parallel release helper is retired
 
-The temporary `scripts/parallel_release.py` used while preparing the
-description-tag release is not part of the tracked repository after PR #5.
-It hard-coded one source revision and output root, duplicated the tested CLI
-workflow, and its shard-combining step was not safe to rerun. Region discovery,
-split builds, and assembly now have supported paths:
+The temporary `scripts/parallel_release.py` prepared the description-tag
+release. After PR #5, it is not in the tracked repository. It had one source
+revision and one output root in the code. It duplicated the tested CLI workflow.
+Its shard-combining step was not safe to run again. The project now has
+supported paths for region discovery, split builds and assembly:
 
 ```bash
 SOURCE_REVISION=5c8e56a50b5679118a28aef057af002209f80a5e
@@ -20,119 +21,123 @@ uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file r
 uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
 ```
 
-The retained ignored release scratch at
-`data/releases/description/parallel` is recovery evidence, not repository
-source. Keep it while a resume, verification, or publication check may still
-depend on it. A later cleanup may remove it only after the public release has
-been independently verified and no release worker is active; this issue does
-not delete that scratch or any published files. A stale local copy of the old
-helper likewise needs explicit local cleanup outside this worktree.
+The ignored release scratch at `data/releases/description/parallel` is recovery
+evidence. It is not repository source. Keep it while a resume, a verification or
+a publication check can still need it. Remove it only after two conditions are
+true. First, a person has independently verified the public release. Second, no
+release worker is active. This issue does not delete this scratch or any
+published file. A stale local copy of the old helper needs a separate local
+cleanup outside this worktree.
 
 ## The label describes the place, not the feature
 
-A 10 m pixel is 100 m². Polygons below that — 7.6% of the source — are smaller
-than a single pixel, and their label is effectively "whatever covers the ground
-here". Even at the median (1,301 m², ~13 pixels) a church is labelled
-`Built-up` because its surroundings are, not because the building was
-classified as such.
+A 10 m pixel is 100 m². 7.6% of the source polygons are smaller than one pixel.
+For these polygons, the label is the class of the ground around them. The median
+polygon is 1,301 m² (about 13 pixels). A church of this size gets the label
+`Built-up` because its surroundings are built-up. The classifier did not
+classify the building itself.
 
-*Why it exists:* inherent to raster land cover at any resolution the source
-publishes. **Not** fixable with better data.
+*Why it exists:* All raster land cover has this limit at the resolution that
+the source publishes. Better data does **not** remove it.
 
-*Mitigation in place:* every row carries `polygon_area_m2` and
-`observed_fraction`, and the manifest reports the `dominant_fraction`
-distribution, so a consumer can filter to polygons where dominance was a real
-test.
+*Mitigation in place:* Each row has `polygon_area_m2` and `observed_fraction`.
+The manifest reports the distribution of `dominant_fraction`. A consumer can
+then filter to the polygons where dominance was a real test.
 
-*Cleanup path:* publish a recommended `polygon_area_m2 >= 2500` subset (25+
-pixels) as a named config alongside the full dataset.
+*Cleanup path:* Publish a recommended subset with `polygon_area_m2 >= 2500`
+(25 pixels or more). Publish it as a named config next to the full dataset.
 
 ## Built-up dominates the class distribution
 
-Wikidata-linked polygons are overwhelmingly buildings and settlements, so
-`Built-up` can swamp the other ten classes. The balance is source-dependent;
-description and website recipes should be reported separately.
+The Wikidata-linked polygons are mostly buildings and settlements. The class
+`Built-up` can then be much larger than the other ten classes. The balance
+depends on the source. Report the description recipe and the website recipe
+separately.
 
-*Why it exists:* a property of what people write encyclopaedia articles about,
-compounded by WorldCover collapsing all settlement into one class (ADR 0001).
+*Why it exists:* People write encyclopaedia articles mainly about built places.
+WorldCover also puts all settlement into one class (ADR 0001).
 
-*Cleanup path:* ship a class-balanced subset, or report per-class metrics and
-macro-averages rather than accuracy. Adding CORINE as a second label column
-would restore the urban distinctions; see ADR 0001.
+*Cleanup path:* Ship a class-balanced subset. Or report per-class metrics and
+macro-averages and not accuracy. A second label column with CORINE restores the
+urban distinctions. See ADR 0001.
 
 ## Very large polygons are excluded
 
-Polygons above 10,000 km² are refused (ADR 0005) — 1,099 rows, 0.087%.
+The build refuses polygons above 10,000 km² (ADR 0005). This removes 1,099 rows
+(0.087%).
 
-*Why it exists:* zonal-statistics cost is linear in area, and without a cap a
-single continent-scale polygon needs ~100 tiles and hours of computation.
+*Why it exists:* The cost of zonal statistics is linear in area. Without a cap,
+one continent-scale polygon needs about 100 tiles and hours of computation.
 
-*Cleanup path:* read those polygons from the rasters' overview pyramids
-instead of at full resolution. `exactextract` does not expose overview
-selection, so this needs a second, decimated code path — worth it only if
-those 1,099 rows are wanted.
+*Cleanup path:* Read these polygons from the overview pyramids of the rasters
+and not at full resolution. `exactextract` does not expose overview selection.
+This change therefore needs a second, decimated code path. Do it only if the
+project needs these 1,099 rows.
 
-## Documents describing several distant places lose rows
+## Documents that describe several distant places lose rows
 
-One source document can describe many places — a river, a mountain range, a
-chain of monuments. Those polygons fall in different H3 cells and therefore different
-splits, so the document would appear in train *and* test.
+One source document can describe many places, for example a river, a mountain
+range or a chain of monuments. These polygons are in different H3 cells and so
+in different splits. The document would then be in train *and* in test.
 
-*Why it exists:* the alternative is moving every row of that document into one
-split, which breaks the geographic blocking the splits exist to provide. The
-rows in the minority splits are dropped instead.
+*Why it exists:* The alternative is to move all rows of the document into one
+split. This breaks the geographic blocking that the splits must give. The build
+drops the rows in the minority splits.
 
-*Mitigation in place:* the count is reported as `documents_split_across_splits`
-so the loss is visible. On a partial global build it was 30 rows.
+*Mitigation in place:* The build reports the count as
+`documents_split_across_splits`. The loss is then visible. A partial global
+build lost 30 rows.
 
-*Cleanup path:* group cells into connected components joined by shared
-documents and split per component. Risky: one article about a continent could
-chain most of the world into a single component, so measure component sizes
-before adopting it.
+*Cleanup path:* Group the cells into connected components that shared documents
+join. Then split for each component. This is risky. One article about a
+continent can chain most of the world into one component. Measure the component
+sizes before you adopt it.
 
 ## Split boundaries are cell edges, not buffers
 
-H3 blocking guarantees that everything *within* a cell shares a split, but two
-polygons a metre apart on opposite sides of a cell edge can still be separated
-(ADR 0003).
+H3 blocking guarantees that all rows **inside** a cell share a split. Two
+polygons that are one metre apart on opposite sides of a cell edge can still be
+in different splits (ADR 0003).
 
-*Why it exists:* true buffered blocking means discarding a margin around every
-boundary, which costs data and complicates reproducibility.
+*Why it exists:* True buffered blocking discards a margin around each boundary.
+This costs data and makes reproducibility more complex.
 
-*Cleanup path:* drop examples within a fixed distance of a cell boundary, or
-group cells into buffered super-cells. Quantify the affected share first — it
-is a perimeter effect and may not be worth the loss.
+*Cleanup path:* Drop the examples within a fixed distance of a cell boundary.
+Or group the cells into buffered super-cells. First quantify the affected share.
+It is a perimeter effect and the loss can be too large.
 
 ## Invalid geometries are dropped, not repaired
 
-`domain/geometry.py` refuses self-intersecting polygons rather than running
+`domain/geometry.py` refuses self-intersecting polygons. It does not run
 `make_valid`.
 
-*Why it exists:* repair alters the very shape whose area fraction becomes the
-label. A smaller trustworthy dataset was preferred to a larger one resting on
-geometries the source never asserted.
+*Why it exists:* A repair changes the shape whose area fraction becomes the
+label. The project prefers a smaller dataset that it can trust. It does not
+want a larger dataset that depends on geometries the source never asserted.
 
-*Cleanup path:* if the discarded share proves material, repair *and* record a
-`geometry_repaired` flag so consumers can exclude those rows.
+*Cleanup path:* If the discarded share is large, repair the geometries **and**
+record a `geometry_repaired` flag. A consumer can then exclude these rows.
 
 ## Split ratios are approximate
 
-80/10/10 applies to H3 cells, not rows. Realised row counts drift — the
-Luxembourg smoke build came out 76/10/14 because a small country spans few
-cells.
+The ratio 80/10/10 applies to H3 cells and not to rows. The realised row counts
+differ from it. The Luxembourg smoke build gave 76/10/14 because a small
+country has few cells.
 
-*Why it exists:* the alternative is packing cells to hit row targets, which
-makes assignment depend on the whole dataset instead of on the cell id alone,
-costing reproducibility.
+*Why it exists:* The alternative is to pack cells to reach row targets. Then the
+assignment depends on the whole dataset and not only on the cell id. This
+reduces reproducibility.
 
-*Cleanup path:* accept it, and report realised counts in the manifest — which
-it does.
+*Cleanup path:* Accept it. Report the realised counts in the manifest. The
+manifest already does this.
 
 ## Only the first document language is normalised
 
-`language` is taken from the document, falling back to the link table. No
-attempt is made to reconcile disagreements between the two.
+The build takes `language` from the document. If the document has no language,
+it uses the link table. The build does not try to resolve a disagreement between
+the two.
 
-*Why it exists:* they disagree rarely, and the document is authoritative.
+*Why it exists:* They rarely disagree. The document is the authority.
 
-*Cleanup path:* count the disagreements; if non-trivial, record both.
+*Cleanup path:* Count the disagreements. If the count is significant, record
+both values.
