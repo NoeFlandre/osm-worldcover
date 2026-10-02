@@ -10,7 +10,7 @@
       "status": "modified",
       "git_blob_sha1": "a166de3ef64a970d6d9cffcfe1de0793688093bf",
       "sha256": "3e50c7bdb7b690a7bf131d970b161915627832311f9e50e1f08b466ef46b6299",
-      "bytes": 28940,
+      "bytes": 28941,
       "branch_path": "recovery/local-code-snapshots/alaska-bounded-extraction-20261001/src/osm_worldcover/adapters/worldcover.py"
     },
     {
@@ -70,7 +70,7 @@
       "status": "modified",
       "git_blob_sha1": "e84197560aa9bb71a2105bff74d5f6146c77bae3",
       "sha256": "2d3ab92945416a7f4453db003773b45e2cd3cf9241a96be557cbb85ffa7fa2c9",
-      "bytes": 13450,
+      "bytes": 13466,
       "branch_path": "recovery/local-code-snapshots/record-dedup/src/osm_worldcover/domain/card.py"
     },
     {
@@ -180,7 +180,7 @@
       "status": "modified",
       "git_blob_sha1": "af0584ae08e0b5cc397e9a78962c5759d2daac1e",
       "sha256": "da297ba2d1278e80d4a37a0dd53e27adbf329ee6b278df8da35a0d37149961db",
-      "bytes": 12220,
+      "bytes": 12234,
       "branch_path": "recovery/local-code-snapshots/release-3ddd472/src/osm_worldcover/domain/card.py"
     },
     {
@@ -220,7 +220,7 @@
       "status": "untracked outside repository",
       "git_blob_sha1": "9359c416704b6750511e43b55a104f598f5c7a9e",
       "sha256": "ad898d6b6992cde63798635fc1c90e607af2e52f64ba2e85e65f42fe1824796b",
-      "bytes": 5276,
+      "bytes": 5279,
       "branch_path": "recovery/local-helper-snapshots/workspace-root/prepare_recovery_backup.py"
     },
     {
