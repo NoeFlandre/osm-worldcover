@@ -361,6 +361,103 @@ def test_ledger_refuses_ambiguous_inventory(
         )
 
 
+def _tamper(tmp_path, mutate, stem="alpha"):
+    path = tmp_path / f"{stem}.complete.json"
+    receipt = json.loads(path.read_text())
+    mutate(receipt)
+    path.write_text(json.dumps(receipt))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["shard"].update(filename="other.parquet"),
+        lambda r: r["shard"].update(bytes=r["shard"]["bytes"] + 1),
+        lambda r: r["shard"].update(sha256="0" * 64),
+        lambda r: r["shard"].update(rows=r["shard"]["rows"] + 1),
+        lambda r: r["shard"].update(columns=["polygon_id"]),
+        lambda r: r["outcome"].update(stem="beta"),
+        lambda r: r["outcome"].update(examples=r["outcome"]["examples"] + 1),
+        lambda r: r.update(build_context_sha256="0" * 64),
+        lambda r: r["context"].update(unrelated="change"),
+        lambda r: r.update(schema_version=r["schema_version"] + 1),
+    ],
+    ids=[
+        "filename",
+        "bytes",
+        "sha256",
+        "rows",
+        "columns",
+        "outcome-stem",
+        "outcome-examples",
+        "fingerprint",
+        "context",
+        "schema",
+    ],
+)
+def test_every_receipt_claim_must_hold_independently(tmp_path, context, outcome, examples, mutate):
+    store = ShardStore(tmp_path, context)
+    store.write_outcome("alpha", examples, outcome)
+    assert store.outcome("alpha") == outcome
+
+    _tamper(tmp_path, mutate)
+
+    assert store.outcome("alpha") is None
+
+
+def test_a_receipt_cannot_be_replayed_under_another_region_name(
+    tmp_path, context, outcome, examples
+):
+    store = ShardStore(tmp_path, context)
+    store.write_outcome("alpha", examples, outcome)
+    (tmp_path / "beta.parquet").write_bytes((tmp_path / "alpha.parquet").read_bytes())
+    (tmp_path / "beta.complete.json").write_text((tmp_path / "alpha.complete.json").read_text())
+    _tamper(tmp_path, lambda r: r["shard"].update(filename="beta.parquet"), stem="beta")
+
+    assert store.outcome("beta") is None
+
+
+def test_context_bound_store_reads_back_verified_shards_and_refuses_tampered_ones(
+    tmp_path, context, outcome, examples
+):
+    store = ShardStore(tmp_path, context)
+    store.write_outcome("alpha", examples, outcome)
+    assert len(store.read()) == 1
+
+    _tamper(tmp_path, lambda r: r["shard"].update(bytes=0))
+
+    with pytest.raises(ValueError, match=r"\['alpha'\]"):
+        store.read()
+
+
+def test_staging_copies_when_hardlinks_are_unavailable(
+    tmp_path, context, outcome, examples, monkeypatch
+):
+    store = ShardStore(tmp_path / "shards", context)
+    store.write_outcome("alpha", examples, outcome)
+
+    def refuse(self, target):
+        raise OSError("cross-device")
+
+    monkeypatch.setattr(type(tmp_path), "hardlink_to", refuse)
+
+    staged = store.stage(["alpha"], tmp_path / "stage")
+
+    assert (staged / "alpha.parquet").read_bytes() == store.path_for("alpha").read_bytes()
+
+
+def test_outcome_counters_are_written_beside_the_receipt(tmp_path, context, outcome, examples):
+    ShardStore(tmp_path, context).write_outcome("alpha", examples, outcome)
+
+    sidecar = tmp_path / "alpha.rejections.json"
+    assert json.loads(sidecar.read_text()) == {"below_threshold": 3}
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "alpha.complete.json",
+        "alpha.parquet",
+        "alpha.rejections.json",
+    ]
+
+
 def test_record_serialization_does_not_mutate_the_outcome(outcome):
     record = outcome_record(outcome)
     record["text_rejections"]["empty_text"] = 99

@@ -117,3 +117,21 @@ class TestSplitRatioValidation:
     def test_a_sum_that_is_wrong_says_so(self) -> None:
         with pytest.raises(ValueError, match=r"must sum to 1\.0"):
             SplitRatios(0.5, 0.2, 0.2)
+
+
+@pytest.mark.parametrize(
+    ("position", "expected"),
+    [
+        (0.49, Split.TRAIN),
+        (0.5, Split.VALIDATION),
+        (0.74, Split.VALIDATION),
+        (0.75, Split.TEST),
+        (0.99, Split.TEST),
+    ],
+)
+def test_split_boundaries_belong_to_the_upper_split(monkeypatch, position, expected) -> None:
+    from osm_worldcover.domain import splits
+
+    monkeypatch.setattr(splits, "_unit_hash", lambda cell, seed: position)
+
+    assert assign_cell("cell", SplitRatios(0.5, 0.25, 0.25)) is expected

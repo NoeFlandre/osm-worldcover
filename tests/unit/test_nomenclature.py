@@ -38,6 +38,12 @@ def test_nodata_value_is_declared_and_is_not_a_class() -> None:
     assert not nom.is_valid_code(nom.NODATA)
 
 
+def test_an_unknown_code_is_named_in_the_error() -> None:
+    with pytest.raises(nom.UnknownLandCoverCodeError) as raised:
+        nom.label_for(999)
+    assert raised.value.args == (999,)
+
+
 def test_labels_are_unique() -> None:
     assert len(set(nom.CLASS_LABELS.values())) == len(nom.CLASS_LABELS)
 

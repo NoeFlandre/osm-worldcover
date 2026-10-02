@@ -2,7 +2,13 @@
 
 import pytest
 
-from osm_worldcover.domain.validation import REQUIRED_COLUMNS, Check, validate
+from osm_worldcover.domain.validation import (
+    REQUIRED_COLUMNS,
+    Check,
+    ValidationReport,
+    Violation,
+    validate,
+)
 
 
 def row(**over: object) -> dict[str, object]:
@@ -156,3 +162,39 @@ def test_the_columns_validation_needs_are_declared() -> None:
 def test_validation_works_on_rows_holding_only_the_required_columns() -> None:
     lean = {key: row()[key] for key in REQUIRED_COLUMNS}
     assert validate([lean]).ok
+
+
+def test_the_report_counts_every_row() -> None:
+    rows = [row(polygon_id=f"p{i}", document_id=f"d{i}", text="x " * (40 + i)) for i in range(3)]
+
+    assert validate(rows).rows == 3
+    assert validate(iter(rows[:1])).rows == 1
+
+
+def test_an_empty_dataset_is_reported_as_exactly_that() -> None:
+    assert validate([]) == ValidationReport(0, [Violation(Check.EMPTY_DATASET, 0)])
+
+
+def test_each_violation_keeps_five_examples_from_the_first_five_culprits() -> None:
+    rows = [row(polygon_id=f"p{i}", document_id=f"d{i}", split="bogus") for i in (6, 5, 4, 3, 2, 1)]
+
+    (violation,) = validate(rows).violations
+
+    assert violation == Violation(Check.INVALID_SPLIT, 6, ("p2", "p3", "p4", "p5", "p6"))
+
+
+def test_a_leaking_key_is_named_as_the_example() -> None:
+    rows = [row(document_id="d1"), row(document_id="d2", split="test")]
+
+    leaks = [v for v in validate(rows).violations if v.check is Check.POLYGON_LEAKAGE]
+
+    assert leaks == [Violation(Check.POLYGON_LEAKAGE, 1, ("luxembourg-latest:relation:1",))]
+
+
+def test_identical_text_is_a_duplicate_only_within_the_same_class() -> None:
+    same_class = [row(document_id="d1"), row(document_id="d2")]
+    other_class = [row(document_id="d1"), row(document_id="d2", worldcover_code=20)]
+    other_class[1]["worldcover_label"] = "Shrubland"
+
+    assert Check.DUPLICATE_EXAMPLE in checks_in(same_class)
+    assert Check.DUPLICATE_EXAMPLE not in checks_in(other_class)
