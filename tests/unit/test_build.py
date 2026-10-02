@@ -1,6 +1,7 @@
 """Shard persistence and resume behaviour of a whole build."""
 
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -344,14 +345,24 @@ class _Spy:
         return record
 
 
+def _recording(calls: list, real):
+    """Wrap ``real`` so each call's arguments land in ``calls`` before it runs."""
+
+    def wrapper(*args, **kwargs):
+        calls.append(kwargs or args)
+        return real(*args, **kwargs)
+
+    return wrapper
+
+
 def _recipe(name="wikidata"):
     from osm_worldcover.sources import recipe_for
 
     return recipe_for(name)
 
 
-@pytest.mark.parametrize("source", ["wikidata", "website"])
-def test_release_source_deletes_only_that_regions_tables(tmp_path, monkeypatch, source) -> None:
+def _release(tmp_path, monkeypatch, source):
+    """Release one region's tables for ``source``; return what was and wasn't deleted."""
     from osm_worldcover import build as module
 
     recipe = _recipe(source)
@@ -361,15 +372,29 @@ def test_release_source_deletes_only_that_regions_tables(tmp_path, monkeypatch, 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("x")
     asked = []
-    real = module.hub.region_files
-    monkeypatch.setattr(module.hub, "region_files", lambda *a: asked.append(a) or real(*a))
+    monkeypatch.setattr(module.hub, "region_files", _recording(asked, module.hub.region_files))
 
     module._release_source(tmp_path, "alpha", recipe)
 
-    assert not any(path.exists() for path in doomed)
-    assert bystander.exists()
-    # The default source keeps the one-argument call; others pass their recipe.
-    assert asked == [("alpha",) if source == "wikidata" else ("alpha", recipe)]
+    return SimpleNamespace(recipe=recipe, doomed=doomed, bystander=bystander, asked=asked)
+
+
+@pytest.mark.parametrize("source", ["wikidata", "website"])
+def test_release_source_deletes_only_that_regions_tables(tmp_path, monkeypatch, source) -> None:
+    released = _release(tmp_path, monkeypatch, source)
+
+    assert [path.exists() for path in released.doomed] == [False] * len(released.doomed)
+    assert released.bystander.exists()
+
+
+def test_the_default_source_keeps_the_one_argument_region_files_call(tmp_path, monkeypatch) -> None:
+    assert _release(tmp_path, monkeypatch, "wikidata").asked == [("alpha",)]
+
+
+def test_other_sources_pass_their_recipe_to_region_files(tmp_path, monkeypatch) -> None:
+    released = _release(tmp_path, monkeypatch, "website")
+
+    assert released.asked == [("alpha", released.recipe)]
 
 
 class _Store:
@@ -501,7 +526,17 @@ def test_only_full_commit_hashes_skip_revision_resolution(monkeypatch, revision,
     assert asked == ([("owner/data", revision)] if resolved else [])
 
 
-def test_run_build_wires_every_stage_with_the_pinned_config(tmp_path, monkeypatch) -> None:
+def _staged_stage(spy, staged):
+    def stage(_store, *args):
+        spy("stage")(*args)
+        return staged
+
+    return stage
+
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    """Run ``run_build`` with every stage replaced by a recording spy."""
     from osm_worldcover import build as module
     from osm_worldcover.accounting import BuildContext
     from osm_worldcover.config import Config
@@ -515,54 +550,107 @@ def test_run_build_wires_every_stage_with_the_pinned_config(tmp_path, monkeypatc
         cached_tiles=7,
         source_dataset="owner/data",
     )
-    pinned = config.with_overrides(source_revision="c" * 40)
     outcome = RegionOutcome("alpha", examples=1)
     staged = tmp_path / "staged"
-    spy = _Spy(list=["alpha", "beta"], ledger={"ledger": True}, run=[outcome], finalize="built")
-    monkeypatch.setattr(module.hub, "list_region_stems", spy("list"))
-    monkeypatch.setattr(module.hub, "resolve_revision", lambda *a: "c" * 40)
-    monkeypatch.setattr(module, "processing_ledger", spy("ledger"))
     tiles = object()
-    spy.returns["tiles"] = tiles
+    spy = _Spy(
+        list=["alpha", "beta"],
+        ledger={"ledger": True},
+        run=[outcome],
+        finalize="built",
+        tiles=tiles,
+    )
+    monkeypatch.setattr(module.hub, "list_region_stems", spy("list"))
+    monkeypatch.setattr(module.hub, "resolve_revision", lambda *_: "c" * 40)
+    monkeypatch.setattr(module, "processing_ledger", spy("ledger"))
     monkeypatch.setattr(module, "WorldCoverTiles", spy("tiles"))
     monkeypatch.setattr(module, "_run_regions", spy("run"))
-    monkeypatch.setattr(module.ShardStore, "stage", lambda self, *a: spy("stage")(*a) or staged)
+    monkeypatch.setattr(module.ShardStore, "stage", _staged_stage(spy, staged))
     monkeypatch.setattr(module, "finalize_shards", spy("finalize"))
 
     def progress(_message: str) -> None:
         return None
 
     report = module.run_build(config, regions=["alpha"], keep_tiles=True, progress=progress)
+    pinned = config.with_overrides(source_revision="c" * 40)
+    return SimpleNamespace(
+        spy=spy,
+        calls={name: (args, kwargs) for name, args, kwargs in spy.calls},
+        report=report,
+        pinned=pinned,
+        context=BuildContext.from_config(pinned),
+        outcome=outcome,
+        staged=staged,
+        tiles=tiles,
+        progress=progress,
+        cache=tmp_path / "cache",
+        out=tmp_path / "out",
+    )
 
-    context = BuildContext.from_config(pinned)
-    names = [name for name, _, _ in spy.calls]
-    assert names == ["list", "ledger", "tiles", "run", "ledger", "stage", "finalize"]
-    calls = {name: (args, kwargs) for name, args, kwargs in spy.calls}
-    assert calls["list"] == (("owner/data", "c" * 40, pinned.source_recipe), {})
-    assert spy.calls[1][1] == (["alpha", "beta"], ["alpha"], [], context)
-    assert calls["tiles"] == (
-        (tmp_path / "cache" / "worldcover",),
+
+def test_run_build_runs_the_stages_in_order(wired) -> None:
+    assert [name for name, _, _ in wired.spy.calls] == [
+        "list",
+        "ledger",
+        "tiles",
+        "run",
+        "ledger",
+        "stage",
+        "finalize",
+    ]
+
+
+def test_run_build_lists_regions_at_the_pinned_revision(wired) -> None:
+    assert wired.calls["list"] == (("owner/data", "c" * 40, wired.pinned.source_recipe), {})
+    assert wired.spy.calls[1][1] == (["alpha", "beta"], ["alpha"], [], wired.context)
+    assert wired.spy.calls[4][1] == (["alpha", "beta"], ["alpha"], [wired.outcome], wired.context)
+
+
+def test_run_build_configures_the_tile_cache(wired) -> None:
+    assert wired.calls["tiles"] == (
+        (wired.cache / "worldcover",),
         {"version": "v100", "year": 2020, "max_cached_tiles": 7},
     )
-    run_args = calls["run"][0]
-    assert run_args[:4] == (pinned, "c" * 40, ["alpha"], tmp_path / "cache" / "source")
-    assert run_args[4] is tiles
-    assert run_args[5].directory == tmp_path / "cache" / "shards"
-    assert run_args[5].context == context
-    assert run_args[6:] == (True, progress)
-    assert spy.calls[4][1] == (["alpha", "beta"], ["alpha"], [outcome], context)
-    assert calls["stage"] == ((["alpha"], tmp_path / "cache" / "assembly" / "selected-shards"), {})
-    assert calls["finalize"] == (
-        (staged, pinned, tmp_path / "cache" / "assembly", tmp_path / "out", {}),
+
+
+def test_run_build_hands_the_region_pass_its_collaborators(wired) -> None:
+    run_args = wired.calls["run"][0]
+
+    assert run_args[:4] == (wired.pinned, "c" * 40, ["alpha"], wired.cache / "source")
+    assert run_args[4] is wired.tiles
+    assert run_args[6:] == (True, wired.progress)
+
+
+def test_run_build_gives_the_region_pass_a_shard_store(wired) -> None:
+    store = wired.calls["run"][0][5]
+
+    assert store.directory == wired.cache / "shards"
+    assert store.context == wired.context
+
+
+def test_run_build_stages_and_finalizes_the_selected_shards(wired) -> None:
+    assert wired.calls["stage"] == (
+        (["alpha"], wired.cache / "assembly" / "selected-shards"),
+        {},
+    )
+    assert wired.calls["finalize"] == (
+        (wired.staged, wired.pinned, wired.cache / "assembly", wired.out, {}),
         {"processing": {"ledger": True}},
     )
-    ledger_file = tmp_path / "cache" / "processing-ledger.json"
+
+
+def test_run_build_saves_the_ledger_and_reports(wired) -> None:
+    ledger_file = wired.cache / "processing-ledger.json"
+
     assert json.loads(ledger_file.read_text()) == {"ledger": True}
     # Compare listed names too: macOS resolves paths case-insensitively.
     assert "processing-ledger.json" in [path.name for path in ledger_file.parent.iterdir()]
-    assert report.result == "built"
-    assert report.regions == [outcome]
-    assert report.processing == {"ledger": True}
+
+
+def test_run_build_reports_what_finalizing_returned(wired) -> None:
+    assert wired.report.result == "built"
+    assert wired.report.regions == [wired.outcome]
+    assert wired.report.processing == {"ledger": True}
 
 
 @pytest.mark.parametrize("stem", ["", ".", "..", "a/b", "../x", "/abs"])
@@ -585,8 +673,7 @@ def test_shards_are_written_atomically_with_a_plain_index(tmp_path, monkeypatch)
     from osm_worldcover import build as module
 
     seen = []
-    real = module.tempfile.mkstemp
-    monkeypatch.setattr(module.tempfile, "mkstemp", lambda **k: seen.append(k) or real(**k))
+    monkeypatch.setattr(module.tempfile, "mkstemp", _recording(seen, module.tempfile.mkstemp))
     custom = frame(2)
     custom.index = [7, 9]
 
