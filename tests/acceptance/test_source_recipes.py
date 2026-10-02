@@ -76,17 +76,31 @@ def _assert_published_examples(
     raster = write_raster(tmp_path / "worldcover.tif", np.full((4, 4), 10, dtype="uint8"))
     tables = RegionTables.load(source, "alpha-latest", config.source_recipe)
     examples, outcome = run_region(config, tables, FixedTiles(raster))
-    assert outcome.polygons_accepted == 1
-    assert set(examples["text"]) == expected_texts
-    assert len(examples) == len(expected_texts)
+    _assert_region_examples(examples, outcome.polygons_accepted, expected_texts)
 
     shards = tmp_path / "shards"
     shards.mkdir()
     examples.to_parquet(shards / "alpha-latest.parquet", index=False)
     release = finalize_shards(shards, config, tmp_path / "assembly", tmp_path / "out", {})
+    _assert_finalized_release(release, config, expected_texts)
+    _assert_final_rows(release.paths, expected_texts)
+
+
+def _assert_region_examples(
+    examples: pd.DataFrame, accepted: int, expected_texts: set[str]
+) -> None:
+    assert accepted == 1
+    assert set(examples["text"]) == expected_texts
+    assert len(examples) == len(expected_texts)
+
+
+def _assert_finalized_release(release, config: Config, expected_texts: set[str]) -> None:
     assert release.rows == len(expected_texts)
     assert release.report.ok
     assert release.manifest["settings"]["min_words"] == config.effective_min_words
-    rows = pd.concat([pd.read_parquet(path) for path in release.paths if path.suffix == ".parquet"])
+
+
+def _assert_final_rows(paths: list[Path], expected_texts: set[str]) -> None:
+    rows = pd.concat([pd.read_parquet(path) for path in paths if path.suffix == ".parquet"])
     assert set(rows["text"]) == expected_texts
     assert set(rows["worldcover_label"]) == {"Tree cover"}

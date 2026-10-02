@@ -102,7 +102,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run ty check src/
 uv run lint-imports
 uv run pytest
-uv run pytest --cov --cov-report=json -q && uv run python scripts/crap.py src
+uv run pytest --cov --cov-report=json -q && uv run python scripts/crap.py src scripts tests
 uv run mutmut run
 uv run mkdocs build --strict
 ```

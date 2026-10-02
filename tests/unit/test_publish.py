@@ -166,7 +166,7 @@ class FakeHub:
         root = Path(kwargs["folder_path"])
         for path in root.rglob("*"):
             name = path.relative_to(root).as_posix()
-            if path.is_file() and any(fnmatch.fnmatch(name, p) for p in kwargs["allow_patterns"]):
+            if _is_uploaded_file(path, root, kwargs["allow_patterns"]):
                 self.uploaded[name] = path.read_bytes()
         return self.commit
 
@@ -235,6 +235,77 @@ def _mutate_row(build, split="train", **changes):
     pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), path)
 
 
+def _is_uploaded_file(path: Path, root: Path, allow_patterns: list[str]) -> bool:
+    name = path.relative_to(root).as_posix()
+    return path.is_file() and any(fnmatch.fnmatch(name, pattern) for pattern in allow_patterns)
+
+
+def _created_repo(hub: FakeHub):
+    return next(call for call in hub.calls if call[0] == "create")
+
+
+def _assert_uploaded_release(build: Path, hub: FakeHub, url: str) -> None:
+    readme = hub.uploaded["README.md"].decode()
+    assert (
+        url,
+        set(hub.uploaded),
+        hub.token,
+        "Tree cover" in readme,
+        "Test polygon" in readme,
+        MAP_FILENAME in readme,
+        hub.uploaded[MAP_FILENAME],
+        hub.calls[0],
+        _created_repo(hub)[2]["private"],
+    ) == (
+        f"https://huggingface.co/datasets/{REPO_ID}",
+        RELEASE_NAMES | {CHECKSUMS_NAME},
+        "fake-token",
+        True,
+        True,
+        True,
+        PNG,
+        ("map", build, build / MAP_FILENAME),
+        False,
+    )
+
+
+def _assert_pinned_readbacks(hub: FakeHub) -> None:
+    read_calls = [call for call in hub.calls if call[0] in {"info", "tree", "download"}]
+    assert all(
+        (call[-1]["revision"], call[-1]["repo_type"]) == (COMMIT, "dataset") for call in read_calls
+    )
+    assert {call[2] for call in read_calls if call[0] == "download"} == {
+        "README.md",
+        "manifest.json",
+        CHECKSUMS_NAME,
+    }
+
+
+def _assert_verified_receipt(build: Path, hub: FakeHub, url: str) -> None:
+    receipt = json.loads((build / RECEIPT_NAME).read_text())
+    assert (
+        receipt["commit_oid"],
+        receipt["commit_url"],
+        receipt["verification"]["ok"],
+        set(receipt["verification"]["files"]),
+        receipt["verification"]["files"]["train.parquet"]["verified_by"],
+        receipt["verification"]["files"]["README.md"]["verified_by"],
+        receipt["audit"]["ok"],
+        receipt["audit"]["rows"],
+        "fake-token" not in (build / RECEIPT_NAME).read_text(),
+    ) == (
+        COMMIT,
+        f"{url}/commit/{COMMIT}",
+        True,
+        set(hub.uploaded),
+        "sha256",
+        "git_blob_sha1",
+        True,
+        3,
+        True,
+    )
+
+
 def test_required_inputs_are_three_splits_and_manifest(build):
     assert {path.name for path in files_to_publish(build)} == {
         "train.parquet",
@@ -270,30 +341,9 @@ def test_publish_uploads_only_intended_files_and_verifies_exact_commit(build, hu
     (build / "private.log").write_text("never upload")
     (build / RECEIPT_NAME).write_text("stale receipt")
     url = publish_dataset(build, REPO_ID, token="fake-token")
-    assert url == f"https://huggingface.co/datasets/{REPO_ID}"
-    assert set(hub.uploaded) == RELEASE_NAMES | {CHECKSUMS_NAME}
-    assert hub.token == "fake-token"
-    assert "Tree cover" in hub.uploaded["README.md"].decode()
-    assert "Test polygon" in hub.uploaded["README.md"].decode()
-    assert MAP_FILENAME in hub.uploaded["README.md"].decode()
-    assert hub.uploaded[MAP_FILENAME] == PNG
-    assert hub.calls[0] == ("map", build, build / MAP_FILENAME)
-    assert next(call for call in hub.calls if call[0] == "create")[2]["private"] is False
-    for call in hub.calls:
-        if call[0] in {"info", "tree", "download"}:
-            assert call[-1]["revision"] == COMMIT
-            assert call[-1]["repo_type"] == "dataset"
-    downloads = [call[2] for call in hub.calls if call[0] == "download"]
-    assert set(downloads) == {"README.md", "manifest.json", CHECKSUMS_NAME}
-    receipt = json.loads((build / RECEIPT_NAME).read_text())
-    assert receipt["commit_oid"] == COMMIT
-    assert receipt["commit_url"] == f"{url}/commit/{COMMIT}"
-    assert receipt["verification"]["ok"]
-    assert set(receipt["verification"]["files"]) == set(hub.uploaded)
-    assert receipt["verification"]["files"]["train.parquet"]["verified_by"] == "sha256"
-    assert receipt["verification"]["files"]["README.md"]["verified_by"] == "git_blob_sha1"
-    assert receipt["audit"]["ok"] and receipt["audit"]["rows"] == 3
-    assert "fake-token" not in (build / RECEIPT_NAME).read_text()
+    _assert_uploaded_release(build, hub, url)
+    _assert_pinned_readbacks(hub)
+    _assert_verified_receipt(build, hub, url)
 
 
 def test_checksums_cover_exact_release_bytes_without_self_reference(build, hub):
@@ -301,12 +351,15 @@ def test_checksums_cover_exact_release_bytes_without_self_reference(build, hub):
     checksums = json.loads(hub.uploaded[CHECKSUMS_NAME])
     assert checksums["algorithm"] == "sha256"
     assert set(checksums["files"]) == RELEASE_NAMES
-    for name, expected in checksums["files"].items():
-        assert expected == {
+    assert all(
+        expected
+        == {
             "size": len(hub.uploaded[name]),
             "sha256": hashlib.sha256(hub.uploaded[name]).hexdigest(),
         }
-    assert next(call for call in hub.calls if call[0] == "create")[2]["private"] is True
+        for name, expected in checksums["files"].items()
+    )
+    assert _created_repo(hub)[2]["private"] is True
 
 
 def test_audit_runs_after_regeneration_and_before_hub_creation(build, hub, monkeypatch):

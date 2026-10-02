@@ -107,11 +107,16 @@ def test_card_lists_region_and_assembly_code_revisions() -> None:
         },
     }
     text = render(manifest)
-    assert f"{repository}/tree/{'a' * 40}" in text
-    assert f"{repository}/tree/{'b' * 40}" in text
-    assert f"{repository}/tree/{'c' * 40}" in text
-    assert "2 regions" in text
-    assert "1 region" in text
+    assert tuple(
+        value in text
+        for value in (
+            f"{repository}/tree/{'a' * 40}",
+            f"{repository}/tree/{'b' * 40}",
+            f"{repository}/tree/{'c' * 40}",
+            "2 regions",
+            "1 region",
+        )
+    ) == (True, True, True, True, True)
 
 
 def test_card_uses_source_specific_metadata() -> None:

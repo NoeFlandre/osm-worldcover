@@ -1,54 +1,27 @@
 """Completion receipts bind resume safety to byte-verified inputs and counters."""
 
+import hashlib
 import json
+import subprocess
+import tempfile
 from collections import Counter
-from dataclasses import replace
+from dataclasses import asdict, fields, replace
 
 import pandas as pd
 import pytest
 
+from osm_worldcover import accounting
 from osm_worldcover.accounting import (
     BuildContext,
+    atomic_json,
+    file_sha256,
     outcome_from_record,
     outcome_record,
     processing_ledger,
     validate_outcome,
 )
 from osm_worldcover.build import ShardStore
-from osm_worldcover.config import Config
-from osm_worldcover.pipeline import RegionOutcome
-
-
-@pytest.fixture
-def config():
-    return Config(source_revision="a" * 40)
-
-
-@pytest.fixture
-def context(config):
-    return BuildContext.from_config(config)
-
-
-@pytest.fixture
-def outcome():
-    return RegionOutcome(
-        "alpha",
-        polygons_seen=12,
-        polygons_invalid=1,
-        polygons_accepted=8,
-        polygons_with_examples=2,
-        examples=3,
-        source_links=10,
-        source_documents=9,
-        rejections=Counter({"below_threshold": 3}),
-        text_rejections=Counter({"text_too_short": 4, "empty_text": 2}),
-        tiles_missing=["N00E000"],
-    )
-
-
-@pytest.fixture
-def examples():
-    return pd.DataFrame({"polygon_id": ["p1", "p1", "p2"], "text": ["a", "b", "c"]})
+from osm_worldcover.pipeline import OUTPUT_COLUMNS, RegionOutcome
 
 
 def test_receipt_roundtrip_preserves_every_outcome_field(tmp_path, context, outcome, examples):
@@ -216,31 +189,51 @@ def test_stage_never_overwrites_the_shard_store(tmp_path, context, outcome, exam
 
 def test_subset_completion_is_not_full_source_completion(context, outcome):
     ledger = processing_ledger(["beta", "alpha"], ["alpha"], [outcome], context)
-    assert ledger["selected_complete"]
-    assert not ledger["complete"]
-    assert not ledger["full_source_complete"]
-    assert ledger["scope"] == "subset"
-    assert ledger["missing_regions"] == ["beta"]
-    assert ledger["region_counts"] == {
-        "expected": 2,
-        "selected": 1,
-        "processed": 1,
-        "missing": 1,
-        "unprocessed_selected": 0,
+    assert {
+        "selected_complete": ledger["selected_complete"],
+        "complete": ledger["complete"],
+        "full_source_complete": ledger["full_source_complete"],
+        "scope": ledger["scope"],
+        "missing_regions": ledger["missing_regions"],
+        "region_counts": ledger["region_counts"],
+    } == {
+        "selected_complete": True,
+        "complete": False,
+        "full_source_complete": False,
+        "scope": "subset",
+        "missing_regions": ["beta"],
+        "region_counts": {
+            "expected": 2,
+            "selected": 1,
+            "processed": 1,
+            "missing": 1,
+            "unprocessed_selected": 0,
+        },
     }
 
 
 def test_full_ledger_accounts_for_every_region_and_all_counters(context, outcome):
     outcomes = [replace(outcome, stem="beta"), outcome]
     ledger = processing_ledger(["alpha", "beta"], ["beta", "alpha"], outcomes, context)
-    assert ledger["full_source_complete"]
-    assert ledger["scope"] == "full"
-    assert ledger["totals"]["polygons_seen"] == 24
-    assert ledger["totals"]["polygons_with_examples"] == 4
-    assert ledger["totals"]["rejections"] == {"below_threshold": 6}
-    assert ledger["totals"]["text_rejections"] == {"empty_text": 4, "text_too_short": 8}
-    assert [row["stem"] for row in ledger["regions"]] == ["alpha", "beta"]
-    assert outcome_from_record(ledger["regions"][0]) == outcome
+    assert {
+        "complete": ledger["full_source_complete"],
+        "scope": ledger["scope"],
+        "polygons_seen": ledger["totals"]["polygons_seen"],
+        "polygons_with_examples": ledger["totals"]["polygons_with_examples"],
+        "rejections": ledger["totals"]["rejections"],
+        "text_rejections": ledger["totals"]["text_rejections"],
+        "regions": [row["stem"] for row in ledger["regions"]],
+        "first_outcome": outcome_from_record(ledger["regions"][0]),
+    } == {
+        "complete": True,
+        "scope": "full",
+        "polygons_seen": 24,
+        "polygons_with_examples": 4,
+        "rejections": {"below_threshold": 6},
+        "text_rejections": {"empty_text": 4, "text_too_short": 8},
+        "regions": ["alpha", "beta"],
+        "first_outcome": outcome,
+    }
 
 
 def test_processing_ledger_groups_exact_region_code_revisions(context, outcome):
@@ -341,7 +334,276 @@ def test_ledger_refuses_ambiguous_inventory(
         )
 
 
+def _tamper(tmp_path, mutate, stem="alpha"):
+    path = tmp_path / f"{stem}.complete.json"
+    receipt = json.loads(path.read_text())
+    mutate(receipt)
+    path.write_text(json.dumps(receipt))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["shard"].update(filename="other.parquet"),
+        lambda r: r["shard"].update(bytes=r["shard"]["bytes"] + 1),
+        lambda r: r["shard"].update(sha256="0" * 64),
+        lambda r: r["shard"].update(rows=r["shard"]["rows"] + 1),
+        lambda r: r["shard"].update(columns=["polygon_id"]),
+        lambda r: r["outcome"].update(stem="beta"),
+        lambda r: r["outcome"].update(examples=r["outcome"]["examples"] + 1),
+        lambda r: r.update(build_context_sha256="0" * 64),
+        lambda r: r["context"].update(unrelated="change"),
+        lambda r: r.update(schema_version=r["schema_version"] + 1),
+    ],
+    ids=[
+        "filename",
+        "bytes",
+        "sha256",
+        "rows",
+        "columns",
+        "outcome-stem",
+        "outcome-examples",
+        "fingerprint",
+        "context",
+        "schema",
+    ],
+)
+def test_every_receipt_claim_must_hold_independently(tmp_path, context, outcome, examples, mutate):
+    store = ShardStore(tmp_path, context)
+    store.write_outcome("alpha", examples, outcome)
+    assert store.outcome("alpha") == outcome
+
+    _tamper(tmp_path, mutate)
+
+    assert store.outcome("alpha") is None
+
+
+def test_a_receipt_cannot_be_replayed_under_another_region_name(
+    tmp_path, context, outcome, examples
+):
+    store = ShardStore(tmp_path, context)
+    store.write_outcome("alpha", examples, outcome)
+    (tmp_path / "beta.parquet").write_bytes((tmp_path / "alpha.parquet").read_bytes())
+    (tmp_path / "beta.complete.json").write_text((tmp_path / "alpha.complete.json").read_text())
+    _tamper(tmp_path, lambda r: r["shard"].update(filename="beta.parquet"), stem="beta")
+
+    assert store.outcome("beta") is None
+
+
+def test_context_bound_store_reads_back_verified_shards_and_refuses_tampered_ones(
+    tmp_path, context, outcome, examples
+):
+    store = ShardStore(tmp_path, context)
+    store.write_outcome("alpha", examples, outcome)
+    assert len(store.read()) == 1
+
+    _tamper(tmp_path, lambda r: r["shard"].update(bytes=0))
+
+    with pytest.raises(ValueError, match=r"\['alpha'\]"):
+        store.read()
+
+
+def test_staging_copies_when_hardlinks_are_unavailable(
+    tmp_path, context, outcome, examples, monkeypatch
+):
+    store = ShardStore(tmp_path / "shards", context)
+    store.write_outcome("alpha", examples, outcome)
+
+    def refuse(self, target):
+        raise OSError("cross-device")
+
+    monkeypatch.setattr(type(tmp_path), "hardlink_to", refuse)
+
+    staged = store.stage(["alpha"], tmp_path / "stage")
+
+    assert (staged / "alpha.parquet").read_bytes() == store.path_for("alpha").read_bytes()
+
+
+def test_outcome_counters_are_written_beside_the_receipt(tmp_path, context, outcome, examples):
+    ShardStore(tmp_path, context).write_outcome("alpha", examples, outcome)
+
+    sidecar = tmp_path / "alpha.rejections.json"
+    assert json.loads(sidecar.read_text()) == {"below_threshold": 3}
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "alpha.complete.json",
+        "alpha.parquet",
+        "alpha.rejections.json",
+    ]
+
+
 def test_record_serialization_does_not_mutate_the_outcome(outcome):
     record = outcome_record(outcome)
     record["text_rejections"]["empty_text"] = 99
     assert outcome.text_rejections["empty_text"] == 2
+
+
+def test_record_lists_each_missing_tile_once_in_order(outcome):
+    record = outcome_record(replace(outcome, tiles_missing=["N03E000", "N00E000", "N03E000"]))
+    assert record["tiles_missing"] == ["N00E000", "N03E000"]
+
+
+@pytest.mark.parametrize("tiles", [("N00E000",), [3]])
+def test_missing_tiles_must_be_a_list_of_names(outcome, tiles):
+    with pytest.raises(ValueError, match="missing-tile"):
+        validate_outcome(replace(outcome, tiles_missing=tiles))
+
+
+def test_context_records_the_whole_output_contract(config, context):
+    document = context.document
+    assert document["output_columns"] == list(OUTPUT_COLUMNS)
+    assert document["outcome_fields"] == [item.name for item in fields(RegionOutcome)]
+    assert document["source_recipe"] == asdict(config.source_recipe)
+
+
+def test_context_accepts_an_uppercase_commit_hash(config):
+    BuildContext.from_config(replace(config, source_revision="A" * 40))
+
+
+@pytest.mark.parametrize("change", [{"receipt_version": 2}, {"pipeline_schema_version": 2}])
+def test_a_recorded_context_must_match_both_current_versions(context, change):
+    with pytest.raises(ValueError, match="unsupported receipt context version"):
+        BuildContext.from_document({**context.as_dict(), **change})
+
+
+def test_a_recorded_context_must_be_an_object():
+    with pytest.raises(TypeError, match="build context must be an object"):
+        BuildContext.from_document(["not", "an", "object"])
+
+
+def fake_git(monkeypatch, returncode=0, error=None):
+    """Replace ``subprocess.run`` and record how git was invoked."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if error is not None:
+            raise error
+        return subprocess.CompletedProcess(argv, returncode, stdout=" abc\n")
+
+    monkeypatch.setattr(accounting.subprocess, "run", run)
+    return calls
+
+
+def test_git_output_is_one_bounded_captured_command(tmp_path, monkeypatch):
+    calls = fake_git(monkeypatch)
+    assert accounting._git_output(tmp_path, "status", "--porcelain") == "abc"
+    assert calls == [
+        (
+            ["git", "-C", str(tmp_path), "status", "--porcelain"],
+            {"check": False, "capture_output": True, "text": True, "timeout": 2},
+        )
+    ]
+
+
+@pytest.mark.parametrize("returncode", [1, 128])
+def test_a_failing_git_command_has_no_output(tmp_path, monkeypatch, returncode):
+    fake_git(monkeypatch, returncode=returncode)
+    assert accounting._git_output(tmp_path, "rev-parse") is None
+
+
+@pytest.mark.parametrize("error", [OSError("no git"), subprocess.TimeoutExpired("git", 2)])
+def test_an_unavailable_or_stuck_git_has_no_output(tmp_path, monkeypatch, error):
+    fake_git(monkeypatch, error=error)
+    assert accounting._git_output(tmp_path, "rev-parse") is None
+
+
+def test_file_sha256_reads_files_larger_than_one_block(tmp_path):
+    data = bytes(range(256)) * (8 * 1024 + 3)
+    path = tmp_path / "large.bin"
+    path.write_bytes(data)
+    assert file_sha256(path) == hashlib.sha256(data).hexdigest()
+
+
+def test_atomic_json_installs_canonical_bytes_and_leaves_no_temporary_file(tmp_path):
+    target = tmp_path / "nested" / "deeper" / "out.json"
+    atomic_json(target, {"b": 1, "a": [1, 2]})
+    assert target.read_bytes() == b'{"a":[1,2],"b":1}\n'
+    assert [path.name for path in target.parent.iterdir()] == ["out.json"]
+
+
+def test_atomic_json_stages_a_hidden_file_beside_its_target(tmp_path, monkeypatch):
+    calls = []
+    mkstemp = tempfile.mkstemp
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return mkstemp(**kwargs)
+
+    monkeypatch.setattr(accounting.tempfile, "mkstemp", spy)
+    atomic_json(tmp_path / "out.json", {})
+    assert calls == [{"prefix": ".out.json.", "dir": tmp_path}]
+
+
+def test_atomic_json_refuses_non_finite_numbers_without_a_trace(tmp_path):
+    with pytest.raises(ValueError, match="Out of range float values"):
+        atomic_json(tmp_path / "out.json", {"x": float("nan")})
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("expected", "selected", "processed", "name"),
+    [
+        ([""], ["alpha"], [], "expected regions"),
+        (["alpha"], [""], [], "selected regions"),
+        (["alpha"], ["alpha"], [""], "processed regions"),
+    ],
+)
+def test_ledger_refuses_blank_region_names(context, outcome, expected, selected, processed, name):
+    outcomes = [replace(outcome, stem=stem) for stem in processed]
+    with pytest.raises(ValueError, match=f"{name} must contain nonempty region names"):
+        processing_ledger(expected, selected, outcomes, context)
+
+
+def test_ledger_names_the_unselected_processed_regions(context, outcome):
+    with pytest.raises(ValueError, match="processed regions are outside the selected source"):
+        processing_ledger(["alpha", "beta"], ["beta"], [outcome], context)
+
+
+def test_ledger_totals_list_every_missing_tile_once(context, outcome):
+    beta = replace(outcome, stem="beta", tiles_missing=["N03E000", "N00E000"])
+    ledger = processing_ledger(["alpha", "beta"], ["alpha", "beta"], [outcome, beta], context)
+    assert ledger["totals"]["tiles_missing"] == ["N00E000", "N03E000"]
+
+
+def test_ledger_documents_its_reconciliation_rules(context, outcome):
+    assert processing_ledger(["alpha"], ["alpha"], [outcome], context)["reconciliation"] == {
+        "spatial": "polygons_seen = polygons_invalid + polygons_accepted + sum(rejections)",
+        "text": "polygons_accepted = polygons_with_examples + sum(text_rejections)",
+        "counts_are_pre_deduplication": True,
+        "valid": True,
+    }
+
+
+@pytest.fixture
+def pinned_context(context):
+    """A context recorded by a clean checkout at one exact commit."""
+    return BuildContext.from_document({**context.as_dict(), "code_revision": "d" * 40})
+
+
+def test_regions_default_to_the_commit_recorded_in_the_context(pinned_context, outcome):
+    outcomes = [outcome, replace(outcome, stem="beta")]
+    ledger = processing_ledger(["alpha", "beta"], ["alpha", "beta"], outcomes, pinned_context)
+    assert ledger["schema_version"] == 2
+    assert [(item["revision"], item["regions"]) for item in ledger["code_provenance"]] == [
+        ("d" * 40, ["alpha", "beta"])
+    ]
+    assert ledger["assembly_code_revision"] == "d" * 40
+
+
+def test_the_assembly_commit_defaults_to_the_one_recorded_in_the_context(pinned_context, outcome):
+    ledger = processing_ledger(
+        ["alpha"], ["alpha"], [outcome], pinned_context, region_code_revisions={"alpha": "a" * 40}
+    )
+    assert ledger["assembly_code_revision"] == "d" * 40
+
+
+def test_region_revisions_must_be_full_commits(context, outcome):
+    with pytest.raises(ValueError, match="region code revisions must be full 40-character commits"):
+        processing_ledger(
+            ["alpha"],
+            ["alpha"],
+            [outcome],
+            context,
+            region_code_revisions={"alpha": "nope"},
+            assembly_code_revision="c" * 40,
+        )

@@ -1,5 +1,8 @@
 """Shard persistence and resume behaviour of a whole build."""
 
+import json
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
@@ -325,3 +328,399 @@ def test_named_source_revision_is_resolved_to_a_commit(tmp_path, monkeypatch):
     )
     assert requested == ["main"]
     assert report.processing["context"]["settings"]["source_revision"] == "b" * 40
+
+
+class _Spy:
+    """Records every call as ``(name, args, kwargs)`` and returns canned values."""
+
+    def __init__(self, **returns) -> None:
+        self.calls: list[tuple] = []
+        self.returns = returns
+
+    def __call__(self, name):
+        def record(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return self.returns.get(name)
+
+        return record
+
+
+def _recording(calls: list, real):
+    """Wrap ``real`` so each call's arguments land in ``calls`` before it runs."""
+
+    def wrapper(*args, **kwargs):
+        calls.append(kwargs or args)
+        return real(*args, **kwargs)
+
+    return wrapper
+
+
+def _recipe(name="wikidata"):
+    from osm_worldcover.sources import recipe_for
+
+    return recipe_for(name)
+
+
+def _release(tmp_path, monkeypatch, source):
+    """Release one region's tables for ``source``; return what was and wasn't deleted."""
+    from osm_worldcover import build as module
+
+    recipe = _recipe(source)
+    doomed = [tmp_path / path for path in recipe.region_paths("alpha")]
+    bystander = tmp_path / "keep.txt"
+    for path in [*doomed[1:], bystander]:  # the first table is already gone
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    asked = []
+    monkeypatch.setattr(module.hub, "region_files", _recording(asked, module.hub.region_files))
+
+    module._release_source(tmp_path, "alpha", recipe)
+
+    return SimpleNamespace(recipe=recipe, doomed=doomed, bystander=bystander, asked=asked)
+
+
+@pytest.mark.parametrize("source", ["wikidata", "website"])
+def test_release_source_deletes_only_that_regions_tables(tmp_path, monkeypatch, source) -> None:
+    released = _release(tmp_path, monkeypatch, source)
+
+    assert [path.exists() for path in released.doomed] == [False] * len(released.doomed)
+    assert released.bystander.exists()
+
+
+def test_the_default_source_keeps_the_one_argument_region_files_call(tmp_path, monkeypatch) -> None:
+    assert _release(tmp_path, monkeypatch, "wikidata").asked == [("alpha",)]
+
+
+def test_other_sources_pass_their_recipe_to_region_files(tmp_path, monkeypatch) -> None:
+    released = _release(tmp_path, monkeypatch, "website")
+
+    assert released.asked == [("alpha", released.recipe)]
+
+
+class _Store:
+    """Minimal ShardStore double: only what the region pass touches."""
+
+    def __init__(self, spy: _Spy, cached=None) -> None:
+        self.write_outcome = spy("write")
+        self._cached = cached or {}
+
+    def outcome(self, stem):
+        return self._cached.get(stem)
+
+
+def test_process_region_fetches_labels_records_and_releases(tmp_path, monkeypatch) -> None:
+    from osm_worldcover import build as module
+    from osm_worldcover.adapters.source import RegionTables
+    from osm_worldcover.config import Config
+    from osm_worldcover.pipeline import RegionOutcome
+
+    config = Config(cache_dir=tmp_path, source_dataset="owner/data")
+    outcome = RegionOutcome("alpha", polygons_seen=5, polygons_accepted=3, examples=2)
+    tables, examples, tiles = object(), object(), object()
+    spy = _Spy(run_region=(examples, outcome), load=tables)
+    monkeypatch.setattr(module.hub, "snapshot_region", spy("snapshot"))
+    monkeypatch.setattr(RegionTables, "load", classmethod(lambda cls, *a: spy("load")(*a)))
+    monkeypatch.setattr(module, "run_region", spy("run_region"))
+    monkeypatch.setattr(module, "_release_source", spy("release"))
+    messages = []
+
+    result = module._process_region(
+        config, "r" * 40, "alpha", tmp_path / "raw", tiles, _Store(spy), True, messages.append
+    )
+
+    assert result is outcome
+    recipe = config.source_recipe
+    assert spy.calls == [
+        ("snapshot", ("owner/data", "r" * 40, "alpha", tmp_path / "raw", recipe), {}),
+        ("load", (tmp_path / "raw", "alpha"), {}),
+        ("run_region", (config, tables, tiles), {"keep_tiles": True}),
+        ("write", ("alpha", examples, outcome), {}),
+        ("release", (tmp_path / "raw", "alpha", recipe), {}),
+    ]
+    assert messages == ["    5 polygons -> 3 labelled -> 2 examples"]
+
+
+def test_process_region_hands_a_named_source_recipe_to_the_loader(tmp_path, monkeypatch) -> None:
+    from osm_worldcover import build as module
+    from osm_worldcover.adapters.source import RegionTables
+    from osm_worldcover.config import Config
+    from osm_worldcover.pipeline import RegionOutcome
+
+    config = Config(cache_dir=tmp_path, source="website")
+    spy = _Spy()
+    loaded = []
+    monkeypatch.setattr(module.hub, "snapshot_region", lambda *a, **k: None)
+    monkeypatch.setattr(
+        RegionTables, "load", classmethod(lambda cls, *a: loaded.append(a) or object())
+    )
+    monkeypatch.setattr(
+        module, "run_region", lambda *a, **k: (None, RegionOutcome("alpha", examples=0))
+    )
+    monkeypatch.setattr(module, "_release_source", lambda *a: None)
+
+    module._process_region(
+        config, "r" * 40, "alpha", tmp_path, None, _Store(spy), False, lambda _: None
+    )
+
+    assert loaded == [(tmp_path, "alpha", config.source_recipe)]
+
+
+def test_run_regions_numbers_regions_and_reuses_finished_ones(tmp_path, monkeypatch) -> None:
+    from osm_worldcover import build as module
+    from osm_worldcover.config import Config
+    from osm_worldcover.pipeline import RegionOutcome
+
+    cached = RegionOutcome("alpha", examples=1)
+    fresh = RegionOutcome("beta", examples=2)
+    shards = _Store(_Spy(), {"alpha": cached})
+    processed = []
+
+    def process(*args):
+        processed.append(args)
+        return fresh
+
+    monkeypatch.setattr(module, "_process_region", process)
+    seen = []
+    config, tiles = Config(cache_dir=tmp_path), object()
+
+    outcomes = module._run_regions(
+        config, "r" * 40, ["alpha", "beta"], tmp_path, tiles, shards, True, seen.append
+    )
+
+    assert outcomes == [cached, fresh]
+    assert seen == ["[1/2] alpha (already done)", "[2/2] beta"]
+    assert processed == [(config, "r" * 40, "beta", tmp_path, tiles, shards, True, seen.append)]
+
+
+def test_region_labels_mark_only_finished_regions() -> None:
+    from osm_worldcover.build import _label
+
+    assert _label(3, 9, "gamma", done=False) == "[3/9] gamma"
+    assert _label(3, 9, "gamma", done=True) == "[3/9] gamma (already done)"
+
+
+@pytest.mark.parametrize(
+    ("revision", "resolved"),
+    [
+        ("a" * 40, False),
+        ("A" * 40, False),
+        ("a" * 39, True),
+        ("a" * 41, True),
+        ("g" * 40, True),
+        (" " + "a" * 40, True),
+        ("a" * 40 + "\n", True),
+        (None, True),
+    ],
+)
+def test_only_full_commit_hashes_skip_revision_resolution(monkeypatch, revision, resolved) -> None:
+    from osm_worldcover import build as module
+    from osm_worldcover.config import Config
+
+    asked = []
+    monkeypatch.setattr(
+        module.hub, "resolve_revision", lambda dataset, rev: asked.append((dataset, rev)) or "pin"
+    )
+    config = Config(source_revision=revision, source_dataset="owner/data")
+
+    assert module._resolve_revision(config) == ("pin" if resolved else revision)
+    assert asked == ([("owner/data", revision)] if resolved else [])
+
+
+def _staged_stage(spy, staged):
+    def stage(_store, *args):
+        spy("stage")(*args)
+        return staged
+
+    return stage
+
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    """Run ``run_build`` with every stage replaced by a recording spy."""
+    from osm_worldcover import build as module
+    from osm_worldcover.accounting import BuildContext
+    from osm_worldcover.config import Config
+    from osm_worldcover.pipeline import RegionOutcome
+
+    config = Config(
+        cache_dir=tmp_path / "cache",
+        out_dir=tmp_path / "out",
+        worldcover_version="v100",
+        worldcover_year=2020,
+        cached_tiles=7,
+        source_dataset="owner/data",
+    )
+    outcome = RegionOutcome("alpha", examples=1)
+    staged = tmp_path / "staged"
+    tiles = object()
+    spy = _Spy(
+        list=["alpha", "beta"],
+        ledger={"ledger": True},
+        run=[outcome],
+        finalize="built",
+        tiles=tiles,
+    )
+    monkeypatch.setattr(module.hub, "list_region_stems", spy("list"))
+    monkeypatch.setattr(module.hub, "resolve_revision", lambda *_: "c" * 40)
+    monkeypatch.setattr(module, "processing_ledger", spy("ledger"))
+    monkeypatch.setattr(module, "WorldCoverTiles", spy("tiles"))
+    monkeypatch.setattr(module, "_run_regions", spy("run"))
+    monkeypatch.setattr(module.ShardStore, "stage", _staged_stage(spy, staged))
+    monkeypatch.setattr(module, "finalize_shards", spy("finalize"))
+
+    def progress(_message: str) -> None:
+        return None
+
+    report = module.run_build(config, regions=["alpha"], keep_tiles=True, progress=progress)
+    pinned = config.with_overrides(source_revision="c" * 40)
+    return SimpleNamespace(
+        spy=spy,
+        calls={name: (args, kwargs) for name, args, kwargs in spy.calls},
+        report=report,
+        pinned=pinned,
+        context=BuildContext.from_config(pinned),
+        outcome=outcome,
+        staged=staged,
+        tiles=tiles,
+        progress=progress,
+        cache=tmp_path / "cache",
+        out=tmp_path / "out",
+    )
+
+
+def test_run_build_runs_the_stages_in_order(wired) -> None:
+    assert [name for name, _, _ in wired.spy.calls] == [
+        "list",
+        "ledger",
+        "tiles",
+        "run",
+        "ledger",
+        "stage",
+        "finalize",
+    ]
+
+
+def test_run_build_lists_regions_at_the_pinned_revision(wired) -> None:
+    assert wired.calls["list"] == (("owner/data", "c" * 40, wired.pinned.source_recipe), {})
+    assert wired.spy.calls[1][1] == (["alpha", "beta"], ["alpha"], [], wired.context)
+    assert wired.spy.calls[4][1] == (["alpha", "beta"], ["alpha"], [wired.outcome], wired.context)
+
+
+def test_run_build_configures_the_tile_cache(wired) -> None:
+    assert wired.calls["tiles"] == (
+        (wired.cache / "worldcover",),
+        {"version": "v100", "year": 2020, "max_cached_tiles": 7},
+    )
+
+
+def test_run_build_hands_the_region_pass_its_collaborators(wired) -> None:
+    run_args = wired.calls["run"][0]
+
+    assert run_args[:4] == (wired.pinned, "c" * 40, ["alpha"], wired.cache / "source")
+    assert run_args[4] is wired.tiles
+    assert run_args[6:] == (True, wired.progress)
+
+
+def test_run_build_gives_the_region_pass_a_shard_store(wired) -> None:
+    store = wired.calls["run"][0][5]
+
+    assert store.directory == wired.cache / "shards"
+    assert store.context == wired.context
+
+
+def test_run_build_stages_and_finalizes_the_selected_shards(wired) -> None:
+    assert wired.calls["stage"] == (
+        (["alpha"], wired.cache / "assembly" / "selected-shards"),
+        {},
+    )
+    assert wired.calls["finalize"] == (
+        (wired.staged, wired.pinned, wired.cache / "assembly", wired.out, {}),
+        {"processing": {"ledger": True}},
+    )
+
+
+def test_run_build_saves_the_ledger_and_reports(wired) -> None:
+    ledger_file = wired.cache / "processing-ledger.json"
+
+    assert json.loads(ledger_file.read_text()) == {"ledger": True}
+    # Compare listed names too: macOS resolves paths case-insensitively.
+    assert "processing-ledger.json" in [path.name for path in ledger_file.parent.iterdir()]
+
+
+def test_run_build_reports_what_finalizing_returned(wired) -> None:
+    assert wired.report.result == "built"
+    assert wired.report.regions == [wired.outcome]
+    assert wired.report.processing == {"ledger": True}
+
+
+@pytest.mark.parametrize("stem", ["", ".", "..", "a/b", "../x", "/abs"])
+def test_unsafe_region_names_are_refused(tmp_path, stem) -> None:
+    with pytest.raises(ValueError, match="unsafe region name"):
+        ShardStore(tmp_path).path_for(stem)
+
+
+def test_a_zero_byte_shard_is_not_a_finished_one(tmp_path) -> None:
+    store = ShardStore(tmp_path)
+    store.path_for("empty").write_bytes(b"")
+    store.path_for("tiny").write_bytes(b"x")
+
+    assert not store.has("empty")
+    assert store.has("tiny")
+    assert not store.has("absent")
+
+
+def test_shards_are_written_atomically_with_a_plain_index(tmp_path, monkeypatch) -> None:
+    from osm_worldcover import build as module
+
+    seen = []
+    monkeypatch.setattr(module.tempfile, "mkstemp", _recording(seen, module.tempfile.mkstemp))
+    custom = frame(2)
+    custom.index = [7, 9]
+
+    store = ShardStore(tmp_path)
+    store.write("alpha", custom)
+
+    assert seen[0] == {"prefix": ".alpha.parquet.", "dir": tmp_path}
+    stored = pd.read_parquet(store.path_for("alpha"))
+    assert list(stored.columns) == list(custom.columns)
+    assert stored.index.tolist() == [0, 1]  # the caller's index is not persisted
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "alpha.parquet",
+        "alpha.rejections.json",
+    ]
+
+
+def test_configured_regions_apply_unless_a_selection_is_passed() -> None:
+    from osm_worldcover.build import _selected_regions
+    from osm_worldcover.config import Config
+
+    config = Config(regions=["alpha"])
+
+    assert _selected_regions(["alpha", "beta"], None, config) == ["alpha"]
+    assert _selected_regions(["alpha", "beta"], ["beta"], config) == ["beta"]
+    assert _selected_regions(["alpha", "beta"], None, Config()) == ["alpha", "beta"]
+
+
+def test_outcome_stems_and_outcomes_must_line_up() -> None:
+    from osm_worldcover.build import _missing_outcome_stems
+
+    assert _missing_outcome_stems(["a", "b"], [None, object()]) == ["a"]
+    with pytest.raises(ValueError):
+        _missing_outcome_stems(["a", "b"], [None])
+    with pytest.raises(ValueError):
+        _missing_outcome_stems(["a"], [None, None])
+
+
+def test_run_build_defaults_to_quiet_and_discards_tiles(tmp_path, monkeypatch) -> None:
+    from osm_worldcover.config import Config
+
+    module = TestRunBuild()._patch(monkeypatch, tmp_path, ["alpha"])
+    keep = []
+    original = module.run_region
+    monkeypatch.setattr(
+        module, "run_region", lambda *a, **k: keep.append(k["keep_tiles"]) or original(*a, **k)
+    )
+
+    module.run_build(Config(cache_dir=tmp_path, out_dir=tmp_path / "out"))
+
+    assert keep == [False]

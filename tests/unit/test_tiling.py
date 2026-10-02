@@ -63,6 +63,10 @@ def test_degenerate_bbox_still_yields_its_tile() -> None:
     assert tiles_for_bbox((6.13, 49.61, 6.13, 49.61)) == [tile_for(6.13, 49.61)]
 
 
+def test_degenerate_bbox_on_a_boundary_still_yields_its_tile() -> None:
+    assert tiles_for_bbox((6.0, 48.0, 6.0, 48.0)) == [tile_for(6.0, 48.0)]
+
+
 def test_inverted_bbox_is_rejected() -> None:
     with pytest.raises(ValueError):
         tiles_for_bbox((9.0, 48.0, 6.0, 51.0))

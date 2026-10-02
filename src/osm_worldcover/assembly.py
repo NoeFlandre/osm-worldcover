@@ -57,7 +57,6 @@ def verified_assembly(
         outcomes,
         context,
         region_code_revisions=code_revisions,
-        assembly_code_revision=context.document.get("code_revision"),
     )
     rejections = _aggregate_rejections(outcomes)
     staged = _stage(groups, Path(work) / "verified-shards")
@@ -215,8 +214,6 @@ _FINALIZATION_ONLY_SETTINGS = {"dataset_version", "code_repository", "deduplicat
 def _contexts_compatible(expected: BuildContext, recorded: BuildContext) -> bool:
     expected_document = expected.as_dict()
     recorded_document = recorded.as_dict()
-    expected_document.pop("code_revision", None)
-    recorded_document.pop("code_revision", None)
     expected_document.pop("code_revision", None)
     recorded_document.pop("code_revision", None)
     for document in (expected_document, recorded_document):

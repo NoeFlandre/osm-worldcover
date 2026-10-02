@@ -6,7 +6,7 @@ import pytest
 from shapely import wkt
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon
 
-from osm_worldcover.domain.geometry import is_usable_polygon
+from osm_worldcover.domain.geometry import _all_finite, is_usable_polygon
 
 SQUARE = Polygon([(0, 0), (0, 1), (1, 1), (1, 0)])
 BOWTIE = wkt.loads("POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))")
@@ -32,6 +32,23 @@ def test_non_areal_geometry_is_not_usable(geom) -> None:
 
 def test_self_intersecting_polygon_is_not_usable() -> None:
     assert not is_usable_polygon(BOWTIE)
+
+
+def test_a_geometry_whose_bounds_cannot_be_read_is_not_finite() -> None:
+    class Broken:
+        @property
+        def bounds(self):
+            raise RuntimeError("no bounds")
+
+    assert not _all_finite(Broken())  # ty: ignore[invalid-argument-type]
+
+
+def test_a_valid_polygon_whose_area_underflows_to_zero_is_not_usable() -> None:
+    sliver = Polygon([(0, 0), (1e-200, 0), (1e-200, 1e-200), (0, 1e-200)])
+
+    assert sliver.is_valid
+    assert sliver.area == 0.0
+    assert not is_usable_polygon(sliver)
 
 
 def test_zero_area_polygon_is_not_usable() -> None:

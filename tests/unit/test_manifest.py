@@ -128,29 +128,38 @@ def test_manifest_keys_are_the_published_contract(counts) -> None:
     than something that slips out in a release.
     """
     manifest = build(counts, settings={"dominance_threshold": 0.8})
-    assert set(manifest) == {
-        "counts",
-        "class_distribution",
-        "example_polygons",
-        "language_distribution",
-        "dominant_fraction",
-        "geographic_coverage",
-        "rejections",
-        "deduplication",
-        "deduplication_analysis",
-        "settings",
+    assert _manifest_contract(manifest) == {
+        "top_level": {
+            "counts",
+            "class_distribution",
+            "example_polygons",
+            "language_distribution",
+            "dominant_fraction",
+            "geographic_coverage",
+            "rejections",
+            "deduplication",
+            "deduplication_analysis",
+            "settings",
+        },
+        "count_groups": {"examples", "polygons", "documents"},
+        "count_fields": {"train", "validation", "test", "total"},
+        "class_fields": {"code", "label", "examples", "share"},
+        "language_fields": {"language", "examples", "share"},
+        "coverage_fields": {"h3_cells", "regions", "bbox"},
+        "bbox_fields": {"min_lon", "min_lat", "max_lon", "max_lat"},
     }
-    assert set(manifest["counts"]) == {"examples", "polygons", "documents"}
-    for group in manifest["counts"].values():
-        assert set(group) == {"train", "validation", "test", "total"}
-    assert set(manifest["class_distribution"][0]) == {"code", "label", "examples", "share"}
-    assert set(manifest["language_distribution"][0]) == {"language", "examples", "share"}
-    assert set(manifest["geographic_coverage"]) == {"h3_cells", "regions", "bbox"}
-    assert set(manifest["geographic_coverage"]["bbox"]) == {
-        "min_lon",
-        "min_lat",
-        "max_lon",
-        "max_lat",
+
+
+def _manifest_contract(manifest: dict) -> dict:
+    """Summarize the independently published key sets for one contract check."""
+    return {
+        "top_level": set(manifest),
+        "count_groups": set(manifest["counts"]),
+        "count_fields": set(manifest["counts"]["examples"]),
+        "class_fields": set(manifest["class_distribution"][0]),
+        "language_fields": set(manifest["language_distribution"][0]),
+        "coverage_fields": set(manifest["geographic_coverage"]),
+        "bbox_fields": set(manifest["geographic_coverage"]["bbox"]),
     }
 
 
@@ -188,3 +197,46 @@ def test_an_unspecified_language_still_sorts_by_count(counts) -> None:
     counts.language_distribution = {None: 5, "en": 90}
     languages = build(counts, settings={})["language_distribution"]
     assert [entry["language"] for entry in languages] == ["en", None]
+
+
+def test_equal_counts_list_named_languages_alphabetically_then_the_unspecified(counts) -> None:
+    counts.language_distribution = {"fr": 10, None: 10, "de": 10}
+    languages = build(counts, settings={})["language_distribution"]
+    assert [entry["language"] for entry in languages] == ["de", "fr", None]
+
+
+def test_shares_are_fractions_of_all_examples_rounded_to_six_places(counts) -> None:
+    counts.examples = {"train": 2, "validation": 1, "test": 0}
+    counts.class_distribution = {10: 1, 50: 2}
+    counts.language_distribution = {"en": 1, "fr": 2}
+
+    manifest = build(counts, settings={})
+
+    assert [row["share"] for row in manifest["class_distribution"]] == [0.333333, 0.666667]
+    assert [row["share"] for row in manifest["language_distribution"]] == [0.666667, 0.333333]
+
+
+def test_shares_are_zero_when_there_are_no_examples(counts) -> None:
+    counts.examples = {}
+    counts.class_distribution = {10: 0}
+    counts.language_distribution = {"en": 0}
+
+    manifest = build(counts, settings={})
+
+    assert manifest["class_distribution"][0]["share"] == 0.0
+    assert manifest["language_distribution"][0]["share"] == 0.0
+
+
+@pytest.mark.parametrize("bbox", [(1.0, 2.0, 3.0), (1.0, 2.0, 3.0, 4.0, 5.0)])
+def test_a_bbox_must_have_exactly_four_edges(counts, bbox) -> None:
+    counts.coverage = GeographicCoverage(h3_cells=1, bbox=bbox, regions=1)  # ty: ignore[invalid-argument-type]
+    with pytest.raises(ValueError):
+        build(counts, settings={})
+
+
+def test_deduplication_analysis_without_a_word_breakdown_gains_an_empty_one(counts) -> None:
+    counts.deduplication_analysis = {"groups": 2}
+
+    analysis = build(counts, settings={})["deduplication_analysis"]
+
+    assert analysis == {"groups": 2, "duplicate_records_removed_by_text_words": {}}

@@ -1,4 +1,4 @@
-# Duplication review — 2026-09-30
+# Duplication review — 2026-10-01
 
 ## Scope and method
 
@@ -69,22 +69,33 @@ must also agree on compatibility tests. Only then can they move any code. Do not
 add a new package without three items: an ownership decision, a stable API and
 an agreed release and versioning plan. The geoparser stays out of scope.
 
-## Focused follow-up boundary
+## Recursive callable and CRAP inventory
 
-The changes to the source columns and fixtures are follow-ups to the merged PR
-#8. They do not change the WorldCover algorithm, the thresholds, the source
-policy or the release flow of PR #8. The active data build continues to use the
-exact merged commit above for provenance. Make any further production cleanup
-in a separate, focused change after this review. Keep the existing tests, CRAP
-`< 6` and the mutation floor.
+Radon's JSON output omits methods inside nested classes and classes local to
+functions. `scripts/crap.py` now walks each Python AST and measures each
+`FunctionDef` and `AsyncFunctionDef` once, including nested functions and
+methods in nested/local classes. Radon measures each callable independently;
+coverage for an enclosing callable excludes child callable and local-class
+bodies, so nested code cannot dilute its score. Empty inventories still fail.
+
+The full `src/`, `scripts/`, and `tests/` inventory measured 1,346 callables.
+The highest CRAP score was 5.58; zero scores were at or above 6, with no
+allowlisted exceptions.
+
+A refresh of the clone scan on the PR13 tree reports the same three matches.
+It found no new duplication.
 
 ## Verification
 
-- Full test suite with coverage: 572 passed.
+- Full unit, property, and acceptance test suite passed with coverage enabled.
 - Ruff lint and formatting, `ty check src/`, and import-boundary checks passed.
-- CRAP: the check measured 370 blocks. None has a score of 6.0 or more. The
-  highest score was 5.93.
-- Mutation gate: 84.4%. This is above the existing 80% floor.
-- `mkdocs build --strict` passed. MkDocs reported unlisted planning pages that
-  existed before this review. It also showed the Material for MkDocs notice.
-  Neither caused the strict build to fail.
+- Strict CRAP gate passed across `src/`, `scripts/`, and `tests/` as reported
+  above.
+- `mkdocs build --strict` passed. It reported the existing three unlisted
+  planning pages and the Material for MkDocs notice; neither caused the build
+  to fail.
+- Mutation gate: a full local run generated 4,969 mutants. It killed 4,529
+  (91.1%), above the 80% floor. Every mutant had a result. The CI check run
+  is the source of truth for each candidate commit.
+- Mutation scope and the 80% floor remain configured in CI; the PR check run
+  is the source of truth for each candidate commit.

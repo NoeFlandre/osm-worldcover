@@ -1,13 +1,18 @@
 """Region pipeline: geometry preparation, labelling and example assembly."""
 
+import shutil
+
 import pandas as pd
 import pytest
-from tests.conftest import FixedTiles
+from tests.conftest import FixedTiles, MissingTiles
 
 from osm_worldcover.adapters.source import RegionTables
 from osm_worldcover.config import Config
+from osm_worldcover.domain.dominance import DominanceOutcome, RejectionReason
+from osm_worldcover.domain.tiling import Tile
 from osm_worldcover.pipeline import (
     RegionOutcome,
+    _verdict,
     label_polygons,
     prepare_polygons,
     run_region,
@@ -135,6 +140,63 @@ def tables_for(labelled_id: str = "p1", **over) -> RegionTables:
     )
 
 
+def _region_result_summary(examples: pd.DataFrame, outcome: RegionOutcome) -> dict:
+    """Expose output shape and counters as one region-level contract value."""
+    row = examples.iloc[0]
+    return {
+        "seen": outcome.polygons_seen,
+        "examples": outcome.examples,
+        "label": row["worldcover_code"],
+        "label_name": row["worldcover_label"],
+        "dominance": row["dominant_fraction"],
+        "text_words": row["text_words"],
+        "centroid": row["centroid_wkt"],
+        "area": row["polygon_area_m2"],
+    }
+
+
+def _invalid_geometry_summary(examples: pd.DataFrame, outcome: RegionOutcome, tiles) -> dict:
+    return {
+        "examples_empty": examples.empty,
+        "seen": outcome.polygons_seen,
+        "invalid": outcome.polygons_invalid,
+        "accepted": outcome.polygons_accepted,
+        "with_examples": outcome.polygons_with_examples,
+        "text_rejections": outcome.text_rejections,
+        "rejections": outcome.rejections,
+        "source_links": outcome.source_links,
+        "source_documents": outcome.source_documents,
+        "tiles_ensured": tiles.ensured,
+    }
+
+
+def _text_rejection_summary(examples: pd.DataFrame, outcome: RegionOutcome) -> dict:
+    return {
+        "polygon_ids": examples["polygon_id"].tolist(),
+        "seen": outcome.polygons_seen,
+        "accepted": outcome.polygons_accepted,
+        "invalid": outcome.polygons_invalid,
+        "rejections": outcome.rejections,
+        "source_links": outcome.source_links,
+        "source_documents": outcome.source_documents,
+        "examples": outcome.examples,
+        "with_examples": outcome.polygons_with_examples,
+        "text_rejections": outcome.text_rejections,
+    }
+
+
+def _usable_document_summary(examples: pd.DataFrame, outcome: RegionOutcome) -> dict:
+    return {
+        "document_ids": set(examples["document_id"]),
+        "examples": outcome.examples,
+        "accepted": outcome.polygons_accepted,
+        "with_examples": outcome.polygons_with_examples,
+        "source_links": outcome.source_links,
+        "source_documents": outcome.source_documents,
+        "text_rejections": outcome.text_rejections,
+    }
+
+
 class TestToExamples:
     def _labelled(self) -> pd.DataFrame:
         frame = polygons_frame()
@@ -175,15 +237,16 @@ class TestRunRegion:
         )
         config = Config()
         examples, outcome = run_region(config, tables, FixedTiles(half_and_half))
-        assert outcome.polygons_seen == 1
-        assert outcome.examples == 1
-        row = examples.iloc[0]
-        assert row["worldcover_code"] == 10
-        assert row["worldcover_label"] == "Tree cover"
-        assert row["dominant_fraction"] == pytest.approx(1.0)
-        assert row["text_words"] == 40
-        assert row["centroid_wkt"] == "POINT (2 2)"
-        assert row["polygon_area_m2"] == 1000.0
+        assert _region_result_summary(examples, outcome) == {
+            "seen": 1,
+            "examples": 1,
+            "label": 10,
+            "label_name": "Tree cover",
+            "dominance": pytest.approx(1.0),
+            "text_words": 40,
+            "centroid": "POINT (2 2)",
+            "area": 1000.0,
+        }
 
     def test_a_region_whose_polygons_are_all_rejected_yields_no_examples(
         self, half_and_half
@@ -207,12 +270,18 @@ class TestRunRegion:
 
         examples, outcome = run_region(Config(), tables, tiles)
 
-        assert examples.empty
-        assert outcome.polygons_seen == outcome.polygons_invalid == 1
-        assert outcome.polygons_accepted == outcome.polygons_with_examples == 0
-        assert outcome.text_rejections == outcome.rejections == {}
-        assert outcome.source_links == outcome.source_documents == 1
-        assert tiles.ensured == []
+        assert _invalid_geometry_summary(examples, outcome, tiles) == {
+            "examples_empty": True,
+            "seen": 1,
+            "invalid": 1,
+            "accepted": 0,
+            "with_examples": 0,
+            "text_rejections": {},
+            "rejections": {},
+            "source_links": 1,
+            "source_documents": 1,
+            "tiles_ensured": [],
+        }
 
 
 class TestTextRejectionAccounting:
@@ -243,23 +312,24 @@ class TestTextRejectionAccounting:
 
         examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
 
-        assert examples["polygon_id"].tolist() == ["kept"]
-        assert outcome.polygons_seen == outcome.polygons_accepted == 6
-        assert outcome.polygons_invalid == 0
-        assert outcome.rejections == {}
-        assert outcome.source_links == 5
-        assert outcome.source_documents == 4
-        assert outcome.examples == outcome.polygons_with_examples == 1
-        assert outcome.text_rejections == {
-            "no_source_document": 1,
-            "missing_document": 1,
-            "document_fetch_failed": 1,
-            "empty_text": 1,
-            "text_too_short": 1,
+        assert _text_rejection_summary(examples, outcome) == {
+            "polygon_ids": ["kept"],
+            "seen": 6,
+            "accepted": 6,
+            "invalid": 0,
+            "rejections": {},
+            "source_links": 5,
+            "source_documents": 4,
+            "examples": 1,
+            "with_examples": 1,
+            "text_rejections": {
+                "no_source_document": 1,
+                "missing_document": 1,
+                "document_fetch_failed": 1,
+                "empty_text": 1,
+                "text_too_short": 1,
+            },
         }
-        assert outcome.polygons_accepted == (
-            outcome.polygons_with_examples + sum(outcome.text_rejections.values())
-        )
 
     def test_one_usable_document_prevents_counting_a_polygon_as_rejected(
         self, half_and_half
@@ -285,12 +355,15 @@ class TestTextRejectionAccounting:
 
         examples, outcome = run_region(Config(), tables, FixedTiles(half_and_half))
 
-        assert set(examples["document_id"]) == {"kept-a", "kept-b"}
-        assert outcome.examples == 2
-        assert outcome.polygons_accepted == outcome.polygons_with_examples == 1
-        assert outcome.source_links == 6
-        assert outcome.source_documents == 5
-        assert outcome.text_rejections == {}
+        assert _usable_document_summary(examples, outcome) == {
+            "document_ids": {"kept-a", "kept-b"},
+            "examples": 2,
+            "accepted": 1,
+            "with_examples": 1,
+            "source_links": 6,
+            "source_documents": 5,
+            "text_rejections": {},
+        }
 
     def test_last_surviving_document_determines_polygon_rejection_stage(
         self, half_and_half
@@ -386,3 +459,237 @@ class TestPolygonSizeCap:
         )
         assert len(examples) == 0
         assert outcome.rejections["too_large"] == 1
+
+    def test_surviving_polygons_are_renumbered_and_rejections_accumulate(
+        self, half_and_half
+    ) -> None:
+        polygons = many_polygons(["huge", "a", "b"], [LEFT_GEOJSON] * 3, area_m2=[2e10, 1.0, 1.0])
+        frame, _ = prepare_polygons(polygons)
+        outcome = RegionOutcome("r")
+        label_polygons(frame, FixedTiles(half_and_half), 0.8, outcome, max_area_m2=1e10)
+        labelled = label_polygons(frame, FixedTiles(half_and_half), 0.8, outcome, max_area_m2=1e10)
+        assert labelled["polygon_id"].tolist() == ["a", "b"]
+        assert labelled.index.tolist() == [0, 1]
+        assert "index" not in labelled.columns
+        assert outcome.rejections["too_large"] == 2
+
+
+def many_polygons(polygon_ids, geometries, **over) -> pd.DataFrame:
+    """One polygon per id, so a region can hold polygons over different tile sets."""
+    rows = [
+        polygons_frame(polygon_id=[pid], osm_id=[index], geometry=[geometry]).assign(
+            **{name: values[index] for name, values in over.items()}
+        )
+        for index, (pid, geometry) in enumerate(zip(polygon_ids, geometries, strict=True))
+    ]
+    return pd.concat(rows, ignore_index=True)
+
+
+LOWER_LEFT_GEOJSON = '{"type":"Polygon","coordinates":[[[0,0],[0,2],[2,2],[2,0],[0,0]]]}'
+STRADDLE_GEOJSON = '{"type":"Polygon","coordinates":[[[1,0],[1,2],[3,2],[3,0],[1,0]]]}'
+
+
+class TestGroupedLabelling:
+    """Polygons sharing a tile set are labelled together, groups in tile order."""
+
+    def test_groups_are_labelled_in_tile_order_and_renumbered(self, half_and_half) -> None:
+        # "big" touches two tile rows, "small" only one, whatever the input order.
+        frame, _ = prepare_polygons(
+            many_polygons(["big", "small"], [LEFT_GEOJSON, LOWER_LEFT_GEOJSON])
+        )
+        tiles = FixedTiles(half_and_half)
+
+        labelled = label_polygons(frame, tiles, 0.8, RegionOutcome("r"))
+
+        assert labelled["polygon_id"].tolist() == ["small", "big"]
+        assert labelled.index.tolist() == [0, 1]
+        assert [tile.name for tile in tiles.ensured] == ["N00E000", "N00E000", "N03E000"]
+
+    def test_every_group_is_labelled_with_the_threshold_and_keep_policy(
+        self, half_and_half
+    ) -> None:
+        frame, _ = prepare_polygons(
+            many_polygons(["big", "small"], [SQUARE_GEOJSON, STRADDLE_GEOJSON])
+        )
+        tiles = FixedTiles(half_and_half)
+        outcome = RegionOutcome("r")
+
+        labelled = label_polygons(frame, tiles, 0.8, outcome, keep_tiles=True)
+
+        assert len(labelled) == 0
+        assert outcome.rejections == {"below_threshold": 2}
+        assert tiles.discarded == []
+
+    def test_unpublished_tiles_are_named_and_their_polygons_counted_per_group(
+        self, half_and_half
+    ) -> None:
+        frame, _ = prepare_polygons(
+            many_polygons(["big", "small", "small2"], [LEFT_GEOJSON] + [LOWER_LEFT_GEOJSON] * 2)
+        )
+        outcome = RegionOutcome("r")
+        tiles = MissingTiles(half_and_half)
+
+        labelled = label_polygons(frame, tiles, 0.8, outcome)
+
+        assert len(labelled) == 0
+        assert outcome.rejections == {"no_valid_class": 3}
+        assert sorted(outcome.tiles_missing) == ["N00E000", "N00E000", "N03E000"]
+        assert tiles.discarded == tiles.ensured
+
+    def test_overlapping_coverage_refuses_the_polygon(self, half_and_half, tmp_path) -> None:
+        twin = tmp_path / "twin.tif"
+        shutil.copy(half_and_half, twin)
+
+        class TwoRasters(FixedTiles):
+            """Distinct files per tile row: a polygon over both is covered twice."""
+
+            def ensure(self, tile):
+                super().ensure(tile)
+                return twin if tile.lat else half_and_half
+
+        frame, _ = prepare_polygons(polygons_frame(geometry=[LEFT_GEOJSON]))
+        outcome = RegionOutcome("r")
+
+        labelled = label_polygons(frame, TwoRasters(half_and_half), 0.8, outcome)
+
+        assert len(labelled) == 0
+        assert outcome.rejections == {"no_valid_class": 1}
+
+    def test_the_fetched_tiles_are_exactly_those_the_polygon_touches(self, half_and_half) -> None:
+        frame, _ = prepare_polygons(polygons_frame(geometry=[LEFT_GEOJSON]))
+        tiles = FixedTiles(half_and_half)
+        label_polygons(frame, tiles, 0.8, RegionOutcome("r"))
+        assert tiles.ensured == [Tile(0, 0), Tile(3, 0)]
+
+
+class TestVerdict:
+    def test_the_threshold_decides_between_label_and_rejection(self) -> None:
+        assert _verdict({10: 0.9}, 0.95) == DominanceOutcome(
+            False, 10, 0.9, RejectionReason.BELOW_THRESHOLD
+        )
+        assert _verdict({10: 0.9}, 0.5) == DominanceOutcome(True, 10, 0.9)
+
+    def test_double_counted_coverage_is_refused_without_a_label(self) -> None:
+        assert _verdict({10: 0.8, 50: 0.8}, 0.5) == DominanceOutcome(
+            False, None, 0.0, RejectionReason.NO_VALID_CLASS
+        )
+
+
+class TestAcceptedPolygonColumns:
+    def test_a_labelled_polygon_records_its_dominance_and_observed_coverage(
+        self, with_nodata
+    ) -> None:
+        frame, _ = prepare_polygons(polygons_frame())
+        labelled = label_polygons(frame, FixedTiles(with_nodata), 0.4, RegionOutcome("r"))
+        row = labelled.iloc[0]
+        assert (row["worldcover_code"], row["dominant_fraction"]) == (10, pytest.approx(0.5))
+        assert row["observed_fraction"] == pytest.approx(0.5)
+
+    def test_rejections_of_one_reason_add_up_across_polygons(self, half_and_half) -> None:
+        frame, _ = prepare_polygons(many_polygons(["a", "b"], [SQUARE_GEOJSON] * 2))
+        outcome = RegionOutcome("r")
+        label_polygons(frame, FixedTiles(half_and_half), 0.8, outcome)
+        assert outcome.rejections == {"below_threshold": 2}
+
+
+class TestPreparedFrame:
+    def test_an_empty_table_keeps_its_columns_and_the_wgs84_geometry_column(self) -> None:
+        empty = polygons_frame().iloc[0:0]
+        frame, _ = prepare_polygons(empty)
+        assert frame.geometry.name == "geometry"
+        assert frame.crs.to_epsg() == 4326
+        assert list(frame.columns) == [*empty.columns]
+
+    def test_usable_polygons_are_renumbered_without_an_index_column(self) -> None:
+        polygons = pd.concat(
+            [polygons_frame(polygon_id=["bad"], geometry=[BOWTIE_GEOJSON]), polygons_frame()],
+            ignore_index=True,
+        )
+        frame, _ = prepare_polygons(polygons)
+        assert frame.index.tolist() == [0]
+        assert "index" not in frame.columns
+        assert frame.crs.to_epsg() == 4326
+
+
+class TestExamplesIndexAndAccumulation:
+    def test_kept_examples_are_renumbered_without_an_index_column(self) -> None:
+        source = tables_for().documents
+        documents = pd.concat(
+            [source.assign(document_id="d0", fetch_status="error"), source], ignore_index=True
+        )
+        links = pd.DataFrame({"polygon_id": ["p1", "p1"], "document_id": ["d0", "d1"]})
+        tables = RegionTables("r", polygons_frame(), links, documents)
+        rows = to_examples(polygons_frame().assign(worldcover_code=10), tables, 10)
+        assert rows.index.tolist() == [0]
+        assert "index" not in rows.columns
+
+    def test_text_rejections_accumulate_across_calls(self) -> None:
+        labelled = polygons_frame().assign(worldcover_code=10)
+        outcome = RegionOutcome("r")
+        for _ in range(2):
+            to_examples(labelled, tables_for(full_text="short"), 10, outcome)
+        assert outcome.text_rejections == {"text_too_short": 2}
+
+    def test_document_columns_that_clash_with_labelled_ones_get_a_doc_suffix(self) -> None:
+        labelled = polygons_frame().assign(worldcover_code=10, language="xx")
+        rows = to_examples(labelled, tables_for(), 10)
+        assert rows[["language", "language_doc"]].iloc[0].tolist() == ["xx", "en"]
+
+
+class TestShapedExamples:
+    def test_centroids_keep_seven_decimals(self, half_and_half) -> None:
+        tables = tables_for()
+        tables = RegionTables(
+            "r",
+            polygons_frame(geometry=[LEFT_GEOJSON], lat=[3.123456789], lon=[2.987654321]),
+            tables.links,
+            tables.documents,
+        )
+        examples, _ = run_region(Config(), tables, FixedTiles(half_and_half))
+        assert examples["centroid_wkt"].tolist() == ["POINT (2.9876543 3.1234568)"]
+
+    def test_the_document_language_wins_and_the_polygon_language_is_the_fallback(
+        self, half_and_half
+    ) -> None:
+        source = tables_for()
+        documents = pd.concat(
+            [
+                source.documents.assign(document_id="has", language="fr"),
+                source.documents.assign(document_id="lacks", language=None),
+            ],
+            ignore_index=True,
+        )
+        tables = RegionTables(
+            "r",
+            many_polygons(["p1", "p2"], [LEFT_GEOJSON] * 2, language=["en", "en"]),
+            pd.DataFrame({"polygon_id": ["p1", "p2"], "document_id": ["has", "lacks"]}),
+            documents,
+        )
+        examples, _ = run_region(Config(), tables, FixedTiles(half_and_half))
+        assert dict(zip(examples["polygon_id"], examples["language"], strict=True)) == {
+            "p1": "fr",
+            "p2": "en",
+        }
+
+    def test_columns_the_source_omits_are_published_as_missing(self, half_and_half) -> None:
+        tables = tables_for()
+        tables = RegionTables(
+            "r",
+            polygons_frame(geometry=[LEFT_GEOJSON]).drop(columns=["wikidata"]),
+            tables.links,
+            tables.documents,
+        )
+        examples, _ = run_region(Config(), tables, FixedTiles(half_and_half))
+        assert examples["wikidata"].tolist() == [None]
+
+    def test_run_region_names_the_region_and_honours_the_keep_policy(self, half_and_half) -> None:
+        tables = tables_for()
+        tables = RegionTables(
+            "r", polygons_frame(geometry=[LEFT_GEOJSON]), tables.links, tables.documents
+        )
+        kept, released = FixedTiles(half_and_half), FixedTiles(half_and_half)
+        _, outcome = run_region(Config(), tables, released)
+        run_region(Config(), tables, kept, keep_tiles=True)
+        assert outcome.stem == "r"
+        assert released.discarded == released.ensured
+        assert kept.discarded == []
