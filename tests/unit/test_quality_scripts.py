@@ -320,8 +320,8 @@ def test_mutation_records_keep_all_mutmut_outcomes_distinct() -> None:
         "timeout": 1,
         "no_tests": 1,
         "skipped": 1,
-        "suspicious": 1,
-        "unreported": 2,
+        "suspicious": 2,
+        "unreported": 1,
         "segfault": 1,
         "interrupted": 1,
         "caught_by_type_check": 1,
@@ -588,3 +588,23 @@ def test_raster_evidence_rejects_malformed_test_names() -> None:
 
     with pytest.raises(TypeError, match="invalid baseline tests"):
         mutation_score._raster_evidence([record], baseline)
+
+
+@pytest.mark.parametrize("exit_code", [-6, -15, 99, 7])
+def test_unknown_exit_codes_are_suspicious_exactly_as_mutmut_exports_them(exit_code) -> None:
+    record = mutation_score._mutant_record(
+        "src/osm_worldcover/x.py", "osm_worldcover.x.x_f__mutmut_1", exit_code
+    )
+
+    assert record["status"] == "suspicious"
+    assert mutation_score.status_by_exit_code[exit_code] == "suspicious"
+
+
+def test_a_missing_exit_code_stays_unreported_and_known_codes_keep_their_status() -> None:
+    def status(code):
+        return mutation_score._mutant_record("p.py", "m.x_f__mutmut_1", code)["status"]
+
+    assert status(None) == "not checked"
+    assert status(1) == "killed"
+    assert status(0) == "survived"
+    assert status(-11) == "segfault"

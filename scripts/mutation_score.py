@@ -239,8 +239,19 @@ def _mutant_record(source_path: str, mutant: Any, exit_code: Any) -> dict[str, A
         "function": function,
         "class": class_name,
         "mangled_function": mangled,
-        "status": status_by_exit_code.get(exit_code, "unreported"),
+        "status": _status_for_exit_code(exit_code),
     }
+
+
+def _status_for_exit_code(exit_code: int | None) -> str:
+    """Classify an exit code the way mutmut's own exporter does.
+
+    ``status_by_exit_code`` is a defaultdict: an exit code mutmut does not know
+    (for example a signal other than SIGSEGV or SIGKILL) is *suspicious*. Using
+    ``.get`` here classified the same mutant as unreported and made the raw
+    count disagree with the export.
+    """
+    return status_by_exit_code[exit_code]
 
 
 def _summary(records: list[dict[str, Any]]) -> dict[str, Any]:
