@@ -101,13 +101,12 @@ def finalize_shards(
 
 def _enrich_shards(shard_dir: Path, enriched: Path, config: Config) -> int:
     """Add the row-local columns to each shard in turn. Returns rows seen."""
-    ratios = SplitRatios(config.train_ratio, config.validation_ratio, config.test_ratio)
     total = 0
     for path in sorted(shard_dir.glob("*.parquet")):
         frame = pd.read_parquet(path)
         if len(frame) == 0 or "polygon_id" not in frame.columns:
             continue
-        frame = _assign_splits(frame, config, ratios)
+        frame = _assign_splits(frame, config)
         frame = _attach_provenance(frame, config)
         frame = _with_stable_text_types(frame)
         frame["text_words"] = frame["text"].map(word_count).astype("int64")
@@ -133,11 +132,9 @@ def _with_stable_text_types(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.astype({column: "string" for column in present})
 
 
-def _assign_splits(
-    frame: pd.DataFrame, config: Config, ratios: SplitRatios | None = None
-) -> pd.DataFrame:
+def _assign_splits(frame: pd.DataFrame, config: Config) -> pd.DataFrame:
     """Attach an H3 cell to every row and split on the cell, never on the row."""
-    ratios = ratios or SplitRatios(config.train_ratio, config.validation_ratio, config.test_ratio)
+    ratios = SplitRatios(config.train_ratio, config.validation_ratio, config.test_ratio)
     cells = [
         cell_for(lat, lon, config.h3_resolution)
         for lat, lon in zip(frame["lat"], frame["lon"], strict=True)

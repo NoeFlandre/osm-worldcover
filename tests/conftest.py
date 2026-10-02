@@ -4,16 +4,58 @@ The raster fixtures are deliberately tiny and hand-laid so expected coverage
 fractions can be reasoned about exactly rather than approximated.
 """
 
+from collections import Counter
 from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
 import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import Polygon
 
+from osm_worldcover.accounting import BuildContext
+from osm_worldcover.adapters.worldcover import TileNotPublishedError
+from osm_worldcover.config import Config
 from osm_worldcover.domain.tiling import Tile
+from osm_worldcover.pipeline import RegionOutcome
+
+
+@pytest.fixture
+def config():
+    """A configuration pinned to an immutable source revision."""
+    return Config(source_revision="a" * 40)
+
+
+@pytest.fixture
+def context(config):
+    """The build context completion receipts are bound to."""
+    return BuildContext.from_config(config)
+
+
+@pytest.fixture
+def outcome():
+    """A fully reconciled region outcome named ``alpha``."""
+    return RegionOutcome(
+        "alpha",
+        polygons_seen=12,
+        polygons_invalid=1,
+        polygons_accepted=8,
+        polygons_with_examples=2,
+        examples=3,
+        source_links=10,
+        source_documents=9,
+        rejections=Counter({"below_threshold": 3}),
+        text_rejections=Counter({"text_too_short": 4, "empty_text": 2}),
+        tiles_missing=["N00E000"],
+    )
+
+
+@pytest.fixture
+def examples():
+    """Three examples over two polygons, matching :func:`outcome`."""
+    return pd.DataFrame({"polygon_id": ["p1", "p1", "p2"], "text": ["a", "b", "c"]})
 
 
 class FixedTiles:
@@ -30,6 +72,14 @@ class FixedTiles:
 
     def discard(self, tile: Tile) -> None:
         self.discarded.append(tile)
+
+
+class MissingTiles(FixedTiles):
+    """A tile source whose product publishes none of the requested tiles."""
+
+    def ensure(self, tile: Tile) -> Path:
+        self.ensured.append(tile)
+        raise TileNotPublishedError(tile.name)
 
 
 def write_raster(path: Path, values: np.ndarray, origin=(0.0, 4.0), pixel=1.0) -> Path:

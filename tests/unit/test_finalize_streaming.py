@@ -4,13 +4,22 @@ At ~4.9 KB per row a global build is roughly 10 GB of DataFrame, so the final
 pass reads shards one at a time and does the global work in DuckDB over files.
 """
 
+import h3
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
 from osm_worldcover.config import Config
-from osm_worldcover.finalize import _deduplicate, _enrich_shards, _write_splits, finalize_shards
+from osm_worldcover.domain.validation import REQUIRED_COLUMNS
+from osm_worldcover.finalize import (
+    _assign_splits,
+    _count,
+    _deduplicate,
+    _enrich_shards,
+    _write_splits,
+    finalize_shards,
+)
 
 
 def written(result) -> pd.DataFrame:
@@ -510,3 +519,264 @@ class TestShardSchemaDrift:
         second = finalize_shards(other, Config(), tmp_path / "w2", tmp_path / "w2" / "out")
 
         assert first.rows == second.rows
+
+
+def run(shards, tmp_path, config=None):
+    """Finalize ``shards`` under ``tmp_path``, returning the streamed build."""
+    return finalize_shards(shards, config or Config(), tmp_path / "work", tmp_path / "work" / "out")
+
+
+def with_columns(path, **columns) -> None:
+    """Overwrite columns of a shard written by :func:`shard`."""
+    frame = pd.read_parquet(path)
+    for name, value in columns.items():
+        frame[name] = value
+    frame.to_parquet(path, index=False)
+
+
+FIVE_PLACES = [  # Luxembourg, Tokyo, Sydney, Helsinki, Nairobi: five distinct H3 cells
+    (49.6, 6.1),
+    (35.7, 139.7),
+    (-33.9, 151.2),
+    (60.2, 24.9),
+    (-1.3, 36.8),
+]
+
+
+@pytest.fixture
+def five_places(shards):
+    """One row per place, each in its own region, with distinct fractions, labels, languages."""
+    fractions = [0.8, 0.85, 0.9000004, 0.95, 0.9876543217]
+    languages = ["en", "fr", None, "en", "en"]
+    codes = [10, 10, 50, 10, 50]
+    for index, (lat, lon) in enumerate(FIVE_PLACES):
+        path = shards / f"r{index}.parquet"
+        shard(path, start=index, region=f"r{index}", code=codes[index], lat=lat, lon=lon)
+        with_columns(path, dominant_fraction=fractions[index], language=languages[index])
+    return shards
+
+
+def test_manifest_reports_dominance_quantiles_to_six_places(five_places, tmp_path) -> None:
+    manifest = run(five_places, tmp_path).manifest
+    assert manifest["dominant_fraction"] == {"p50": 0.9, "p90": 0.972593, "p99": 0.986148}
+
+
+def test_manifest_reports_geographic_coverage(five_places, tmp_path) -> None:
+    coverage = run(five_places, tmp_path).manifest["geographic_coverage"]
+    assert coverage == {
+        "h3_cells": 5,
+        "regions": 5,
+        "bbox": {"min_lon": 6.1, "min_lat": -33.9, "max_lon": 151.2, "max_lat": 60.2},
+    }
+
+
+def test_manifest_keeps_an_absent_language_absent(five_places, tmp_path) -> None:
+    manifest = run(five_places, tmp_path).manifest
+    assert manifest["language_distribution"] == [
+        {"language": "en", "examples": 3, "share": 0.6},
+        {"language": "fr", "examples": 1, "share": 0.2},
+        {"language": None, "examples": 1, "share": 0.2},
+    ]
+    assert [row["examples"] for row in manifest["class_distribution"]] == [3, 2]
+
+
+def repeated_polygon(path, n, start, text) -> None:
+    """A shard whose ``n`` documents all describe one polygon with the same text."""
+    shard(path, n=n, start=start, text=text)
+    with_columns(path, polygon_id=f"p{start}", osm_id=start)
+
+
+@pytest.fixture
+def two_repeated_polygons(shards):
+    """Two groups lose records: two removed at three words, one removed at twelve."""
+    repeated_polygon(shards / "short.parquet", 3, 0, "one two three")
+    twelve = "one two three four five six seven eight nine ten eleven twelve"
+    repeated_polygon(shards / "long.parquet", 2, 10, twelve)
+    return shards
+
+
+def test_deduplication_analysis_counts_groups_and_removed_records(
+    two_repeated_polygons, tmp_path
+) -> None:
+    result = run(two_repeated_polygons, tmp_path)
+    analysis = result.manifest["deduplication_analysis"]
+    assert result.duplicate_records == 3
+    assert analysis["duplicate_polygon_text_label_groups"] == 2
+    assert analysis["duplicate_records_removed"] == 3
+
+
+def test_deduplication_analysis_buckets_removed_records_by_text_length(
+    two_repeated_polygons, tmp_path
+) -> None:
+    buckets = run(two_repeated_polygons, tmp_path).manifest["deduplication_analysis"][
+        "duplicate_records_removed_by_text_words"
+    ]
+    assert buckets == {**{str(words): 0 for words in range(1, 10)}, "3": 2, "10+": 1}
+
+
+def test_deduplication_analysis_reports_zero_for_an_empty_long_bucket(shards, tmp_path) -> None:
+    shard(shards / "a.parquet", n=2, text="one two three")
+    with_columns(shards / "a.parquet", polygon_id="p", osm_id=7)
+
+    buckets = run(shards, tmp_path).manifest["deduplication_analysis"]
+    assert buckets["duplicate_records_removed_by_text_words"]["10+"] == 0
+    assert buckets["duplicate_records_removed_by_text_words"]["3"] == 1
+
+
+def test_split_assignment_defaults_to_the_configured_ratios() -> None:
+    config = Config(train_ratio=0.0, validation_ratio=1.0, test_ratio=0.0, h3_resolution=3)
+    frame = pd.DataFrame({"lat": [49.6, 35.7], "lon": [6.1, 139.7]})
+    assigned = _assign_splits(frame, config)
+    assert assigned["split"].tolist() == ["validation", "validation"]
+    assert [h3.get_resolution(cell) for cell in assigned["h3_cell"]] == [3, 3]
+
+
+def test_split_assignment_follows_the_configured_seed() -> None:
+    frame = pd.DataFrame({"lat": [49.6], "lon": [6.1]})
+    assert _assign_splits(frame, Config())["split"].tolist() == ["train"]
+    assert _assign_splits(frame, Config(split_seed=9))["split"].tolist() == ["test"]
+
+
+def test_enrichment_skips_empty_shards_and_shards_without_polygons(shards, tmp_path) -> None:
+    shard(shards / "a_good.parquet", n=2)
+    shard(shards / "b_empty.parquet", n=1)
+    pd.read_parquet(shards / "b_empty.parquet").iloc[0:0].to_parquet(
+        shards / "b_empty.parquet", index=False
+    )
+    shard(shards / "c_no_polygon.parquet", n=1)
+    pd.read_parquet(shards / "c_no_polygon.parquet").drop(columns="polygon_id").to_parquet(
+        shards / "c_no_polygon.parquet", index=False
+    )
+    enriched = tmp_path / "enriched"
+    enriched.mkdir()
+
+    assert _enrich_shards(shards, enriched, Config()) == 2
+    assert [path.name for path in enriched.glob("*.parquet")] == ["a_good.parquet"]
+
+
+def test_a_polygon_text_pair_under_two_labels_keeps_both_records(shards, tmp_path) -> None:
+    shard(shards / "a.parquet", n=2, text="same text here " * 5)
+    with_columns(shards / "a.parquet", polygon_id="p", osm_id=7, worldcover_code=[10, 50])
+    result = run(shards, tmp_path)
+    assert (result.rows, result.duplicate_records) == (2, 0)
+
+
+def test_duplicate_records_in_different_splits_are_reported_as_crossing(shards, tmp_path) -> None:
+    shard(shards / "a.parquet", n=3, text="one two three")
+    with_columns(
+        shards / "a.parquet",
+        polygon_id="p",
+        osm_id=7,
+        lat=[49.6, 49.6, -33.9],
+        lon=[6.1, 6.1, 151.2],
+    )
+    analysis = run(shards, tmp_path).manifest["deduplication_analysis"]
+    assert {
+        key: value
+        for key, value in analysis.items()
+        if key.startswith("duplicate_record") and isinstance(value, int)
+    } == {
+        "duplicate_records_removed": 2,
+        "duplicate_record_groups_crossing_splits": 1,
+        "duplicate_records_removed_from_cross_split_groups": 2,
+    }
+
+
+def test_deduplication_leaves_only_the_kept_table_open(shards, tmp_path) -> None:
+    shard(shards / "a.parquet")
+    enriched = tmp_path / "work" / "enriched"
+    enriched.mkdir(parents=True)
+    _enrich_shards(shards, enriched, Config())
+
+    connection, _, _ = _deduplicate(enriched)
+    try:
+        tables = connection.execute("SHOW TABLES").fetchall()
+    finally:
+        connection.close()
+
+    assert tables == [("kept",)]
+
+
+def test_every_row_carries_its_provenance(shards, tmp_path) -> None:
+    shard(shards / "a.parquet")
+    config = Config(
+        source_revision="abc",
+        source_dataset="owner/dataset",
+        dataset_version="9.9.9",
+        worldcover_version="v100",
+        worldcover_year=2020,
+    )
+    row = written(run(shards, tmp_path, config)).iloc[0]
+    assert row[
+        ["dataset_version", "source_dataset", "source_revision", "worldcover_version"]
+    ].tolist() == ["9.9.9", "owner/dataset", "abc", "v100"]
+    assert row["worldcover_year"] == 2020
+
+
+def test_enrichment_recounts_words_and_totals_every_shard(shards, tmp_path) -> None:
+    shard(shards / "a.parquet", n=2, text_words=999)
+    shard(shards / "b.parquet", n=3, start=10)
+    enriched = tmp_path / "enriched"
+    enriched.mkdir()
+
+    assert _enrich_shards(shards, enriched, Config()) == 5
+
+    frame = pd.read_parquet(enriched / "a.parquet")
+    assert frame["text_words"].tolist() == [31, 31]
+    assert frame["text_words"].dtype == "int64"
+    assert frame["_dedup_key"].str.len().gt(0).all()
+
+
+def test_the_finished_build_lists_its_splits_then_its_manifest(shards, tmp_path) -> None:
+    shard(shards / "a.parquet")
+    result = run(shards, tmp_path)
+    target = tmp_path / "work" / "out" / f"v{Config().dataset_version}"
+    assert result.paths == [
+        target / "train.parquet",
+        target / "validation.parquet",
+        target / "test.parquet",
+        target / "manifest.json",
+    ]
+    assert list((tmp_path / "work" / "enriched").glob("*.parquet"))
+
+
+def test_an_empty_build_has_no_files_and_no_manifest(shards, tmp_path) -> None:
+    result = run(shards, tmp_path)
+    assert (result.rows, result.paths, result.manifest) == (0, [], {})
+
+
+def test_the_written_dataset_is_validated_against_the_configured_threshold(
+    shards, tmp_path
+) -> None:
+    shard(shards / "a.parquet")
+    assert run(shards, tmp_path, Config(threshold=0.9)).report.ok
+    assert not run(shards, tmp_path, Config(threshold=0.99)).report.ok
+
+
+def test_the_written_dataset_is_validated_against_the_effective_minimum_words(
+    shards, tmp_path
+) -> None:
+    shard(shards / "a.parquet")
+    assert run(shards, tmp_path, Config(min_words=31)).report.ok
+    assert not run(shards, tmp_path, Config(min_words=32)).report.ok
+
+
+def test_validation_streams_only_the_required_columns(shards, tmp_path, monkeypatch) -> None:
+    requested = []
+
+    class Spy(pq.ParquetFile):
+        def iter_batches(self, *args, **kwargs):
+            requested.append((kwargs.get("batch_size"), kwargs.get("columns")))
+            return super().iter_batches(*args, **kwargs)
+
+    monkeypatch.setattr(pq, "ParquetFile", Spy)
+    shard(shards / "a.parquet")
+    run(shards, tmp_path)
+    assert requested == [(8192, list(REQUIRED_COLUMNS))] * 3
+
+
+def test_a_count_with_no_row_is_refused() -> None:
+    import duckdb
+
+    with pytest.raises(RuntimeError, match="count query returned no row: SELECT 1 WHERE false"):
+        _count(duckdb.connect(), "SELECT 1 WHERE false")
