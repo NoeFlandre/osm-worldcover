@@ -1,12 +1,16 @@
 # osm-worldcover
 
-`osm-worldcover` turns OSM polygon-associated text into reproducible ESA
-WorldCover land-cover datasets. One shared pipeline supports Wikidata-linked
-Wikipedia/Wikivoyage text, OSM `description` tags, and OSM website tags.
+`osm-worldcover` converts the text of OSM polygons into reproducible ESA
+WorldCover land-cover datasets. One shared pipeline supports three text
+sources: Wikipedia/Wikivoyage text linked through Wikidata, OSM `description`
+tags and OSM website tags.
 
-The Wikidata release remains [`NoeFlandre/osm-wikidata-worldcover`](https://huggingface.co/datasets/NoeFlandre/osm-wikidata-worldcover).
-The description and website recipes publish to their own Hugging Face dataset
-repositories.
+The Wikidata release stays at
+[`NoeFlandre/osm-wikidata-worldcover`](https://huggingface.co/datasets/NoeFlandre/osm-wikidata-worldcover).
+The description recipe and the website recipe publish to their own Hugging Face
+dataset repositories.
+
+See the [glossary](glossary.md) for the project terms.
 
 ## Quick start
 
@@ -17,12 +21,12 @@ uv run owc verify data/out/v1.1.0
 uv run owc info data/out/v1.1.0
 ```
 
-Use `--source description` or `--source website` to select another source.
+To select another source, use `--source description` or `--source website`.
 
 ## Global builds
 
-Global runs are CPU-bound and single-threaded. Give each process disjoint region
-lists and its own cache, then assemble the shards once:
+A global run uses the CPU heavily and uses one thread. Give each process a
+separate list of regions and its own cache. Then assemble the shards one time.
 
 ```bash
 # Region stems go to stdout; pin the source revision for a reproducible list.
@@ -36,13 +40,13 @@ uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file r
 uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
 ```
 
-Without `--revision`, `owc regions` resolves the current Hub commit and prints
-that commit to stderr, keeping the region file clean for redirection. Give each
-worker its own cache and output directory; `owc assemble` can combine their
-shards and is safe to rerun.
+If you do not give `--revision`, `owc regions` uses the current Hub commit. It
+prints that commit to stderr. The region file stays clean for redirection. Give
+each worker its own cache directory and output directory. `owc assemble`
+combines the shards. You can safely run it again.
 
 ## Label meaning
 
-WorldCover classifies the ground in 10 m pixels. The label says what covers the
-area **containing** a feature, not what the feature is made of. See
-[Technical debt](technical-debt.md) for known limitations.
+WorldCover classifies the ground in 10 m pixels. The label gives the class of
+the area that **contains** a feature. It does not give the material of the
+feature. For the known limits, see [Technical debt](technical-debt.md).
