@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Publish a deterministic centroid map of all ESA-labelled polygons in the release and keep the Hugging Face Dataset Viewer healthy for all three splits.
+**Goal:** Publish a deterministic centroid map of all ESA-labelled polygons in the release. Keep the Hugging Face Dataset Viewer healthy for all three splits.
 
-**Architecture:** Add a small adapter that aggregates the exact release Parquets with DuckDB, validates one stable ESA label and finite centroid per polygon, and renders a headless Matplotlib PNG over a Natural Earth land outline. The finalization manifest also stores one deterministic named polygon per represented ESA class for the card's examples table. Generate that asset inside `publish_dataset`, render the card sections linking to it and showing the examples, upload the unchanged tabular files plus the PNG, and verify the public Dataset Viewer API after upload.
+**Architecture:** Add a small adapter. The adapter aggregates the exact release Parquets with DuckDB. It validates one stable ESA label and one finite centroid for each polygon. It renders a headless Matplotlib PNG over a Natural Earth land outline. The finalization manifest also stores one deterministic named polygon for each represented ESA class for the examples table of the card. Generate that asset inside `publish_dataset`. Render the card sections that link to it and show the examples. Upload the unchanged tabular files and the PNG. Verify the public Dataset Viewer API after the upload.
 
 **Tech Stack:** Python 3.12, DuckDB, PyArrow/Parquet, GeoPandas, Matplotlib Agg, pytest, Ruff, `ty`, Hugging Face Hub CLI/API, Dataset Viewer HTTP API.
 
@@ -12,19 +12,19 @@
 
 ## File map
 
-- Create `src/osm_worldcover/adapters/coverage_map.py`: release-Parquet centroid aggregation, validation, Natural Earth loading, and PNG rendering.
-- Modify `src/osm_worldcover/domain/card.py`: add the static map section and explain that points are centroids, not polygon outlines.
-- Modify `src/osm_worldcover/domain/card.py`: add the static map section and the representative polygon/class examples table.
-- Modify `src/osm_worldcover/domain/manifest.py` and `src/osm_worldcover/finalize.py`: record deterministic named examples from the exact kept rows.
-- Modify `src/osm_worldcover/adapters/publish.py`: generate `worldcover_centroids.png` before regenerating the README and uploading the build folder.
-- Modify `src/osm_worldcover/adapters/writer.py`: emit Viewer-safe Parquet row groups with page indexes for future builds.
+- Create `src/osm_worldcover/adapters/coverage_map.py`: aggregation of the release-Parquet centroids, validation, Natural Earth loading and PNG rendering.
+- Modify `src/osm_worldcover/domain/card.py`: add the static map section. Explain that the points are centroids and not polygon outlines.
+- Modify `src/osm_worldcover/domain/card.py`: add the static map section and the table of representative polygon/class examples.
+- Modify `src/osm_worldcover/domain/manifest.py` and `src/osm_worldcover/finalize.py`: record the deterministic named examples from the exact kept rows.
+- Modify `src/osm_worldcover/adapters/publish.py`: generate `worldcover_centroids.png` before the README is regenerated and before the build folder is uploaded.
+- Modify `src/osm_worldcover/adapters/writer.py`: write Viewer-safe Parquet row groups with page indexes for future builds.
 - Modify `pyproject.toml` and `uv.lock`: add Matplotlib as the runtime renderer dependency.
-- Create `tests/unit/test_coverage_map.py`: local Parquet aggregation, validation, deterministic palette, and isolated PNG rendering tests.
-- Modify `tests/unit/test_card.py`: assert the map link and centroid wording.
-- Modify `tests/unit/test_card.py`, `tests/unit/test_manifest.py`, and `tests/unit/test_finalize_streaming.py`: assert the example names/classes are carried into the card manifest.
-- Modify `tests/unit/test_publish.py`: assert map generation is part of publication without making unit tests download Natural Earth.
-- Modify `tests/unit/test_writer.py`: assert large input batches are split into bounded row groups.
-- Create `docs/superpowers/specs/2026-09-14-worldcover-centroid-map-design.md`: approved design record (already committed).
+- Create `tests/unit/test_coverage_map.py`: tests for local Parquet aggregation, validation, deterministic palette and isolated PNG rendering.
+- Modify `tests/unit/test_card.py`: assert the map link and the centroid wording.
+- Modify `tests/unit/test_card.py`, `tests/unit/test_manifest.py` and `tests/unit/test_finalize_streaming.py`: assert that the example names and classes go into the card manifest.
+- Modify `tests/unit/test_publish.py`: assert that map generation is part of publication. Do not make the unit tests download Natural Earth.
+- Modify `tests/unit/test_writer.py`: assert that the writer splits large input batches into bounded row groups.
+- Create `docs/superpowers/specs/2026-09-14-worldcover-centroid-map-design.md`: the approved design record (already committed).
 - Create `docs/superpowers/plans/2026-09-14-worldcover-centroid-map.md`: this implementation plan.
 
 ## Task 1: Add the failing map and card tests
@@ -35,7 +35,7 @@
 
 - [ ] **Step 1: Add small Parquet fixtures and aggregation assertions.**
 
-Use a helper that writes `train.parquet`, `validation.parquet`, and `test.parquet` with the five map columns. Include repeated rows for one polygon and one polygon in another split, then assert `centroids_from_build()` returns one row per polygon sorted by `polygon_id`, with the expected code and label.
+Use a helper that writes `train.parquet`, `validation.parquet` and `test.parquet` with the five map columns. Include repeated rows for one polygon and one polygon in another split. Then assert that `centroids_from_build()` returns one row for each polygon, sorted by `polygon_id`, with the expected code and label.
 
 ```python
 def _write_build(root: Path, rows: dict[str, list[dict[str, object]]]) -> Path:
@@ -95,7 +95,7 @@ def test_centroids_are_deduplicated_across_article_rows_and_splits(tmp_path: Pat
 
 - [ ] **Step 2: Add validation failure tests.**
 
-Cover conflicting labels for one polygon, invalid coordinates, and a non-WorldCover code. Each case must raise `CoverageMapError` with a message identifying the invariant.
+Cover conflicting labels for one polygon, invalid coordinates and a code that is not a WorldCover code. Each case must raise `CoverageMapError`. The message must identify the invariant.
 
 ```python
 def test_conflicting_labels_are_rejected(tmp_path: Path) -> None:
@@ -148,7 +148,7 @@ def test_out_of_range_coordinates_are_rejected(tmp_path: Path, lat: float, lon: 
 
 - [ ] **Step 3: Add a renderer test with a local boundary fixture.**
 
-Construct a one-polygon GeoDataFrame in EPSG:4326, call `write_coverage_map()` with it, and assert the output is a non-empty PNG and the returned count is the number of unique polygons. This prevents a test from needing the Natural Earth URL.
+Build a one-polygon GeoDataFrame in EPSG:4326. Call `write_coverage_map()` with it. Assert that the output is a non-empty PNG. Assert that the returned count is the number of unique polygons. This prevents a test from needing the Natural Earth URL.
 
 ```python
 def test_write_coverage_map_creates_png(tmp_path: Path) -> None:
@@ -179,9 +179,9 @@ def test_write_coverage_map_creates_png(tmp_path: Path) -> None:
 
 - [ ] **Step 4: Add card assertions.**
 
-Extend the existing card tests to require `worldcover_centroids.png`, the phrase `polygon centroid`, and the manifest polygon total. This is the red test for the new card section.
+Extend the existing card tests. They must require `worldcover_centroids.png`, the phrase `polygon centroid` and the polygon total of the manifest. This is the red test for the new card section.
 
-- [ ] **Step 5: Run only the new tests and confirm they fail.**
+- [ ] **Step 5: Run only the new tests and confirm that they fail.**
 
 Run:
 
@@ -189,7 +189,7 @@ Run:
 TMPDIR="$PWD/data/scratch/map-tests" UV_CACHE_DIR="$PWD/data/cache/uv" UV_LINK_MODE=copy uv run --no-sync pytest tests/unit/test_coverage_map.py tests/unit/test_card.py -q
 ```
 
-Expected: collection or assertion failures because the adapter functions and card section do not exist yet.
+Expected: collection failures or assertion failures. The adapter functions and the card section do not exist yet.
 
 ## Task 2: Implement centroid aggregation and PNG rendering
 
@@ -200,7 +200,7 @@ Expected: collection or assertion failures because the adapter functions and car
 
 - [ ] **Step 1: Add Matplotlib to the runtime dependencies.**
 
-Add `"matplotlib>=3.9"` beside the existing geospatial dependencies, then run `uv lock` with the project cache on Seagate. Do not add a second plotting stack.
+Add `"matplotlib>=3.9"` next to the existing geospatial dependencies. Then run `uv lock` with the project cache on Seagate. Do not add a second plotting stack.
 
 - [ ] **Step 2: Implement the map adapter around the exact release files.**
 
@@ -227,15 +227,9 @@ def write_coverage_map(
     """Render the release centroid map and return its unique-polygon count."""
 ```
 
-Read only the three Parquets through DuckDB's `read_parquet`, selecting
-`polygon_id`, `lat`, `lon`, `worldcover_code`, and `worldcover_label`. Filter
-to ESA-labelled rows, reject null polygon IDs or invalid labelled coordinates,
-group by string polygon ID, and reject `count(DISTINCT worldcover_code) != 1`
-or `count(DISTINCT worldcover_label) != 1`. Validate each code/label pair with
-`domain.nomenclature.CLASS_LABELS`, then order the returned frame by
-`polygon_id` for deterministic rendering.
+Read only the three Parquets through the DuckDB function `read_parquet`. Select `polygon_id`, `lat`, `lon`, `worldcover_code` and `worldcover_label`. Filter to the ESA-labelled rows. Reject null polygon IDs and invalid labelled coordinates. Group by the string polygon ID. Reject `count(DISTINCT worldcover_code) != 1` and `count(DISTINCT worldcover_label) != 1`. Validate each code/label pair with `domain.nomenclature.CLASS_LABELS`. Order the returned frame by `polygon_id` for deterministic rendering.
 
-Use the fixed ESA palette keyed by the existing 11 codes:
+Use the fixed ESA palette. The keys are the existing 11 codes:
 
 ```python
 CLASS_COLORS = {
@@ -253,19 +247,11 @@ CLASS_COLORS = {
 }
 ```
 
-For production rendering, load the 1:110m Natural Earth land outline from
-`https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_land.zip` with
-GeoPandas. Use Matplotlib's `Agg` backend, an 18x10 inch figure, longitude and
-latitude limits of `[-180, 180]` and `[-90, 90]`, a light land fill, tiny
-rasterized semi-transparent points, graticules, and a two/three-column legend
-containing every class and its point count. Save a PNG with `bbox_inches="tight"`
-and close the figure. The function must create the output parent directory and
-must not mutate the Parquets.
+For production rendering, load the 1:110m Natural Earth land outline from `https://naturalearth.s3.amazonaws.com/110m_physical/ne_110m_land.zip` with GeoPandas. Use the Matplotlib `Agg` backend and an 18x10 inch figure. Set the longitude limits to `[-180, 180]` and the latitude limits to `[-90, 90]`. Use a light land fill, tiny rasterized semi-transparent points and graticules. Add a legend with two or three columns. The legend contains each class and its point count. Save a PNG with `bbox_inches="tight"` and close the figure. The function must create the parent directory of the output. It must not change the Parquets.
 
-- [ ] **Step 3: Run the map tests and confirm they pass.**
+- [ ] **Step 3: Run the map tests and confirm that they pass.**
 
-Run the command from Task 1. Expected: all aggregation, validation, and local
-PNG tests pass without downloading Natural Earth.
+Run the command from Task 1. Expected: all aggregation, validation and local PNG tests pass. They do not download Natural Earth.
 
 - [ ] **Step 4: Run static checks for the new adapter.**
 
@@ -276,16 +262,11 @@ TMPDIR="$PWD/data/scratch/map-checks" UV_CACHE_DIR="$PWD/data/cache/uv" UV_LINK_
 TMPDIR="$PWD/data/scratch/map-checks" UV_CACHE_DIR="$PWD/data/cache/uv" UV_LINK_MODE=copy uv run --no-sync ty check src/osm_worldcover/adapters/coverage_map.py
 ```
 
-Expected: both commands exit successfully.
+Expected: both commands exit with success.
 
-- [ ] **Step 5: Make future release Parquets scanable by the Dataset Viewer.**
+- [ ] **Step 5: Make future release Parquets scannable by the Dataset Viewer.**
 
-Keep `write_batches()` streaming, but pass a fixed `PARQUET_ROW_GROUP_SIZE =
-25_000` to `ParquetWriter.write_batch()` and enable `write_page_index=True`.
-Add a writer regression test that feeds one batch with `25_001` rows and asserts
-there are two row groups, each no larger than the constant. This prevents a
-single large Arrow batch from producing a Parquet file that exceeds the
-Dataset Viewer's scan-size limit.
+Keep `write_batches()` streaming. Pass a fixed `PARQUET_ROW_GROUP_SIZE = 25_000` to `ParquetWriter.write_batch()`. Enable `write_page_index=True`. Add a writer regression test. The test feeds one batch with `25_001` rows. It asserts that there are two row groups and that each row group is not larger than the constant. This prevents a single large Arrow batch from producing a Parquet file that is more than the scan-size limit of the Dataset Viewer.
 
 ## Task 3: Add the card section and publisher integration
 
@@ -297,13 +278,7 @@ Dataset Viewer's scan-size limit.
 
 - [ ] **Step 1: Make the publisher test observe map generation.**
 
-Patch `osm_worldcover.adapters.publish.write_coverage_map` with a
-local fake that writes a PNG signature to the requested path and returns `1`.
-Assert `publish_dataset()` calls it with the build directory and
-`build_dir / MAP_FILENAME`, then assert the generated README still contains
-the class table and the map filename. Keep `files_to_publish()`'s existing
-four core-file contract; the map is generated before folder upload rather than
-being a new Dataset Viewer split.
+Patch `osm_worldcover.adapters.publish.write_coverage_map` with a local fake. The fake writes a PNG signature to the requested path and returns `1`. Assert that `publish_dataset()` calls it with the build directory and `build_dir / MAP_FILENAME`. Then assert that the generated README still contains the class table and the map filename. Keep the existing contract of `files_to_publish()` with four core files. The build generates the map before the folder upload. The map is not a new Dataset Viewer split.
 
 ```python
 def fake_map(build_dir: Path, output_path: Path, **_: object) -> int:
@@ -314,7 +289,7 @@ def fake_map(build_dir: Path, output_path: Path, **_: object) -> int:
 monkeypatch.setattr("osm_worldcover.adapters.publish.write_coverage_map", fake_map)
 ```
 
-- [ ] **Step 2: Run the publisher test to confirm the new integration assertion fails.**
+- [ ] **Step 2: Run the publisher test and confirm that the new integration assertion fails.**
 
 Run:
 
@@ -322,8 +297,7 @@ Run:
 TMPDIR="$PWD/data/scratch/publish-tests" UV_CACHE_DIR="$PWD/data/cache/uv" UV_LINK_MODE=copy uv run --no-sync pytest tests/unit/test_publish.py -q
 ```
 
-Expected: the new map-generation assertion fails because publication does not
-yet call the adapter.
+Expected: the new map-generation assertion fails. Publication does not call the adapter yet.
 
 - [ ] **Step 3: Add the card section.**
 
@@ -344,12 +318,11 @@ its WorldCover class. Points are centroids, not polygon boundaries; use
 """
 ```
 
-Keep the renderer manifest-driven: it references the stable release asset name
-and takes the count from the same manifest as the rest of the card.
+Keep the renderer driven by the manifest. It references the stable release asset name. It takes the count from the same manifest as the rest of the card.
 
-- [ ] **Step 4: Wire publication to generate the asset before the README.**
+- [ ] **Step 4: Connect publication to the generation of the asset before the README.**
 
-Import `MAP_FILENAME` and `write_coverage_map`, then add:
+Import `MAP_FILENAME` and `write_coverage_map`. Then add:
 
 ```python
 map_path = build_dir / MAP_FILENAME
@@ -357,10 +330,9 @@ write_coverage_map(build_dir, map_path)
 (build_dir / "README.md").write_text(render(manifest))
 ```
 
-The map must be generated before `upload_folder`; any invalid release fails
-before a remote mutation.
+The build must generate the map before `upload_folder`. An invalid release then fails before a remote change.
 
-- [ ] **Step 5: Run card and publisher tests.**
+- [ ] **Step 5: Run the card and publisher tests.**
 
 Run:
 
@@ -368,7 +340,7 @@ Run:
 TMPDIR="$PWD/data/scratch/card-publish-tests" UV_CACHE_DIR="$PWD/data/cache/uv" UV_LINK_MODE=copy uv run --no-sync pytest tests/unit/test_card.py tests/unit/test_publish.py -q
 ```
 
-Expected: all tests pass, including the map link and publisher call.
+Expected: all tests pass, with the map link and the publisher call.
 
 - [ ] **Step 6: Commit the implementation and tests.**
 
@@ -387,8 +359,7 @@ git commit -m "feat: add worldcover centroid coverage map"
 
 - [ ] **Step 1: Run the full local release-card generation through the publisher.**
 
-Use the project-scoped cache and token already used for the existing public
-release:
+Use the project-scoped cache and the token that the existing public release already uses:
 
 ```bash
 mkdir -p data/scratch/worldcover-map-publish
@@ -401,17 +372,13 @@ HF_HUB_DISABLE_PROGRESS_BARS=1 \
 uv run owc publish data/out/v1.0.0 NoeFlandre/osm-wikidata-worldcover
 ```
 
-Expected: the command writes a non-empty PNG, rewrites the card with the image
-section, and uploads the folder without changing any Parquet bytes.
+Expected: the command writes a non-empty PNG, rewrites the card with the image section and uploads the folder. No Parquet byte changes.
 
 - [ ] **Step 2: Inspect the generated map.**
 
-Open `data/out/v1.0.0/worldcover_centroids.png` in the image viewer and check
-that the world outline, global point coverage, class colors, legend, and
-centroid caption are legible. Check the generated README contains exactly one
-`worldcover_centroids.png` image link.
+Open `data/out/v1.0.0/worldcover_centroids.png` in the image viewer. Check that these items are legible: the world outline, the global point coverage, the class colors, the legend and the centroid caption. Check that the generated README contains exactly one `worldcover_centroids.png` image link.
 
-- [ ] **Step 3: Confirm the public Hub tree contains the map asset.**
+- [ ] **Step 3: Confirm that the public Hub tree contains the map asset.**
 
 Run:
 
@@ -419,34 +386,27 @@ Run:
 HF_TOKEN="$(< /Users/noeflandre/.cache/huggingface/token)" HF_HOME="$PWD/data/cache/hf" hf datasets info NoeFlandre/osm-wikidata-worldcover --expand siblings
 ```
 
-Expected: `README.md`, `worldcover_centroids.png`, `manifest.json`, and the
-three Parquets are present; no split or schema file has been added.
+Expected: `README.md`, `worldcover_centroids.png`, `manifest.json` and the three Parquets are present. The build added no split file and no schema file.
 
-- [ ] **Step 4: Rewrite any release file that hits the Viewer scan limit.**
+- [ ] **Step 4: Rewrite any release file that reaches the Viewer scan limit.**
 
-If Viewer processing reports `TooBigContentError`, stream each affected
-release Parquet through `ParquetFile.iter_batches(batch_size=25_000)` into a
-temporary file using the same compression, page-index, and row-group settings
-as `write_batches()`. Verify row counts and the row-group cap before atomically
-replacing the exact release file, then re-run `/first-rows` and `/rows` for
-every split before considering publication complete.
+If Viewer processing reports `TooBigContentError`, stream each affected release Parquet through `ParquetFile.iter_batches(batch_size=25_000)` into a temporary file. Use the same compression, page-index and row-group settings as `write_batches()`. Verify the row counts and the row-group cap. Then atomically replace the exact release file. Run `/first-rows` and `/rows` again for each split. Only then is the publication complete.
 
 ## Task 5: Verify the public Dataset Viewer and final quality gates
 
 **Files:**
-- No source changes; inspect the public dataset and repository state.
+- No source changes. Inspect the public dataset and the repository state.
 
 - [ ] **Step 1: Check Dataset Viewer validity and split metadata.**
 
-Query these public endpoints, saving JSON under `data/scratch/worldcover-map-publish`:
+Query these public endpoints. Save the JSON under `data/scratch/worldcover-map-publish`:
 
 ```bash
 curl -fsS "https://datasets-server.huggingface.co/is-valid?dataset=NoeFlandre%2Fosm-wikidata-worldcover"
 curl -fsS "https://datasets-server.huggingface.co/splits?dataset=NoeFlandre%2Fosm-wikidata-worldcover"
 ```
 
-Expected: validity is successful, the default config exposes exactly `train`,
-`validation`, and `test`, and none is marked pending or failed.
+Expected: the validity is successful. The default config shows exactly `train`, `validation` and `test`. None of them is pending or failed.
 
 - [ ] **Step 2: Check rows and schema for every split.**
 
@@ -458,9 +418,7 @@ curl -fsS "https://datasets-server.huggingface.co/rows?dataset=NoeFlandre%2Fosm-
 curl -fsS "https://datasets-server.huggingface.co/statistics?dataset=NoeFlandre%2Fosm-wikidata-worldcover&config=default&split=train"
 ```
 
-Repeat with `validation` and `test`. Assert every response is HTTP 200, has
-non-empty rows, has the expected feature names and scalar values, and reports
-no processing error. Also check the Parquet endpoint returns one URL per split.
+Do the same with `validation` and `test`. Assert that each response has HTTP 200, has non-empty rows, has the expected feature names and scalar values, and reports no processing error. Also check that the Parquet endpoint returns one URL for each split.
 
 - [ ] **Step 3: Run the complete local quality suite.**
 
@@ -473,13 +431,8 @@ TMPDIR="$PWD/data/scratch/worldcover-map-qa" UV_CACHE_DIR="$PWD/data/cache/uv" U
 git diff --check
 ```
 
-Expected: all tests and static checks pass, and `git diff --check` is clean.
+Expected: all tests and static checks pass. `git diff --check` shows no error.
 
 - [ ] **Step 4: Verify release invariants and repository state.**
 
-Compare Parquet SHA-256 hashes before and after publication, confirm the map
-count equals the manifest's distinct polygon total, remove only the task's
-`data/scratch/worldcover-map-publish` and related map-test directories, and run
-`git status --short --branch`. The final report must include the public dataset
-URL, the PNG path, Viewer results for all three splits, test commands, and any
-quality gate that was not run.
+Compare the Parquet SHA-256 hashes before and after publication. Confirm that the map count is equal to the distinct polygon total of the manifest. Remove only the `data/scratch/worldcover-map-publish` directory of this task and the related map-test directories. Run `git status --short --branch`. The final report must include the public dataset URL, the PNG path, the Viewer results for all three splits, the test commands, and any quality gate that the engineer did not run.

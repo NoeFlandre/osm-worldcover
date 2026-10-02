@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the project to `osm-worldcover` and make one reproducible pipeline produce the existing Wikidata WorldCover dataset plus description-tag and website-tag datasets.
+**Goal:** Rename the project to `osm-worldcover`. Make one reproducible pipeline produce the existing Wikidata WorldCover dataset, a description-tag dataset and a website-tag dataset.
 
-**Architecture:** Source recipes normalize each repository into the existing canonical region tables. Pure domain logic and WorldCover processing remain shared; source-specific I/O, geometry decoding, text extraction, card metadata, and HF publication settings stay in adapters/configuration.
+**Architecture:** Source recipes normalize each repository into the existing canonical region tables. The pure domain logic and the WorldCover processing stay shared. The adapters and the configuration keep the source-specific I/O, the geometry decoding, the text extraction, the card metadata and the HF publication settings.
 
 **Tech Stack:** uv, Python 3.12, pandas/GeoPandas/Shapely/PyArrow, Typer, pytest/pytest-bdd/Hypothesis, Ruff, ty, import-linter, CRAP, mutmut, Docker, MkDocs, Hugging Face Hub.
 
@@ -17,8 +17,8 @@
 - Modify: `tests/unit/test_hub.py`
 - Modify: `tests/unit/test_config.py`
 
-- [x] Add failing tests for the three source recipes, source-specific region paths, description WKB normalization, localized descriptions, and website/contact documents.
-- [x] Run the focused tests and confirm they fail because the generic source contract is absent.
+- [x] Add failing tests for the three source recipes, the source-specific region paths, the description WKB normalization, the localized descriptions, and the website/contact documents.
+- [x] Run the focused tests. Confirm that they fail because the generic source contract does not exist.
 
 ### Task 2: Implement the generic source registry and adapters
 
@@ -32,8 +32,8 @@
 
 - [x] Add named recipes with source dataset IDs and derived output IDs.
 - [x] Normalize each source into canonical polygon/link/document tables.
-- [x] Make region discovery, download, cleanup, and build orchestration recipe-aware.
-- [x] Run the focused tests and confirm they pass.
+- [x] Make the region discovery, the download, the cleanup and the build orchestration recipe-aware.
+- [x] Run the focused tests. Confirm that they pass.
 
 ### Task 3: Generalize cards and publication metadata
 
@@ -44,7 +44,7 @@
 - Modify: `tests/unit/test_card.py`
 - Modify: `tests/unit/test_publish.py`
 
-- [x] Generate source-specific titles, load instructions, provenance links, tags, and licensing caveats while retaining the map and deterministic named examples.
+- [x] Generate the source-specific titles, load instructions, provenance links, tags and licensing caveats. Keep the map and the deterministic named examples.
 - [x] Test all three card recipes and the generic publication commit message.
 
 ### Task 4: Rename the repository/package and user-facing surfaces
@@ -53,13 +53,13 @@
 - Rename: `src/osm_worldcover/` to `src/osm_worldcover/`
 - Modify: `pyproject.toml`, `uv.lock`, `.importlinter`, `README.md`, `docs/`, `Dockerfile`, `.github/workflows/ci.yml`, and all tests/imports.
 
-- [x] Rename package, distribution, CLI, Docker image, docs, badges, and GitHub links to `osm-worldcover`; retain only the historical Wikidata HF dataset ID where required.
-- [x] Regenerate the lockfile and run packaging/import smoke tests.
+- [x] Rename the package, the distribution, the CLI, the Docker image, the docs, the badges and the GitHub links to `osm-worldcover`. Keep the historical Wikidata HF dataset ID only where it is necessary.
+- [x] Regenerate the lockfile. Run the packaging and import smoke tests.
 
 ### Task 5: Full verification and publication
 
-- [ ] Run baseline → Ruff → ty → unit/property/acceptance tests → architecture → CRAP → mutation → Docker smoke → diff review.
-- [ ] Build representative deterministic releases for all three recipes and inspect cards/maps/Parquet schemas.
-- [ ] Rename the GitHub repository and update the remote.
+- [ ] Run these checks in order: baseline, Ruff, ty, unit/property/acceptance tests, architecture, CRAP, mutation, Docker smoke, diff review.
+- [ ] Build representative deterministic releases for all three recipes. Inspect the cards, the maps and the Parquet schemas.
+- [ ] Rename the GitHub repository. Update the remote.
 - [ ] Create and publish the two new public HF dataset repositories.
-- [ ] Verify each Dataset Viewer config/split/rows/schema and verify the existing Wikidata HF dataset was not modified.
+- [ ] Verify the Dataset Viewer config, split, rows and schema of each repository. Verify that the existing Wikidata HF dataset has no change.
