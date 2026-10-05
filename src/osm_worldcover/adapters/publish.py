@@ -7,7 +7,6 @@ upload request finished. The local receipt is never part of the upload.
 
 import hashlib
 import json
-import re
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from osm_worldcover.adapters.audit import audit_build
 from osm_worldcover.adapters.coverage_map import MAP_FILENAME, write_coverage_map
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.manifest import SPLIT_ORDER
+from osm_worldcover.domain.revision import is_full_revision
 
 __all__ = ["PublicationError", "files_to_publish", "publish_dataset"]
 
@@ -172,7 +172,7 @@ def _write_checksums(build_dir: Path, fingerprints: dict[str, _Fingerprint]) -> 
 
 def _commit_oid(commit: Any) -> str:
     oid = getattr(commit, "oid", None)
-    if not isinstance(oid, str) or not re.fullmatch(r"[0-9a-f]{40}", oid):
+    if not is_full_revision(oid):
         raise PublicationError("Upload returned no immutable commit SHA; publication is unverified")
     return oid
 

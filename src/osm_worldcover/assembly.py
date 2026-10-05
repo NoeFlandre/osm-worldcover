@@ -1,7 +1,6 @@
 """Assemble only byte-verified, context-compatible region completions."""
 
 import json
-import re
 import shutil
 from collections import Counter
 from collections.abc import Iterator
@@ -13,6 +12,7 @@ from osm_worldcover.accounting import BuildContext, processing_ledger
 from osm_worldcover.adapters import hub
 from osm_worldcover.build import ShardStore
 from osm_worldcover.config import DEDUPLICATION_POLICY, Config
+from osm_worldcover.domain.revision import is_full_revision
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,9 +146,7 @@ def _receipt_code_revision(
     revision = context.document.get("code_revision")
     if revision is None:
         revision = legacy_code_revision
-    if revision is not None and (
-        not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None
-    ):
+    if revision is not None and (not is_full_revision(revision)):
         raise ValueError(f"{stem}: code revision must be a full 40-character commit")
     return revision
 
