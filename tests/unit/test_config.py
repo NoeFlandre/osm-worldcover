@@ -105,3 +105,10 @@ def test_manifest_settings_expose_every_knob_that_changes_the_data() -> None:
     assert settings["dominance_threshold"] == 0.8
     assert settings["split_ratios"] == {"train": 0.8, "validation": 0.1, "test": 0.1}
     assert settings["worldcover_version"] == "v200"
+
+
+def test_invalid_min_words_message_names_the_constraint() -> None:
+    with pytest.raises(
+        ValueError, match=r"^min_words must be a positive integer or null for the source default$"
+    ):
+        Config(min_words=0)
