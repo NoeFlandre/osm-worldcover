@@ -93,10 +93,8 @@ do_not_mutate = [
 	"*/adapters/hub.py",
 	"*/adapters/publish.py",
 	"*/adapters/source.py",
-	"*/adapters/source_profiles.py",
 	"*/adapters/writer.py",
     "*/cli.py",
-    "*/config.py",
     # card.py is a prose template. Its mutants rewrite headings, URLs and join
     # separators, which changes the wording of a README and nothing else; the
     # card's actual behaviour is asserted in tests/unit/test_card.py.
