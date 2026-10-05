@@ -26,6 +26,7 @@ from osm_worldcover.config import DEDUPLICATION_POLICY
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
 from osm_worldcover.domain.revision import is_full_revision, is_optional_revision
 from osm_worldcover.domain.splits import SplitRatios, assign_cell
+from osm_worldcover.domain.text_diagnostics import group_counts_sql, retained_text_counts
 
 __all__ = ["AuditProblem", "AuditReport", "audit_build"]
 
@@ -805,38 +806,10 @@ def _check_text_diagnostics(connection, manifest, checks) -> None:
 
 def _retained_text_diagnostics(connection) -> dict[str, int]:
     label = connection.execute(
-        """
-        WITH grouped AS (
-            SELECT text_hash, worldcover_code, count(*) AS row_count,
-                   count(DISTINCT split) AS split_count
-            FROM hashes GROUP BY text_hash, worldcover_code
-        )
-        SELECT count(*) FILTER (WHERE row_count > 1),
-               coalesce(sum(row_count) FILTER (WHERE row_count > 1), 0),
-               count(*) FILTER (WHERE row_count > 1 AND split_count > 1),
-               coalesce(sum(row_count) FILTER (WHERE row_count > 1 AND split_count > 1), 0)
-        FROM grouped
-        """
+        group_counts_sql("hashes", ["text_hash", "worldcover_code"])
     ).fetchone()
-    text = connection.execute(
-        """
-        WITH grouped AS (
-            SELECT text_hash, count(*) AS row_count, count(DISTINCT split) AS split_count
-            FROM hashes GROUP BY text_hash
-        )
-        SELECT count(*) FILTER (WHERE split_count > 1),
-               coalesce(sum(row_count) FILTER (WHERE split_count > 1), 0)
-        FROM grouped
-        """
-    ).fetchone()
-    return {
-        "retained_identical_text_label_groups": int(label[0]),
-        "retained_identical_text_label_rows": int(label[1]),
-        "retained_identical_text_label_cross_split_groups": int(label[2]),
-        "retained_identical_text_label_cross_split_rows": int(label[3]),
-        "identical_text_cross_split_groups": int(text[0]),
-        "identical_text_cross_split_rows": int(text[1]),
-    }
+    text = connection.execute(group_counts_sql("hashes", ["text_hash"])).fetchone()
+    return retained_text_counts(label, text)
 
 
 def _check_distributions(connection, manifest, checks) -> None:
