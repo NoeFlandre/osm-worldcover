@@ -89,33 +89,18 @@ def test_blocks_include_nested_classes_local_classes_and_async_functions(tmp_pat
     assert len({(block["path"], block["lineno"]) for block in blocks}) == len(blocks)
 
 
-def test_callable_complexity_does_not_include_nested_bodies(tmp_path) -> None:
+def test_callable_complexity_and_type_exclude_nested_bodies(tmp_path) -> None:
     blocks = _nested_blocks(tmp_path)
-    complexities = {block["qualified_name"]: block["complexity"] for block in blocks}
+    actual = {block["qualified_name"]: (block["complexity"], block["type"]) for block in blocks}
 
-    assert complexities == {
-        "Outer.Inner.compute": 2,
-        "Outer.outer_method": 1,
-        "Outer.outer_method.inner": 2,
-        "factory": 1,
-        "factory.Local.compute": 2,
-        "factory.Local.Deep.measure": 2,
-        "factory.nested_async": 2,
-    }
-
-
-def test_blocks_distinguish_methods_from_nested_functions(tmp_path) -> None:
-    blocks = _nested_blocks(tmp_path)
-    callable_types = {block["qualified_name"]: block["type"] for block in blocks}
-
-    assert callable_types == {
-        "Outer.Inner.compute": "method",
-        "Outer.outer_method": "method",
-        "Outer.outer_method.inner": "function",
-        "factory": "function",
-        "factory.Local.compute": "method",
-        "factory.Local.Deep.measure": "method",
-        "factory.nested_async": "function",
+    assert actual == {
+        "Outer.Inner.compute": (2, "method"),
+        "Outer.outer_method": (1, "method"),
+        "Outer.outer_method.inner": (2, "function"),
+        "factory": (1, "function"),
+        "factory.Local.compute": (2, "method"),
+        "factory.Local.Deep.measure": (2, "method"),
+        "factory.nested_async": (2, "function"),
     }
 
 

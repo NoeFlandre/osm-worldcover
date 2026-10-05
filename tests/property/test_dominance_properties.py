@@ -25,10 +25,6 @@ def _assert_accepted_decision(outcome, threshold: float) -> None:
     assert outcome.reason is None
 
 
-def _assert_rejected_decision(outcome) -> None:
-    assert outcome.reason is not None
-
-
 def _dominant_winners(fractions: dict[int, float], threshold: float) -> list[int]:
     return [
         code
@@ -73,7 +69,10 @@ def test_acceptance_implies_a_valid_class_at_or_above_threshold(case, threshold)
     if outcome.accepted:
         _assert_accepted_decision(outcome, threshold)
     else:
-        _assert_rejected_decision(outcome)
+        assert outcome.reason in {
+            RejectionReason.NO_VALID_CLASS,
+            RejectionReason.BELOW_THRESHOLD,
+        }
 
 
 @given(coverage(), thresholds)
@@ -83,19 +82,25 @@ def test_rejection_reason_matches_the_state_it_describes(case, threshold) -> Non
     _assert_rejection_reason(outcome, threshold)
 
 
-def _assert_rejection_reason(outcome, threshold: float) -> None:
-    if outcome.reason is RejectionReason.NO_VALID_CLASS:
-        _assert_no_valid_class(outcome)
-    elif outcome.reason is RejectionReason.BELOW_THRESHOLD:
-        _assert_below_threshold(outcome, threshold)
-
-
-def _assert_no_valid_class(outcome) -> None:
+def _assert_no_valid_class(outcome, threshold: float) -> None:
     assert outcome.code is None
 
 
 def _assert_below_threshold(outcome, threshold: float) -> None:
-    assert (outcome.code is not None, outcome.fraction < threshold) == (True, True)
+    assert outcome.code is not None
+    assert outcome.fraction < threshold
+
+
+_REASON_CHECKS = {
+    RejectionReason.NO_VALID_CLASS: _assert_no_valid_class,
+    RejectionReason.BELOW_THRESHOLD: _assert_below_threshold,
+}
+
+
+def _assert_rejection_reason(outcome, threshold: float) -> None:
+    check = _REASON_CHECKS.get(outcome.reason)
+    if check is not None:
+        check(outcome, threshold)
 
 
 @given(coverage(), thresholds)
