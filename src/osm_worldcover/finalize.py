@@ -33,6 +33,7 @@ from osm_worldcover.domain import manifest as manifest_module
 from osm_worldcover.domain.manifest import DatasetCounts, GeographicCoverage
 from osm_worldcover.domain.splits import SplitRatios, assign_cell, cell_for
 from osm_worldcover.domain.text import dedup_key, word_count
+from osm_worldcover.domain.text_diagnostics import group_counts_sql, retained_text_counts
 from osm_worldcover.domain.validation import (
     REQUIRED_COLUMNS,
     ValidationReport,
@@ -296,40 +297,18 @@ def _deduplication_analysis(connection: Any) -> dict[str, Any]:
 
 def _retained_text_diagnostics(connection: Any) -> dict[str, int]:
     """Count repeated text that remains, including text shared across splits."""
-    label_groups = connection.execute(
-        """
-        WITH grouped AS (
-            SELECT _dedup_key, count(*) AS row_count, count(DISTINCT split) AS split_count
-            FROM kept GROUP BY _dedup_key
-        )
-        SELECT count(*), coalesce(sum(row_count), 0),
-               count(*) FILTER (WHERE split_count > 1),
-               coalesce(sum(row_count) FILTER (WHERE split_count > 1), 0)
-        FROM grouped WHERE row_count > 1
-        """
-    ).fetchone()
+    label_groups = connection.execute(group_counts_sql("kept", ["_dedup_key"])).fetchone()
     text_groups = connection.execute(
-        r"""
-        WITH normalized AS (
-            SELECT sha256(regexp_replace(trim(text), '\s+', ' ', 'g')) AS text_key, split
-            FROM kept
-        ), grouped AS (
-            SELECT text_key, count(*) AS row_count, count(DISTINCT split) AS split_count
-            FROM normalized GROUP BY text_key
+        group_counts_sql(
+            r"""(
+                SELECT sha256(regexp_replace(trim(text), '\s+', ' ', 'g')) AS text_key,
+                       split
+                FROM kept
+            )""",
+            ["text_key"],
         )
-        SELECT count(*) FILTER (WHERE split_count > 1),
-               coalesce(sum(row_count) FILTER (WHERE split_count > 1), 0)
-        FROM grouped
-        """
     ).fetchone()
-    return {
-        "retained_identical_text_label_groups": int(label_groups[0]),
-        "retained_identical_text_label_rows": int(label_groups[1]),
-        "retained_identical_text_label_cross_split_groups": int(label_groups[2]),
-        "retained_identical_text_label_cross_split_rows": int(label_groups[3]),
-        "identical_text_cross_split_groups": int(text_groups[0]),
-        "identical_text_cross_split_rows": int(text_groups[1]),
-    }
+    return retained_text_counts(label_groups, text_groups)
 
 
 def _write_splits(connection: Any, target: Path) -> tuple[list[Path], int]:
