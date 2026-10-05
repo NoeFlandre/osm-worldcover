@@ -8,7 +8,6 @@ thousands of them.
 
 import json
 import os
-import re
 import shutil
 import tempfile
 from collections import Counter
@@ -34,6 +33,7 @@ from osm_worldcover.adapters import hub
 from osm_worldcover.adapters.source import RegionTables
 from osm_worldcover.adapters.worldcover import WorldCoverTiles
 from osm_worldcover.config import Config
+from osm_worldcover.domain.revision import is_full_revision
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
 from osm_worldcover.pipeline import RegionOutcome, run_region
 from osm_worldcover.sources import DEFAULT_SOURCE, SourceRecipe
@@ -318,7 +318,7 @@ def run_build(
 
 def _resolve_revision(config: Config) -> str:
     revision = config.source_revision
-    if revision is None or re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None:
+    if not is_full_revision(revision, allow_uppercase=True):
         return hub.resolve_revision(config.source_dataset, revision)
     return revision
 

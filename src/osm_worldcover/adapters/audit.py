@@ -24,6 +24,7 @@ import yaml
 
 from osm_worldcover.config import DEDUPLICATION_POLICY
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
+from osm_worldcover.domain.revision import is_full_revision, is_optional_revision
 from osm_worldcover.domain.splits import SplitRatios, assign_cell
 
 __all__ = ["AuditProblem", "AuditReport", "audit_build"]
@@ -221,7 +222,7 @@ def _check_settings(settings: dict[str, Any], checks: _Checks) -> None:
         valid = False
     if not valid:
         checks.add("invalid_settings")
-    if not re.fullmatch(r"[0-9a-f]{40}", str(settings.get("source_revision"))):
+    if not is_full_revision(settings.get("source_revision")):
         checks.add("unpinned_source_revision")
 
 
@@ -328,11 +329,11 @@ def _check_context(ledger: dict, manifest: dict) -> None:
 
 def _check_code_provenance(ledger: dict, context: dict) -> None:
     _require(
-        _is_full_code_revision(ledger["assembly_code_revision"]),
+        is_full_revision(ledger["assembly_code_revision"]),
         "invalid assembly code revision",
     )
     _require(
-        _is_optional_code_revision(context.get("code_revision")),
+        is_optional_revision(context.get("code_revision")),
         "invalid context code revision",
     )
     groups = ledger["code_provenance"]
@@ -347,14 +348,6 @@ def _check_code_provenance(ledger: dict, context: dict) -> None:
             ledger["assembly_code_revision"] == context["code_revision"],
             "assembly code revision differs from the ledger context",
         )
-
-
-def _is_full_code_revision(value: object) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{40}", value) is not None
-
-
-def _is_optional_code_revision(value: object) -> bool:
-    return value is None or _is_full_code_revision(value)
 
 
 def _validated_code_regions(groups: object, repository: str) -> list[str]:
@@ -375,7 +368,7 @@ def _validated_code_group(group: object, expected_repository: str) -> list[str]:
     raw_regions = group.get("regions")
     _require(isinstance(repository, str) and bool(repository), "invalid code repository")
     _require(repository == expected_repository, "code repository differs from the ledger context")
-    _require(_is_full_code_revision(revision), "invalid region code revision")
+    _require(is_full_revision(revision), "invalid region code revision")
     _require(
         isinstance(raw_regions, list) and bool(raw_regions),
         "empty code provenance region group",

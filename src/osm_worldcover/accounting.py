@@ -9,7 +9,6 @@ from complete coverage of the pinned source inventory.
 import hashlib
 import json
 import os
-import re
 import subprocess
 import tempfile
 from collections import Counter
@@ -20,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from osm_worldcover.config import Config
+from osm_worldcover.domain.revision import is_full_revision
 from osm_worldcover.pipeline import OUTPUT_COLUMNS, RegionOutcome
 
 __all__ = [
@@ -35,7 +35,6 @@ __all__ = [
 RECEIPT_VERSION = 1
 PROCESSING_LEDGER_VERSION = 2
 PIPELINE_SCHEMA_VERSION = 3
-_CODE_REVISION = re.compile(r"[0-9a-f]{40}")
 COUNT_FIELDS = (
     "polygons_seen",
     "polygons_invalid",
@@ -59,7 +58,7 @@ def _current_code_revision() -> str | None:
     if status is None or status:
         return None
     revision = _git_output(repository, "rev-parse", "--verify", "HEAD")
-    return revision if _is_code_revision(revision) else None
+    return revision if is_full_revision(revision) else None
 
 
 def _git_output(repository: Path, *arguments: str) -> str | None:
@@ -76,10 +75,6 @@ def _git_output(repository: Path, *arguments: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-def _is_code_revision(value: object) -> bool:
-    return isinstance(value, str) and _CODE_REVISION.fullmatch(value) is not None
-
-
 @dataclass(frozen=True, slots=True)
 class BuildContext:
     """The pinned input, all data-changing settings, and output contract."""
@@ -90,7 +85,7 @@ class BuildContext:
     def from_config(cls, config: Config) -> "BuildContext":
         """Exclude only scratch paths, region selection and cache controls."""
         revision = config.source_revision
-        if not revision or re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None:
+        if not is_full_revision(revision, allow_uppercase=True):
             raise ValueError("completion receipts require a pinned source revision")
         return cls(
             {
@@ -293,7 +288,7 @@ def _validated_assembly_code_revision(
     if revision is None:
         revision = context.document.get("code_revision")
     if revision is not None:
-        if not _is_code_revision(revision):
+        if not is_full_revision(revision):
             raise ValueError("assembly code revision must be a full 40-character commit")
         return revision
     if region_revisions is not None:
@@ -322,7 +317,7 @@ def _context_code_revisions(processed: list[str], context: BuildContext) -> dict
 def _validate_code_revision_inventory(processed: list[str], revisions: Mapping[str, str]) -> None:
     if set(revisions) != set(processed):
         raise ValueError("code revision inventory must match processed regions exactly")
-    if not all(_is_code_revision(revision) for revision in revisions.values()):
+    if not all(is_full_revision(revision) for revision in revisions.values()):
         raise ValueError("region code revisions must be full 40-character commits")
 
 
