@@ -163,3 +163,47 @@ def test_blank_base_and_localized_descriptions_are_not_documents(tmp_path, missi
     assert len(tables.polygons) == 1
     assert tables.documents.empty
     assert tables.links.empty
+
+
+def test_source_url_is_derived_from_the_dataset() -> None:
+    for name in ("wikidata", "description", "website"):
+        recipe = recipe_for(name)
+        assert recipe.source_url == f"https://huggingface.co/datasets/{recipe.source_dataset}"
+
+
+def test_region_paths_are_the_files_each_loader_reads(tmp_path, monkeypatch) -> None:
+    from osm_worldcover.adapters import source as source_module
+
+    for name in ("wikidata", "description", "website"):
+        recipe = recipe_for(name)
+        read: list[str] = []
+
+        def spy(path, columns, read=read):
+            read.append(path.relative_to(tmp_path).as_posix())
+            return pd.DataFrame({column: [] for column in columns})
+
+        monkeypatch.setattr(source_module, "_read", spy)
+        import osm_worldcover.adapters.source_profiles as profiles
+
+        monkeypatch.setattr(profiles, "_read", spy)
+        RegionTables.load(tmp_path, "alpha", recipe)
+
+        assert sorted(read) == sorted(recipe.region_paths("alpha")), name
+
+
+def test_unknown_layout_raises_a_clear_error(tmp_path) -> None:
+    import dataclasses
+
+    recipe = dataclasses.replace(recipe_for("website"), name="bogus")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="no table loader for source layout 'bogus'"):
+        RegionTables.load(tmp_path, "alpha", recipe)
+
+
+def test_unknown_source_lists_the_sorted_choices() -> None:
+    with pytest.raises(ValueError) as error:
+        recipe_for("nope")
+
+    assert str(error.value) == (
+        "unknown source 'nope'; choose one of: description, website, wikidata"
+    )
