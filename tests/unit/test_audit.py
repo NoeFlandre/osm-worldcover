@@ -481,6 +481,29 @@ def test_invalid_settings_report_preserves_the_second_early_return(build):
     }
 
 
+def test_repeated_findings_accumulate_counts_and_keep_five_examples(build):
+    train_path = build / "train.parquet"
+    template = pq.read_table(train_path).to_pylist()[0]
+    invalid_rows = []
+    for index in range(7):
+        row = {
+            **template,
+            "polygon_id": f"place:train-{index}",
+            "document_id": f"doc:train-{index}",
+            "osm_id": 1000 + index,
+            "text": f"tiny {index}",
+            "text_words": 2,
+        }
+        invalid_rows.append(row)
+    pq.write_table(pa.Table.from_pylist(invalid_rows, schema=SCHEMA), train_path)
+
+    report = audit_build(build)
+    finding = next(problem for problem in report.problems if problem.code == "unusable_text")
+
+    assert finding.count == 7
+    assert finding.examples == tuple(f"place:train-{index}" for index in range(5))
+
+
 def test_card_metadata_and_assets_are_audited(build):
     front_matter = _card_front_matter()
     valid_body = (
