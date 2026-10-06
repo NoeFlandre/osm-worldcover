@@ -89,7 +89,6 @@ do_not_mutate = [
 	# mutation-tested with its real-raster regressions. Other adapters are I/O
 	# boundaries whose behavior is covered by focused contract tests.
 	"*/adapters/audit.py",
-	# Only report collection is mutated; audit I/O components stay excluded.
 	"*/adapters/_audit/aggregates.py",
 	"*/adapters/_audit/card.py",
 	"*/adapters/_audit/manifest.py",
