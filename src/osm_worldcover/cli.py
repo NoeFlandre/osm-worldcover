@@ -11,7 +11,15 @@ from osm_worldcover.adapters import hub
 from osm_worldcover.adapters.writer import read_manifest
 from osm_worldcover.assembly import verified_assembly
 from osm_worldcover.build import ShardStore, run_build
-from osm_worldcover.config import Config
+from osm_worldcover.config import (
+    DEFAULT_CACHE_DIR,
+    DEFAULT_CACHED_TILES,
+    DEFAULT_DATASET_VERSION,
+    DEFAULT_MAX_POLYGON_AREA_KM2,
+    DEFAULT_OUT_DIR,
+    DEFAULT_THRESHOLD,
+    Config,
+)
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for
 
@@ -23,12 +31,12 @@ def build(
     source: Annotated[
         str, typer.Option(help="Named input source: wikidata, description, or website.")
     ] = DEFAULT_SOURCE,
-    out: Annotated[Path, typer.Option(help="Directory to write the dataset into.")] = Path(
-        "data/out"
-    ),
-    cache: Annotated[Path, typer.Option(help="Scratch directory for source and tiles.")] = Path(
-        "data/cache"
-    ),
+    out: Annotated[
+        Path, typer.Option(help="Directory to write the dataset into.")
+    ] = DEFAULT_OUT_DIR,
+    cache: Annotated[
+        Path, typer.Option(help="Scratch directory for source and tiles.")
+    ] = DEFAULT_CACHE_DIR,
     region: Annotated[
         list[str] | None, typer.Option(help="Region stem to build; repeatable.")
     ] = None,
@@ -36,21 +44,25 @@ def build(
         Path | None,
         typer.Option(help="File of region stems, one per line; # starts a comment."),
     ] = None,
-    threshold: Annotated[float, typer.Option(help="Minimum dominant-class share.")] = 0.8,
+    threshold: Annotated[
+        float, typer.Option(help="Minimum dominant-class share.")
+    ] = DEFAULT_THRESHOLD,
     max_area_km2: Annotated[
         float, typer.Option(help="Refuse polygons larger than this, in km2.")
-    ] = 10_000.0,
+    ] = DEFAULT_MAX_POLYGON_AREA_KM2,
     revision: Annotated[
         str | None, typer.Option(help="Pin the source dataset to this commit.")
     ] = None,
     cached_tiles: Annotated[
         int,
         typer.Option(help="Released tiles kept on disk (~94 MB each) to avoid re-downloading."),
-    ] = 8,
+    ] = DEFAULT_CACHED_TILES,
     keep_tiles: Annotated[
         bool, typer.Option(help="Keep downloaded tiles instead of discarding them.")
     ] = False,
-    dataset_version: Annotated[str, typer.Option(help="Version of the output.")] = "1.1.0",
+    dataset_version: Annotated[
+        str, typer.Option(help="Version of the output.")
+    ] = DEFAULT_DATASET_VERSION,
 ) -> None:
     """Build the dataset and write it to disk."""
     config = _build_config(
@@ -193,9 +205,9 @@ def _assemble_unverified(
     config = Config(
         source=source if source is not None else DEFAULT_SOURCE,
         out_dir=out,
-        threshold=threshold if threshold is not None else 0.8,
+        threshold=threshold if threshold is not None else DEFAULT_THRESHOLD,
         source_revision=revision,
-        dataset_version=dataset_version if dataset_version is not None else "1.1.0",
+        dataset_version=dataset_version if dataset_version is not None else DEFAULT_DATASET_VERSION,
     )
     combined = _gather(shard_dirs, work)
     return finalize_shards(
@@ -253,12 +265,12 @@ def _build_config(
     dataset_version: str,
 ) -> Config:
     """Gather the CLI's options into one settings object."""
-    return Config(
+    return Config.from_cli(
         source=source,
         out_dir=out,
         cache_dir=cache,
         threshold=threshold,
-        max_polygon_area_m2=max_area_km2 * 1e6,
+        max_area_km2=max_area_km2,
         cached_tiles=cached_tiles,
         source_revision=revision,
         dataset_version=dataset_version,
@@ -311,7 +323,7 @@ def _link_into(combined: Path, directory: Path, prefix: str) -> None:
 @app.command()
 def verify(
     build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")],
-    threshold: Annotated[float, typer.Option()] = 0.8,
+    threshold: Annotated[float, typer.Option()] = DEFAULT_THRESHOLD,
 ) -> None:
     """Re-check a build on disk against every dataset guarantee."""
     from osm_worldcover.domain.validation import validate
