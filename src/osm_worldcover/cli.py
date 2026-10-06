@@ -23,7 +23,7 @@ from osm_worldcover.config import (
 )
 from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
-from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for
+from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -45,15 +45,18 @@ def _fail[**P, R](command: Callable[P, R]) -> Callable[P, R]:
     return wrapper
 
 
+SourceOption = Annotated[
+    str, typer.Option(help=f"Named input source: {', '.join(source_names())}.")
+]
+BuildDirArgument = Annotated[Path, typer.Argument(help="A versioned build directory.")]
+OutOption = Annotated[Path, typer.Option(help="Directory to write the dataset into.")]
+
+
 @app.command()
 @_fail
 def build(
-    source: Annotated[
-        str, typer.Option(help="Named input source: wikidata, description, or website.")
-    ] = DEFAULT_SOURCE,
-    out: Annotated[
-        Path, typer.Option(help="Directory to write the dataset into.")
-    ] = DEFAULT_OUT_DIR,
+    source: SourceOption = DEFAULT_SOURCE,
+    out: OutOption = DEFAULT_OUT_DIR,
     cache: Annotated[
         Path, typer.Option(help="Scratch directory for source and tiles.")
     ] = DEFAULT_CACHE_DIR,
@@ -104,9 +107,7 @@ def _read_regions(path: Path | None) -> list[str]:
 @app.command()
 @_fail
 def regions(
-    source: Annotated[
-        str, typer.Option(help="Named input source: wikidata, description, or website.")
-    ] = DEFAULT_SOURCE,
+    source: SourceOption = DEFAULT_SOURCE,
     revision: Annotated[
         str | None, typer.Option(help="Source commit to list; resolve the current head if omitted.")
     ] = None,
@@ -129,9 +130,7 @@ def assemble(
     shard_dirs: Annotated[
         list[Path], typer.Argument(help="Directories of region shards to combine.")
     ],
-    out: Annotated[Path, typer.Option(help="Directory to write the dataset into.")] = (
-        DEFAULT_OUT_DIR
-    ),
+    out: OutOption = DEFAULT_OUT_DIR,
     source: Annotated[
         str | None, typer.Option(help="Require this source; otherwise use verified receipts.")
     ] = None,
@@ -345,7 +344,7 @@ def _link_into(combined: Path, directory: Path, prefix: str) -> None:
 @app.command()
 @_fail
 def verify(
-    build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")],
+    build_dir: BuildDirArgument,
     threshold: Annotated[
         float, typer.Option(help="Minimum dominant-class fraction every row must meet.")
     ] = DEFAULT_THRESHOLD,
@@ -403,7 +402,7 @@ def _split_rows(paths: list[Path], columns: tuple[str, ...]) -> Iterator[dict[st
 @app.command()
 @_fail
 def publish(
-    build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")],
+    build_dir: BuildDirArgument,
     repo_id: Annotated[str, typer.Argument(help="Target dataset repo, e.g. user/name.")],
     private: Annotated[bool, typer.Option(help="Create the dataset private.")] = False,
 ) -> None:
@@ -456,7 +455,7 @@ def _print_audit_report(report) -> None:
 
 @app.command()
 @_fail
-def info(build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")]) -> None:
+def info(build_dir: BuildDirArgument) -> None:
     """Summarise a build's manifest."""
     manifest = read_manifest(build_dir)
     counts = manifest["counts"]["examples"]
