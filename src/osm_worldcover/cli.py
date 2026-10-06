@@ -1,7 +1,8 @@
 """Command line interface."""
 
+import functools
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -26,7 +27,25 @@ from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for
 app = typer.Typer(add_completion=False, help=__doc__)
 
 
+def _fail[**P, R](command: Callable[P, R]) -> Callable[P, R]:
+    """Turn expected failures into a clean message and exit code 1, not a traceback."""
+
+    @functools.wraps(command)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return command(*args, **kwargs)
+        except KeyError as error:
+            typer.echo(f"error: missing key {error}", err=True)
+            raise typer.Exit(1) from error
+        except (OSError, ValueError) as error:
+            typer.echo(f"error: {error}", err=True)
+            raise typer.Exit(1) from error
+
+    return wrapper
+
+
 @app.command()
+@_fail
 def build(
     source: Annotated[
         str, typer.Option(help="Named input source: wikidata, description, or website.")
@@ -82,6 +101,7 @@ def _read_regions(path: Path | None) -> list[str]:
 
 
 @app.command()
+@_fail
 def regions(
     source: Annotated[
         str, typer.Option(help="Named input source: wikidata, description, or website.")
@@ -103,6 +123,7 @@ def regions(
 
 
 @app.command()
+@_fail
 def assemble(
     shard_dirs: Annotated[
         list[Path], typer.Argument(help="Directories of region shards to combine.")
@@ -321,6 +342,7 @@ def _link_into(combined: Path, directory: Path, prefix: str) -> None:
 
 
 @app.command()
+@_fail
 def verify(
     build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")],
     threshold: Annotated[float, typer.Option()] = DEFAULT_THRESHOLD,
@@ -374,6 +396,7 @@ def _split_rows(paths: list[Path], columns: tuple[str, ...]) -> Iterator[dict[st
 
 
 @app.command()
+@_fail
 def publish(
     build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")],
     repo_id: Annotated[str, typer.Argument(help="Target dataset repo, e.g. user/name.")],
@@ -387,6 +410,7 @@ def publish(
 
 
 @app.command()
+@_fail
 def audit(
     build_dir: Annotated[Path, typer.Argument(help="A versioned release directory.")],
     require_complete: Annotated[
@@ -426,6 +450,7 @@ def _print_audit_report(report) -> None:
 
 
 @app.command()
+@_fail
 def info(build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")]) -> None:
     """Summarise a build's manifest."""
     manifest = read_manifest(build_dir)

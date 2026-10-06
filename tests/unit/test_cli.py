@@ -902,3 +902,45 @@ def test_assemble_rejects_damaged_or_incomplete_receipts(tmp_path, monkeypatch, 
     assert outcome.exit_code == 1
     assert "unverifiable" in outcome.output
     assert not (tmp_path / "out").exists()
+
+
+def test_build_with_missing_regions_file_exits_cleanly(tmp_path) -> None:
+    result = runner.invoke(cli.app, ["build", "--regions-file", str(tmp_path / "nope.txt")])
+    assert result.exit_code == 1
+    assert "error:" in result.output
+    assert not isinstance(result.exception, OSError)
+
+
+def test_build_with_unknown_source_exits_cleanly(tmp_path) -> None:
+    result = runner.invoke(cli.app, ["build", "--source", "bogus", "--out", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "error:" in result.output
+
+
+def test_info_without_manifest_exits_cleanly(tmp_path) -> None:
+    result = runner.invoke(cli.app, ["info", str(tmp_path / "missing")])
+    assert result.exit_code == 1
+    assert "error:" in result.output
+
+
+def test_info_with_incomplete_manifest_exits_cleanly(tmp_path) -> None:
+    (tmp_path / "manifest.json").write_text("{}")
+    result = runner.invoke(cli.app, ["info", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "missing key" in result.output
+
+
+def test_audit_os_error_exits_cleanly(tmp_path, monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise OSError("disk unreadable")
+
+    monkeypatch.setattr("osm_worldcover.adapters.audit.audit_build", boom)
+    result = runner.invoke(cli.app, ["audit", str(tmp_path / "missing")])
+    assert result.exit_code == 1
+    assert "error:" in result.output
+
+
+def test_publish_on_missing_directory_exits_cleanly(tmp_path) -> None:
+    result = runner.invoke(cli.app, ["publish", str(tmp_path / "missing"), "user/name"])
+    assert result.exit_code == 1
+    assert "error:" in result.output
