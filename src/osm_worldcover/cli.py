@@ -107,14 +107,14 @@ def assemble(
     shard_dirs: Annotated[
         list[Path], typer.Argument(help="Directories of region shards to combine.")
     ],
-    out: Annotated[Path, typer.Option(help="Directory to write the dataset into.")] = Path(
-        "data/out"
+    out: Annotated[Path, typer.Option(help="Directory to write the dataset into.")] = (
+        DEFAULT_OUT_DIR
     ),
     source: Annotated[
         str | None, typer.Option(help="Require this source; otherwise use verified receipts.")
     ] = None,
-    work: Annotated[Path, typer.Option(help="Scratch directory for assembly.")] = Path(
-        "data/cache/assembly"
+    work: Annotated[Path, typer.Option(help="Scratch directory for assembly.")] = (
+        DEFAULT_CACHE_DIR / "assembly"
     ),
     threshold: Annotated[
         float | None, typer.Option(help="Require this dominance threshold in the receipts.")

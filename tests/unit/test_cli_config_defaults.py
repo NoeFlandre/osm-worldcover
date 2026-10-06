@@ -54,3 +54,10 @@ def test_from_cli_converts_square_kilometres_to_square_metres() -> None:
     config = Config.from_cli(max_area_km2=2.5, threshold=0.9)
 
     assert (config.max_polygon_area_m2, config.threshold) == (2_500_000.0, 0.9)
+
+
+def test_assemble_defaults_derive_from_config_and_are_unchanged() -> None:
+    defaults = _defaults("assemble")
+
+    assert defaults["out"] == Config().out_dir == Path("data/out")
+    assert defaults["work"] == Config().cache_dir / "assembly" == Path("data/cache/assembly")
