@@ -323,7 +323,9 @@ def _link_into(combined: Path, directory: Path, prefix: str) -> None:
 @app.command()
 def verify(
     build_dir: Annotated[Path, typer.Argument(help="A versioned build directory.")],
-    threshold: Annotated[float, typer.Option()] = DEFAULT_THRESHOLD,
+    threshold: Annotated[
+        float, typer.Option(help="Minimum dominant-class fraction every row must meet.")
+    ] = DEFAULT_THRESHOLD,
 ) -> None:
     """Re-check a build on disk against every dataset guarantee."""
     from osm_worldcover.domain.validation import validate
