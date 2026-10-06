@@ -20,6 +20,7 @@ from osm_worldcover.config import (
     DEFAULT_THRESHOLD,
     Config,
 )
+from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for
 
@@ -333,7 +334,9 @@ def verify(
         typer.echo(f"no splits found in {build_dir}", err=True)
         raise typer.Exit(1)
     settings = _verification_settings(build_dir)
-    report = validate(rows, threshold=threshold, min_words=settings.get("min_words", 10))
+    report = validate(
+        rows, threshold=threshold, min_words=settings.get("min_words", DEFAULT_MIN_WORDS)
+    )
     typer.echo(f"rows: {report.rows:,}")
     if report.ok:
         typer.echo("OK: every guarantee holds")
