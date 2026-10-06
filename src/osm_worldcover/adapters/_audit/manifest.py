@@ -25,7 +25,6 @@ def _load_manifest(build_dir: Path, checks: _Checks) -> dict[str, Any] | None:
 
 
 def _valid_manifest_shape(manifest: dict) -> bool:
-    """Reject malformed JSON structures before row and aggregate checks."""
     required = ("settings", "counts", "geographic_coverage", "dominant_fraction")
     optional = ("processing", "deduplication_analysis")
     distributions = ("class_distribution", "language_distribution")
@@ -222,7 +221,6 @@ def _matches_processed_regions(regions: list[str], processed: list[str]) -> bool
 
 
 def _processing_settings_match(processing: dict, release: dict) -> bool:
-    """Ignore fields assigned only when labelled shards become a release."""
     finalization_settings = {"dataset_version", "code_repository", "deduplication_policy"}
     keys = (set(processing) | set(release)) - finalization_settings
     return all(processing.get(key) == release.get(key) for key in keys)
@@ -305,7 +303,6 @@ def _check_deduplication_totals(ledger: dict, manifest: dict) -> None:
 
 
 def _check_deduplication_analysis(drops: dict, analysis: dict) -> None:
-    """Reconcile record-level removals and retained-text diagnostics."""
     if not analysis:
         return
     _check_deduplication_counters(analysis)

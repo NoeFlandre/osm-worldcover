@@ -95,7 +95,6 @@ def _check_manifest(connection, manifest, checks) -> None:
 
 
 def _check_text_diagnostics(connection, manifest, checks) -> None:
-    """Reconcile retained text-collision counts with the published rows."""
     analysis = manifest.get("deduplication_analysis", {})
     if not analysis:
         return
