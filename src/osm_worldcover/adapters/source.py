@@ -9,6 +9,7 @@ a separate concern (see :mod:`osm_worldcover.adapters.hub`), which
 keeps this module usable against a fixture directory in tests.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Self
@@ -20,10 +21,19 @@ from osm_worldcover.adapters.source_profiles import (
     DOCUMENT_COLUMNS,
     LINK_COLUMNS,
     POLYGON_COLUMNS,
+    NormalizedRegion,
     load_description_region,
     load_website_region,
 )
-from osm_worldcover.sources import DEFAULT_SOURCE, SourceRecipe, recipe_for
+from osm_worldcover.sources import (
+    DEFAULT_SOURCE,
+    DOCUMENT_PROJECTS,
+    DOCUMENTS_DIR,
+    LINKS_DIR,
+    POLYGONS_DIR,
+    SourceRecipe,
+    recipe_for,
+)
 
 __all__ = [
     "DOCUMENT_COLUMNS",
@@ -36,7 +46,7 @@ __all__ = [
 ]
 
 #: The two text corpora the source links polygons to.
-PROJECTS: Final[tuple[str, ...]] = ("wikipedia", "wikivoyage")
+PROJECTS: Final[tuple[str, ...]] = DOCUMENT_PROJECTS
 
 
 def region_stems(root: Path, source: str | SourceRecipe = DEFAULT_SOURCE) -> list[str]:
@@ -48,12 +58,12 @@ def region_stems(root: Path, source: str | SourceRecipe = DEFAULT_SOURCE) -> lis
 
 def load_polygons(root: Path, stem: str) -> pd.DataFrame:
     """Load one region's polygon table."""
-    return _read(root / "polygons" / f"{stem}.parquet", POLYGON_COLUMNS)
+    return _read(root / POLYGONS_DIR / f"{stem}.parquet", POLYGON_COLUMNS)
 
 
 def load_links(root: Path, stem: str) -> pd.DataFrame:
     """Load one region's polygon-document links."""
-    return _read(root / "polygon_document_links" / f"{stem}.parquet", LINK_COLUMNS)
+    return _read(root / LINKS_DIR / f"{stem}.parquet", LINK_COLUMNS)
 
 
 def load_documents(root: Path, stem: str, project: str) -> pd.DataFrame:
@@ -62,7 +72,7 @@ def load_documents(root: Path, stem: str, project: str) -> pd.DataFrame:
     Returns an empty, correctly shaped frame when the region has no sidecar for
     that project, which is the normal case for Wikivoyage.
     """
-    return _read(root / project / "documents" / f"{stem}.parquet", DOCUMENT_COLUMNS)
+    return _read(root / project / DOCUMENTS_DIR / f"{stem}.parquet", DOCUMENT_COLUMNS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,24 +88,46 @@ class RegionTables:
     def load(cls, root: Path, stem: str, source: str | SourceRecipe = DEFAULT_SOURCE) -> Self:
         """Read every table for ``stem``, with both text projects concatenated."""
         recipe = _recipe(source)
-        if recipe.layout == "description":
-            normalized = load_description_region(root, stem)
-            return cls(stem, normalized.polygons, normalized.links, normalized.documents)
-        if recipe.layout == "website":
-            normalized = load_website_region(root, stem)
-            return cls(stem, normalized.polygons, normalized.links, normalized.documents)
+        try:
+            loader = _LOADERS[recipe.name]
+        except KeyError:
+            raise ValueError(f"no table loader for source layout {recipe.name!r}") from None
+        polygons, links, documents = loader(root, stem)
+        return cls(stem, polygons, links, documents)
 
-        frames = []
-        for project in PROJECTS:
-            frame = load_documents(root, stem, project)
-            frame["project"] = project
-            frames.append(frame)
-        return cls(
-            stem=stem,
-            polygons=load_polygons(root, stem),
-            links=load_links(root, stem),
-            documents=pd.concat(frames, ignore_index=True),
-        )
+
+_Tables = tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
+
+
+def _load_wikidata(root: Path, stem: str) -> _Tables:
+    """Read the Wikidata layout, concatenating both text projects."""
+    frames = []
+    for project in PROJECTS:
+        frame = load_documents(root, stem, project)
+        frame["project"] = project
+        frames.append(frame)
+    return (
+        load_polygons(root, stem),
+        load_links(root, stem),
+        pd.concat(frames, ignore_index=True),
+    )
+
+
+def _normalized(loader: Callable[[Path, str], NormalizedRegion]) -> Callable[[Path, str], _Tables]:
+    """Adapt a source-profile loader to the common table-triple shape."""
+
+    def load(root: Path, stem: str) -> _Tables:
+        region = loader(root, stem)
+        return region.polygons, region.links, region.documents
+
+    return load
+
+
+_LOADERS: Final[dict[str, Callable[[Path, str], _Tables]]] = {
+    "wikidata": _load_wikidata,
+    "description": _normalized(load_description_region),
+    "website": _normalized(load_website_region),
+}
 
 
 def _recipe(source: str | SourceRecipe) -> SourceRecipe:
