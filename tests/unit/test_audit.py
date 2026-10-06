@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import pickle
 from collections import Counter
 
 import h3
@@ -30,7 +31,39 @@ SETTINGS = {
     "max_polygon_area_m2": 1e10,
 }
 TYPES = {"string": pa.string(), "int64": pa.int64(), "double": pa.float64()}
-SCHEMA = pa.schema([(key, TYPES[value]) for key, value in _SCHEMA.items()])
+FIELD_TYPES = {
+    "polygon_id": "string",
+    "osm_type": "string",
+    "region": "string",
+    "name": "string",
+    "wikidata": "string",
+    "document_id": "string",
+    "project": "string",
+    "language": "string",
+    "title": "string",
+    "url": "string",
+    "text": "string",
+    "lead_text": "string",
+    "worldcover_label": "string",
+    "centroid_wkt": "string",
+    "source_pbf": "string",
+    "h3_cell": "string",
+    "split": "string",
+    "dataset_version": "string",
+    "source_dataset": "string",
+    "source_revision": "string",
+    "worldcover_version": "string",
+    "osm_id": "int64",
+    "text_words": "int64",
+    "worldcover_code": "int64",
+    "worldcover_year": "int64",
+    "dominant_fraction": "double",
+    "observed_fraction": "double",
+    "lat": "double",
+    "lon": "double",
+    "polygon_area_m2": "double",
+}
+SCHEMA = pa.schema([(key, TYPES[value]) for key, value in FIELD_TYPES.items()])
 
 
 def rows():
@@ -40,7 +73,7 @@ def rows():
         split = assign_cell(cell).value
         if split in result:
             continue
-        row = dict.fromkeys(_SCHEMA)
+        row = dict.fromkeys(FIELD_TYPES)
         text = f"{split} " + " ".join(["word"] * 12)
         row.update(
             polygon_id=f"place:{split}",
@@ -169,8 +202,13 @@ def test_complete_release_passes_and_report_serializes(build):
     report = audit_build(build, require_complete=True)
     assert report.ok
     assert report.rows == 3
-    assert report.as_dict()["ok"]
+    assert report.as_dict() == {"ok": True, "rows": 3, "problems": [], "warnings": []}
     json.dumps(report.as_dict())
+    assert pickle.loads(pickle.dumps(report)) == report
+
+
+def test_release_fixture_schema_is_independent_and_private_alias_remains_compatible():
+    assert _SCHEMA == FIELD_TYPES
 
 
 def test_complete_release_accepts_partitioned_mixed_code_provenance(build):
@@ -334,6 +372,113 @@ def _card_front_matter() -> str:
 def _write_card_and_map(build, front_matter: str, body: str, image: bytes) -> None:
     (build / "README.md").write_text(f"---\n{front_matter}---\n{body}")
     (build / "worldcover_centroids.png").write_bytes(image)
+
+
+def _mixed_audit_build(build) -> None:
+    train = pq.read_table(build / "train.parquet").to_pylist()[0]
+    mutate(
+        build,
+        "validation",
+        polygon_id=train["polygon_id"],
+        document_id=train["document_id"],
+        h3_cell=train["h3_cell"],
+        text=train["text"],
+    )
+    mutate(build, "test", text=train["text"], worldcover_code=20, worldcover_label="Shrubland")
+
+    path = build / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["counts"]["examples"]["total"] = 2
+    path.write_text(json.dumps(manifest))
+
+    front_matter = _card_front_matter().replace("cc-by-sa-4.0", "cc-by-4.0")
+    _write_card_and_map(
+        build,
+        front_matter,
+        "![map](worldcover_centroids.png)",
+        b"\x89PNG\r\n\x1a\n",
+    )
+
+
+def _reported_problem(code: str, *examples: str) -> dict[str, object]:
+    return {"code": code, "count": 1, "examples": examples}
+
+
+def _mixed_report(strict: bool) -> dict[str, object]:
+    text_hash = "03F27B855A54802390EB41A873CCD28AECDDC6AC25F296AE857D6DDDB86D75F5"
+    cross_split = _reported_problem("identical_text_cross_split", text_hash)
+    conflicting_labels = _reported_problem("identical_text_conflicting_labels", text_hash)
+    problems = [
+        _reported_problem("polygon_id_leakage", "place:train"),
+        _reported_problem("document_id_leakage", "doc:train"),
+        _reported_problem("h3_cell_leakage", "852340b7fffffff"),
+        _reported_problem("inconsistent_polygon", "place:train"),
+        _reported_problem(
+            "duplicate_polygon_text_label_record",
+            f"place:train:{text_hash}:10",
+        ),
+        _reported_problem("card_license_mismatch"),
+        _reported_problem("card_missing_provenance:source_dataset"),
+        _reported_problem("card_missing_provenance:source_revision"),
+        _reported_problem("h3_cell_mismatch", "place:train"),
+        _reported_problem(
+            "manifest_count_mismatch:examples",
+            "{'train': 1, 'validation': 1, 'test': 1, 'total': 3}",
+        ),
+        _reported_problem(
+            "manifest_geographic_coverage_mismatch",
+            "{'h3_cells': 2, 'regions': 1, 'bbox': {'min_lon': -175.0, "
+            "'min_lat': 40.0, 'max_lon': -162.0, 'max_lat': 40.0}}",
+        ),
+        _reported_problem("manifest_mismatch:class_distribution"),
+    ]
+    warnings = [cross_split, conflicting_labels]
+    if strict:
+        problems.insert(5, cross_split)
+        warnings.remove(cross_split)
+    return {"ok": False, "rows": 3, "problems": problems, "warnings": warnings}
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_mixed_release_report_preserves_order_severity_counts_and_examples(build, strict):
+    _mixed_audit_build(build)
+
+    report = audit_build(build, require_card=True, strict_text_leakage=strict)
+
+    assert report.as_dict() == _mixed_report(strict)
+
+
+def test_invalid_settings_report_preserves_the_second_early_return(build):
+    path = build / "manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["settings"]["min_words"] = 0
+    manifest["settings"]["source_revision"] = "un-pinned"
+    manifest.pop("processing")
+    path.write_text(json.dumps(manifest))
+
+    front_matter = _card_front_matter().replace("cc-by-sa-4.0", "cc-by-4.0")
+    _write_card_and_map(
+        build,
+        front_matter,
+        "![map](worldcover_centroids.png)",
+        b"\x89PNG\r\n\x1a\n",
+    )
+
+    report = audit_build(build, require_complete=True, require_card=True)
+
+    assert report.as_dict() == {
+        "ok": False,
+        "rows": 0,
+        "problems": [
+            _reported_problem("card_license_mismatch"),
+            _reported_problem("card_missing_provenance:source_dataset"),
+            _reported_problem("card_missing_provenance:source_revision"),
+            _reported_problem("invalid_settings"),
+            _reported_problem("source_processing_incomplete"),
+            _reported_problem("unpinned_source_revision"),
+        ],
+        "warnings": [],
+    }
 
 
 def test_card_metadata_and_assets_are_audited(build):
