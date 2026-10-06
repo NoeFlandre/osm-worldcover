@@ -8,6 +8,7 @@ built on geometries the source did not actually assert.
 
 import math
 
+from shapely.errors import ShapelyError
 from shapely.geometry.base import BaseGeometry
 
 __all__ = ["AREAL_TYPES", "is_usable_polygon"]
@@ -43,6 +44,6 @@ def _all_finite(geom: BaseGeometry) -> bool:
     """
     try:
         bounds = geom.bounds
-    except Exception:
+    except (AttributeError, ValueError, ShapelyError):
         return False
     return all(math.isfinite(value) for value in bounds)
