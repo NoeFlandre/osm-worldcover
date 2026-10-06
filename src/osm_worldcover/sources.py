@@ -113,3 +113,8 @@ def recipe_for(name: str) -> SourceRecipe:
     except KeyError as error:
         choices = ", ".join(sorted(_RECIPES))
         raise ValueError(f"unknown source {name!r}; choose one of: {choices}") from error
+
+
+def source_names() -> tuple[str, ...]:
+    """Return the registered source names, sorted, for CLI help."""
+    return tuple(sorted(_RECIPES))
