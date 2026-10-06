@@ -15,7 +15,17 @@ from osm_worldcover.domain.dominance import DEFAULT_THRESHOLD
 from osm_worldcover.domain.splits import DEFAULT_RATIOS, DEFAULT_RESOLUTION, DEFAULT_SEED
 from osm_worldcover.sources import DEFAULT_SOURCE, SourceRecipe, recipe_for
 
-__all__ = ["DEFAULT_SOURCE", "DEFAULT_SOURCE_DATASET", "Config"]
+__all__ = [
+    "DEFAULT_CACHED_TILES",
+    "DEFAULT_CACHE_DIR",
+    "DEFAULT_DATASET_VERSION",
+    "DEFAULT_MAX_POLYGON_AREA_KM2",
+    "DEFAULT_OUT_DIR",
+    "DEFAULT_SOURCE",
+    "DEFAULT_SOURCE_DATASET",
+    "DEFAULT_THRESHOLD",
+    "Config",
+]
 
 DEFAULT_SOURCE_DATASET = recipe_for(DEFAULT_SOURCE).source_dataset
 
@@ -28,7 +38,13 @@ DEDUPLICATION_POLICY = "polygon_id+normalized_text+worldcover_code"
 #: the worst case to roughly a second and costs 1,099 of 1,259,424 polygons
 #: (0.087%), which are provinces, countries and continents whose articles
 #: describe history and governance rather than the ground beneath them.
-DEFAULT_MAX_POLYGON_AREA_M2 = 1e10
+DEFAULT_MAX_POLYGON_AREA_KM2 = 10_000.0
+M2_PER_KM2 = 1e6
+DEFAULT_MAX_POLYGON_AREA_M2 = DEFAULT_MAX_POLYGON_AREA_KM2 * M2_PER_KM2
+
+DEFAULT_OUT_DIR = Path("data/out")
+DEFAULT_CACHE_DIR = Path("data/cache")
+DEFAULT_DATASET_VERSION = "1.1.0"
 
 #: Equal-area projection used whenever a real-world area is needed.
 EQUAL_AREA_CRS = "EPSG:6933"
@@ -39,8 +55,8 @@ CODE_REPOSITORY = "https://github.com/NoeFlandre/osm-worldcover"
 class Config:
     """Settings for one dataset build."""
 
-    out_dir: Path = Path("data/out")
-    cache_dir: Path = Path("data/cache")
+    out_dir: Path = DEFAULT_OUT_DIR
+    cache_dir: Path = DEFAULT_CACHE_DIR
 
     worldcover_version: str = "v200"
     worldcover_year: int = 2021
@@ -61,7 +77,7 @@ class Config:
     validation_ratio: float = DEFAULT_RATIOS.validation
     test_ratio: float = DEFAULT_RATIOS.test
 
-    dataset_version: str = "1.1.0"
+    dataset_version: str = DEFAULT_DATASET_VERSION
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -71,6 +87,11 @@ class Config:
             object.__setattr__(self, "source_dataset", recipe_for(self.source).source_dataset)
         if self.min_words is not None:
             _validate_min_words(self.min_words)
+
+    @classmethod
+    def from_cli(cls, *, max_area_km2: float, **options: Any) -> Self:
+        """Build from command-line options, converting the area from km2 to m2."""
+        return cls(max_polygon_area_m2=max_area_km2 * M2_PER_KM2, **options)
 
     @property
     def source_recipe(self) -> SourceRecipe:
