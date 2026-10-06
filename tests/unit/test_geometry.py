@@ -4,6 +4,7 @@ import warnings
 
 import pytest
 from shapely import wkt
+from shapely.errors import ShapelyError
 from shapely.geometry import GeometryCollection, LineString, Point, Polygon
 
 from osm_worldcover.domain.geometry import _all_finite, is_usable_polygon
@@ -34,13 +35,24 @@ def test_self_intersecting_polygon_is_not_usable() -> None:
     assert not is_usable_polygon(BOWTIE)
 
 
-def test_a_geometry_whose_bounds_cannot_be_read_is_not_finite() -> None:
+@pytest.mark.parametrize("error", [AttributeError, ValueError, ShapelyError])
+def test_a_geometry_whose_bounds_cannot_be_read_is_not_finite(error) -> None:
     class Broken:
         @property
         def bounds(self):
-            raise RuntimeError("no bounds")
+            raise error("no bounds")
 
     assert not _all_finite(Broken())  # ty: ignore[invalid-argument-type]
+
+
+def test_an_unexpected_bounds_error_propagates() -> None:
+    class Buggy:
+        @property
+        def bounds(self):
+            raise RuntimeError("bug")
+
+    with pytest.raises(RuntimeError):
+        _all_finite(Buggy())  # ty: ignore[invalid-argument-type]
 
 
 def test_a_valid_polygon_whose_area_underflows_to_zero_is_not_usable() -> None:
