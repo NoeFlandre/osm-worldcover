@@ -89,6 +89,11 @@ do_not_mutate = [
 	# mutation-tested with its real-raster regressions. Other adapters are I/O
 	# boundaries whose behavior is covered by focused contract tests.
 	"*/adapters/audit.py",
+	"*/adapters/_audit/aggregates.py",
+	"*/adapters/_audit/card.py",
+	"*/adapters/_audit/manifest.py",
+	"*/adapters/_audit/rows.py",
+	"*/adapters/_audit/schema.py",
 	"*/adapters/coverage_map.py",
 	"*/adapters/hub.py",
 	"*/adapters/publish.py",
