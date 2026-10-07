@@ -5,6 +5,7 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 import pytest
+from pyogrio.errors import DataSourceError
 from shapely.geometry import box
 
 from osm_worldcover.adapters import coverage_map
@@ -223,6 +224,25 @@ class TestLandOutline:
 
         monkeypatch.setattr(coverage_map.gpd, "read_file", explode)
         with pytest.raises(coverage_map.CoverageMapError, match="Natural Earth"):
+            coverage_map._load_land()
+
+    @pytest.mark.parametrize(
+        "failure", [OSError("down"), ValueError("bad"), DataSourceError("unreadable")]
+    )
+    def test_expected_read_failures_are_map_errors(self, monkeypatch, failure) -> None:
+        def explode(*_args, **_kwargs):
+            raise failure
+
+        monkeypatch.setattr(coverage_map.gpd, "read_file", explode)
+        with pytest.raises(coverage_map.CoverageMapError, match="Natural Earth"):
+            coverage_map._load_land()
+
+    def test_an_unrelated_exception_propagates(self, monkeypatch) -> None:
+        def explode(*_args, **_kwargs):
+            raise KeyError("bug")
+
+        monkeypatch.setattr(coverage_map.gpd, "read_file", explode)
+        with pytest.raises(KeyError):
             coverage_map._load_land()
 
     def test_an_empty_outline_is_refused(self, monkeypatch) -> None:
