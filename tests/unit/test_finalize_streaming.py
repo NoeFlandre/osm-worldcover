@@ -6,6 +6,7 @@ pass reads shards one at a time and does the global work in DuckDB over files.
 
 import json
 
+import duckdb
 import h3
 import pandas as pd
 import pyarrow as pa
@@ -784,6 +785,38 @@ def test_deduplication_leaves_only_the_kept_table_open(shards, tmp_path) -> None
         connection.close()
 
     assert tables == [("kept",)]
+
+
+def test_deduplication_closes_its_connection_when_a_statement_fails(tmp_path, monkeypatch) -> None:
+    opened = []
+    connect = duckdb.connect
+
+    def recording_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(duckdb, "connect", recording_connect)
+    empty = tmp_path / "work" / "enriched"
+    empty.mkdir(parents=True)  # no shards, so the first read fails
+
+    with pytest.raises(duckdb.IOException):
+        _deduplicate(empty)
+
+    [connection] = opened
+    with pytest.raises(duckdb.ConnectionException):
+        connection.execute("SELECT 1")
+
+
+def test_a_work_directory_with_a_quote_in_its_name_is_deduplicated(shards, tmp_path) -> None:
+    shard(shards / "a.parquet", n=1, region="luxembourg")
+    shard(shards / "b.parquet", n=1, region="belgium")
+    work = tmp_path / "o'brien" / "work"
+
+    result = finalize_shards(shards, Config(), work, work / "out")
+
+    assert result.rows == 1
+    assert result.duplicates_across_regions == 1
 
 
 def test_every_row_carries_its_provenance(shards, tmp_path) -> None:
