@@ -131,31 +131,66 @@ def _build_candidate(
     rejections: dict[str, int] | None,
     processing: dict[str, Any] | None,
 ) -> StreamedBuild:
-    stage: Path | None = None
+    stage = create_stage(target)
     try:
-        stage = create_stage(target)
-        paths, rows = _write_splits(connection, stage)
-        counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
-        manifest = manifest_module.build(counts, config.as_manifest_settings())
-        if processing is not None:
-            manifest["processing"] = processing
-        manifest_path = write_manifest(manifest, stage / "manifest.json")
-        report = _validate_written(paths, config)
-        _validate_staged_manifest(manifest_path, paths, manifest, rows)
+        rows, manifest, report = _prepare_candidate(
+            connection,
+            config,
+            stage,
+            dropped,
+            deduplication_analysis,
+            rejections,
+            processing,
+        )
         if not report.ok:
             discard_stage(target, stage)
             return _streamed_result(rows, [], manifest, report, dropped)
-        inventory = stage_inventory(stage)
-        if core_inventory(target) == inventory:
-            discard_stage(target, stage)
-        else:
-            commit_release(target, stage, inventory)
+        _retain_or_promote_candidate(target, stage)
         return _streamed_result(rows, _target_paths(target), manifest, report, dropped)
     except BaseException:
-        if stage is not None and not transaction_pending(target):
-            with suppress(Exception):
-                discard_stage(target, stage)
+        _discard_candidate_after_error(target, stage)
         raise
+
+
+def _prepare_candidate(
+    connection: DuckDBPyConnection,
+    config: Config,
+    stage: Path,
+    dropped: dict[str, int],
+    deduplication_analysis: dict[str, Any],
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> tuple[int, dict[str, Any], ValidationReport]:
+    paths, rows = _write_splits(connection, stage)
+    counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
+    manifest = _build_candidate_manifest(counts, config, processing)
+    manifest_path = write_manifest(manifest, stage / "manifest.json")
+    report = _validate_written(paths, config)
+    _validate_staged_manifest(manifest_path, paths, manifest, rows)
+    return rows, manifest, report
+
+
+def _build_candidate_manifest(
+    counts: DatasetCounts, config: Config, processing: dict[str, Any] | None
+) -> dict[str, Any]:
+    manifest = manifest_module.build(counts, config.as_manifest_settings())
+    if processing is not None:
+        manifest["processing"] = processing
+    return manifest
+
+
+def _retain_or_promote_candidate(target: Path, stage: Path) -> None:
+    inventory = stage_inventory(stage)
+    if core_inventory(target) == inventory:
+        discard_stage(target, stage)
+    else:
+        commit_release(target, stage, inventory)
+
+
+def _discard_candidate_after_error(target: Path, stage: Path) -> None:
+    if not transaction_pending(target):
+        with suppress(Exception):
+            discard_stage(target, stage)
 
 
 def _streamed_result(
@@ -189,13 +224,30 @@ def _validate_staged_manifest(
     expected: dict[str, Any],
     rows: int,
 ) -> None:
+    actual = _read_expected_staged_manifest(manifest_path, expected)
+    examples = actual.get("counts", {}).get("examples", {})
+    counts = _staged_split_counts(split_paths)
+    _validate_staged_split_counts(examples, counts)
+    _validate_staged_total(rows, examples, counts)
+
+
+def _read_expected_staged_manifest(manifest_path: Path, expected: dict[str, Any]) -> dict[str, Any]:
     actual = json.loads(manifest_path.read_text())
     if actual != expected:
         raise ReleaseCommitError("staged manifest changed after it was written")
-    examples = actual.get("counts", {}).get("examples", {})
-    counts = {path.stem: int(pq.ParquetFile(path).metadata.num_rows) for path in split_paths}
+    return actual
+
+
+def _staged_split_counts(split_paths: Sequence[Path]) -> dict[str, int]:
+    return {path.stem: int(pq.ParquetFile(path).metadata.num_rows) for path in split_paths}
+
+
+def _validate_staged_split_counts(examples: dict[str, Any], counts: dict[str, int]) -> None:
     if any(examples.get(split) != count for split, count in counts.items()):
         raise ReleaseCommitError("staged manifest split counts do not match the Parquet files")
+
+
+def _validate_staged_total(rows: int, examples: dict[str, Any], counts: dict[str, int]) -> None:
     if examples.get("total") != rows or sum(counts.values()) != rows:
         raise ReleaseCommitError("staged manifest total does not match the Parquet files")
 

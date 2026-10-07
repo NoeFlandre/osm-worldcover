@@ -206,26 +206,33 @@ def migrate_release_lock(target: Path) -> Path:
     target = _absolute_target(target)
     _validate_target(target)
     lock_path = target.parent / f".{target.name}.lock"
-    if not _lexists(lock_path):
-        if transaction_pending(target) and not _lexists(lock_path):
-            raise ReleaseCommitError(
-                f"release recovery is required before lock migration: {target}"
-            )
-        try:
-            _require_real_directory(target)
-            _require_core_release_files(target)
-        except ReleaseCommitError:
-            if not _lexists(lock_path):
-                raise
-
+    _preflight_lock_migration(target, lock_path)
     with release_lock(target):
-        if transaction_pending(target):
-            raise ReleaseCommitError(
-                f"release recovery is required before lock migration: {target}"
-            )
-        _require_real_directory(target)
-        _require_core_release_files(target)
+        _validate_lock_migration_target(target)
     return lock_path
+
+
+def _preflight_lock_migration(target: Path, lock_path: Path) -> None:
+    if _lexists(lock_path):
+        return
+    _require_no_unlocked_pending_migration(target, lock_path)
+    try:
+        _validate_lock_migration_target(target)
+    except ReleaseCommitError:
+        if not _lexists(lock_path):
+            raise
+
+
+def _require_no_unlocked_pending_migration(target: Path, lock_path: Path) -> None:
+    if transaction_pending(target) and not _lexists(lock_path):
+        raise ReleaseCommitError(f"release recovery is required before lock migration: {target}")
+
+
+def _validate_lock_migration_target(target: Path) -> None:
+    if transaction_pending(target):
+        raise ReleaseCommitError(f"release recovery is required before lock migration: {target}")
+    _require_real_directory(target)
+    _require_core_release_files(target)
 
 
 def recover_release(target: Path) -> None:
@@ -245,17 +252,24 @@ def recover_release_locked(target: Path) -> None:
         return
     journal = _read_journal(target, journal_path)
     state = _transaction_state(target, journal)
-    if state == "committed":
-        _finish_committed(target, journal_path, journal)
-    elif state == "old-at-target":
-        _abort_unstarted(target, journal_path, journal)
-    elif state == "old-at-backup":
-        _restore_old(target, journal_path, journal)
-    elif state in {"no-old-stage", "no-old-cleanup-complete"}:
-        _abort_unstarted(target, journal_path, journal)
-    else:
-        raise ReleaseCommitError(f"unrecognized release transaction state for {target}")
+    _recover_transaction_state(target, journal_path, journal, state)
     _remove_journal_temporary_files(target)
+
+
+def _recover_transaction_state(
+    target: Path, journal_path: Path, journal: _Journal, state: str
+) -> None:
+    handlers = {
+        "committed": _finish_committed,
+        "old-at-target": _abort_unstarted,
+        "old-at-backup": _restore_old,
+        "no-old-stage": _abort_unstarted,
+        "no-old-cleanup-complete": _abort_unstarted,
+    }
+    handler = handlers.get(state)
+    if handler is None:
+        raise ReleaseCommitError(f"unrecognized release transaction state for {target}")
+    handler(target, journal_path, journal)
 
 
 def create_stage(target: Path) -> Path:
@@ -321,29 +335,54 @@ def transaction_pending(target: Path) -> bool:
 
 def sync_stage(stage: Path, parent: Path) -> None:
     """Flush every managed file and both directory entries before journaling."""
-    stage = Path(stage)
+    stage = _absolute_stage(stage)
     parent = Path(parent).resolve()
-    stage = stage.parent.resolve() / stage.name
-    marker = stage.name.rfind(".stage-")
-    if marker < 2 or not _HEX_32.fullmatch(stage.name[marker + len(".stage-") :]):
-        raise ReleaseCommitError(f"staging path is not a private release stage: {stage}")
-    target = parent / stage.name[1:marker]
-    _validate_target(target)
+    target = _target_for_stage(stage, parent)
     _require_exclusive_lock(target)
-    if stage.parent != parent or stage.is_symlink() or not stage.is_dir():
-        raise ReleaseCommitError(f"invalid staging directory: {stage}")
+    _require_stage_directory(stage, parent)
     for name in CORE_FILES:
         fsync_file(stage / name)
     fsync_directory(stage)
     fsync_directory(parent)
 
 
+def _absolute_stage(stage: Path) -> Path:
+    stage = Path(stage)
+    return stage.parent.resolve() / stage.name
+
+
+def _target_for_stage(stage: Path, parent: Path) -> Path:
+    marker = stage.name.rfind(".stage-")
+    if marker < 2 or not _HEX_32.fullmatch(stage.name[marker + len(".stage-") :]):
+        raise ReleaseCommitError(f"staging path is not a private release stage: {stage}")
+    target = parent / stage.name[1:marker]
+    _validate_target(target)
+    return target
+
+
+def _require_stage_directory(stage: Path, parent: Path) -> None:
+    if stage.parent != parent or stage.is_symlink() or not stage.is_dir():
+        raise ReleaseCommitError(f"invalid staging directory: {stage}")
+
+
 def commit_release(target: Path, stage: Path, new: ReleaseInventory) -> None:
     """Flush and promote a validated stage under the exclusive version lock."""
     target = _absolute_target(target)
-    stage = Path(stage).parent.resolve() / Path(stage).name
+    stage = _absolute_stage(stage)
     _validate_target(target)
     _require_exclusive_lock(target)
+    journal_path, backup, journal = _prepare_release_commit(target, stage, new)
+    try:
+        _promote_directories(target, stage, backup, journal_path, journal, journal.old)
+    except Exception as error:
+        if _recover_failed_promotion(target, journal_path, new, error):
+            return
+        raise
+
+
+def _prepare_release_commit(
+    target: Path, stage: Path, new: ReleaseInventory
+) -> tuple[Path, Path, _Journal]:
     transaction_id = _validate_stage_path(target, stage)
     sync_stage(stage, target.parent)
     if stage_inventory(stage) != new or {entry.name for entry in new.files} != _CORE_FILE_SET:
@@ -362,12 +401,7 @@ def commit_release(target: Path, stage: Path, new: ReleaseInventory) -> None:
         new=new,
     )
     _write_journal(journal_path, journal)
-    try:
-        _promote_directories(target, stage, backup, journal_path, journal, old)
-    except Exception as error:
-        if _recover_failed_promotion(target, journal_path, new, error):
-            return
-        raise
+    return journal_path, backup, journal
 
 
 def _promote_directories(
@@ -429,29 +463,115 @@ def fsync_directory(path: Path) -> None:
 def _transaction_state(target: Path, journal: _Journal) -> str:
     stage, backup = _journal_candidates(target, journal)
     target_exists, stage_exists, backup_exists = map(_lexists, (target, stage, backup))
-    if target_exists and _target_matches_new(target, journal.new):
-        _validate_committed_candidates(stage, stage_exists, backup, backup_exists, journal)
-        return "committed"
-    if target_exists and journal.old is not None and _matches_inventory(target, journal.old):
-        _validate_old_target_candidates(backup, backup_exists, stage, stage_exists, journal)
-        return "old-at-target"
-    if not target_exists and journal.old is not None and backup_exists:
-        _validate_old_backup_candidates(backup, stage, stage_exists, journal)
-        return "old-at-backup"
-    if not target_exists and journal.old is None and not backup_exists and stage_exists:
-        _require_stage_candidate(stage, True, journal)
-        return "no-old-stage"
-    if (
-        not target_exists
-        and journal.old is None
-        and not backup_exists
-        and not stage_exists
-        and journal.cleanup_stage
-    ):
-        return "no-old-cleanup-complete"
+    state = _committed_state(
+        target, stage, backup, target_exists, stage_exists, backup_exists, journal
+    )
+    if state is not None:
+        return state
+    state = _old_release_state(
+        target, stage, backup, target_exists, stage_exists, backup_exists, journal
+    )
+    if state is not None:
+        return state
+    state = _no_old_release_state(stage, target_exists, stage_exists, backup_exists, journal)
+    if state is not None:
+        return state
     raise ReleaseCommitError(
         f"release candidates do not match the transaction journal for {target}"
     )
+
+
+def _committed_state(
+    target: Path,
+    stage: Path,
+    backup: Path,
+    target_exists: bool,
+    stage_exists: bool,
+    backup_exists: bool,
+    journal: _Journal,
+) -> str | None:
+    if not target_exists or not _target_matches_new(target, journal.new):
+        return None
+    _validate_committed_candidates(stage, stage_exists, backup, backup_exists, journal)
+    return "committed"
+
+
+def _old_release_state(
+    target: Path,
+    stage: Path,
+    backup: Path,
+    target_exists: bool,
+    stage_exists: bool,
+    backup_exists: bool,
+    journal: _Journal,
+) -> str | None:
+    old = journal.old
+    if old is None:
+        return None
+    state = _old_release_at_target(
+        target, target_exists, stage, stage_exists, backup, backup_exists, old, journal
+    )
+    if state is not None:
+        return state
+    return _old_release_at_backup(
+        target_exists, stage, stage_exists, backup, backup_exists, old, journal
+    )
+
+
+def _old_release_at_target(
+    target: Path,
+    target_exists: bool,
+    stage: Path,
+    stage_exists: bool,
+    backup: Path,
+    backup_exists: bool,
+    old: ReleaseInventory,
+    journal: _Journal,
+) -> str | None:
+    if not target_exists or not _matches_inventory(target, old):
+        return None
+    _validate_old_target_candidates(backup, backup_exists, stage, stage_exists, journal)
+    return "old-at-target"
+
+
+def _old_release_at_backup(
+    target_exists: bool,
+    stage: Path,
+    stage_exists: bool,
+    backup: Path,
+    backup_exists: bool,
+    old: ReleaseInventory,
+    journal: _Journal,
+) -> str | None:
+    if target_exists or not backup_exists:
+        return None
+    if not _matches_inventory(backup, old):
+        raise ReleaseCommitError(f"backup does not match the recorded old release: {backup}")
+    _require_stage_candidate(stage, stage_exists, journal)
+    return "old-at-backup"
+
+
+def _no_old_release_state(
+    stage: Path,
+    target_exists: bool,
+    stage_exists: bool,
+    backup_exists: bool,
+    journal: _Journal,
+) -> str | None:
+    if _transaction_has_old_release(target_exists, backup_exists, journal):
+        return None
+    if stage_exists:
+        _require_stage_candidate(stage, True, journal)
+        return "no-old-stage"
+    if journal.cleanup_stage:
+        return "no-old-cleanup-complete"
+    return None
+
+
+def _transaction_has_old_release(
+    target_exists: bool, backup_exists: bool, journal: _Journal
+) -> bool:
+    return target_exists or backup_exists or journal.old is not None
 
 
 def _validate_committed_candidates(
@@ -559,12 +679,18 @@ def _require_old_backup(
 ) -> None:
     if not exists:
         return
+    if not _old_backup_matches(backup, expected, allow_partial):
+        raise ReleaseCommitError(f"backup does not match the recorded old release: {backup}")
+
+
+def _old_backup_matches(
+    backup: Path, expected: ReleaseInventory | None, allow_partial: bool
+) -> bool:
     if expected is None:
-        raise ReleaseCommitError(f"backup does not match the recorded old release: {backup}")
-    matches = _matches_partial_inventory(backup, expected) if allow_partial else False
-    matches = matches or _matches_inventory(backup, expected)
-    if not matches:
-        raise ReleaseCommitError(f"backup does not match the recorded old release: {backup}")
+        return False
+    if allow_partial and _matches_partial_inventory(backup, expected):
+        return True
+    return _matches_inventory(backup, expected)
 
 
 def _target_matches_new(target: Path, expected: ReleaseInventory) -> bool:
@@ -640,6 +766,18 @@ def _read_journal(target: Path, path: Path) -> _Journal:
 
 
 def _journal_from_dict(target: Path, document: Any) -> _Journal:
+    _require_journal_shape(document)
+    transaction_id = _journal_transaction_id(document)
+    stage, backup = _candidate_names(target, transaction_id)
+    _validate_journal_paths(target, document, stage, backup)
+    old = _optional_inventory_from_dict(document["old"])
+    new = _inventory_from_dict(document["new"])
+    cleanup_stage = _journal_cleanup_stage(document)
+    _validate_journal_inventories(old, new)
+    return _Journal(transaction_id, target.name, stage, backup, old, new, cleanup_stage)
+
+
+def _require_journal_shape(document: Any) -> None:
     required_fields = {
         "format_version",
         "transaction_id",
@@ -652,23 +790,35 @@ def _journal_from_dict(target: Path, document: Any) -> _Journal:
     expected_fields = required_fields | {"cleanup_stage"}
     if not isinstance(document, dict) or set(document) not in (required_fields, expected_fields):
         raise ValueError("unexpected journal fields")
+
+
+def _journal_transaction_id(document: dict[str, Any]) -> str:
     transaction_id = document["transaction_id"]
     if document["format_version"] != 1 or not isinstance(transaction_id, str):
         raise ValueError("unsupported journal version")
-    stage, backup = _candidate_names(target, transaction_id)
+    return transaction_id
+
+
+def _validate_journal_paths(
+    target: Path, document: dict[str, Any], stage: str, backup: str
+) -> None:
     paths = document["target"], document["stage"], document["backup"]
     if paths != (target.name, stage, backup):
         raise ValueError("journal paths do not match the target")
-    old = _optional_inventory_from_dict(document["old"])
-    new = _inventory_from_dict(document["new"])
+
+
+def _journal_cleanup_stage(document: dict[str, Any]) -> bool:
     cleanup_stage = document.get("cleanup_stage", False)
     if not isinstance(cleanup_stage, bool):
         raise TypeError("stage cleanup marker must be a boolean")
+    return cleanup_stage
+
+
+def _validate_journal_inventories(old: ReleaseInventory | None, new: ReleaseInventory) -> None:
     if {entry.name for entry in new.files} != _CORE_FILE_SET:
         raise ValueError("new inventory is not the complete core release")
     _validate_release_inventory(old)
     _validate_release_inventory(new, core_only=True)
-    return _Journal(transaction_id, target.name, stage, backup, old, new, cleanup_stage)
 
 
 def _optional_inventory_from_dict(document: Any) -> ReleaseInventory | None:
@@ -676,28 +826,49 @@ def _optional_inventory_from_dict(document: Any) -> ReleaseInventory | None:
 
 
 def _inventory_from_dict(document: Any) -> ReleaseInventory:
+    entries = _inventory_entries(document)
+    files = [_fingerprint_from_dict(entry) for entry in entries]
+    if _has_duplicate_inventory_files(files):
+        raise ValueError("duplicate inventory file")
+    return ReleaseInventory(tuple(sorted(files)))
+
+
+def _inventory_entries(document: Any) -> list[Any]:
     if not isinstance(document, dict) or set(document) != {"files"}:
         raise ValueError("invalid inventory document")
     entries = document["files"]
     if not isinstance(entries, list):
         raise TypeError("inventory files must be a list")
-    files = [_fingerprint_from_dict(entry) for entry in entries]
-    if len({entry.name for entry in files}) != len(files):
-        raise ValueError("duplicate inventory file")
-    return ReleaseInventory(tuple(sorted(files)))
+    return entries
+
+
+def _has_duplicate_inventory_files(files: list[FileFingerprint]) -> bool:
+    return len({entry.name for entry in files}) != len(files)
 
 
 def _fingerprint_from_dict(entry: Any) -> FileFingerprint:
     if not isinstance(entry, dict) or set(entry) != {"name", "size", "sha256"}:
         raise ValueError("invalid inventory entry")
     name, size, digest = entry["name"], entry["size"], entry["sha256"]
+    _validate_fingerprint_name(name)
+    _validate_fingerprint_size(size)
+    _validate_fingerprint_digest(digest)
+    return FileFingerprint(name, size, digest)
+
+
+def _validate_fingerprint_name(name: Any) -> None:
     if not isinstance(name, str) or name not in _RELEASE_FILE_SET:
         raise ValueError("invalid inventory filename")
+
+
+def _validate_fingerprint_size(size: Any) -> None:
     if isinstance(size, bool) or not isinstance(size, int) or size < 0:
         raise ValueError("invalid inventory size")
+
+
+def _validate_fingerprint_digest(digest: Any) -> None:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise ValueError("invalid inventory hash")
-    return FileFingerprint(name, size, digest)
 
 
 def _validate_release_inventory(
@@ -706,9 +877,18 @@ def _validate_release_inventory(
     if inventory is None:
         return
     names = {entry.name for entry in inventory.files}
+    _validate_release_layout(names)
+    if core_only:
+        _validate_core_release_layout(names)
+
+
+def _validate_release_layout(names: set[str]) -> None:
     if not names >= _CORE_FILE_SET or not names <= _RELEASE_FILE_SET:
         raise ValueError("inventory does not contain a complete release layout")
-    if core_only and names != _CORE_FILE_SET:
+
+
+def _validate_core_release_layout(names: set[str]) -> None:
+    if names != _CORE_FILE_SET:
         raise ValueError("new inventory contains release sidecars")
 
 
@@ -798,21 +978,32 @@ def _require_real_directory(path: Path) -> None:
 
 
 def _require_core_release_files(directory: Path) -> None:
-    missing = []
-    non_regular = []
-    for name in CORE_FILES:
-        path = directory / name
-        try:
-            mode = path.lstat().st_mode
-        except FileNotFoundError:
-            missing.append(name)
-            continue
-        if not stat.S_ISREG(mode):
-            non_regular.append(name)
+    missing, non_regular = _core_release_file_issues(directory)
     if missing:
         raise ReleaseCommitError(f"existing release is missing core file(s): {missing}")
     if non_regular:
         raise ReleaseCommitError(f"existing release has non-regular core file(s): {non_regular}")
+
+
+def _core_release_file_issues(directory: Path) -> tuple[list[str], list[str]]:
+    missing = []
+    non_regular = []
+    for name in CORE_FILES:
+        path = directory / name
+        file_type = _core_release_file_type(path)
+        if file_type == "missing":
+            missing.append(name)
+        elif file_type == "non-regular":
+            non_regular.append(name)
+    return missing, non_regular
+
+
+def _core_release_file_type(path: Path) -> str:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "missing"
+    return "regular" if stat.S_ISREG(mode) else "non-regular"
 
 
 def _candidate_names(target: Path, transaction_id: str) -> tuple[str, str]:

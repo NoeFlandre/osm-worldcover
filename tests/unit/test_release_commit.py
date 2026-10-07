@@ -42,6 +42,21 @@ def _crash_at_parent_sync(target, boundary, message):
     return interrupt
 
 
+def _fail_once_at_parent_sync(target, boundary):
+    original = release.fsync_directory
+    calls = 0
+
+    def fail_once(path):
+        nonlocal calls
+        if path == target.parent:
+            calls += 1
+            if calls == boundary:
+                raise OSError(f"injected promotion directory fsync {calls}")
+        original(path)
+
+    return fail_once
+
+
 def _release(directory, label, *, sidecars=()):
     directory.mkdir(parents=True, exist_ok=True)
     for name in release.CORE_FILES:
@@ -117,6 +132,132 @@ def _read_manifest_in_thread(target, reader_started, reader_done, reader_errors,
         reader_done.set()
 
 
+def _assert_release_and_no_artifacts(target, expected):
+    assert release.inventory_release(target) == expected
+    assert _transaction_artifacts(target) == set()
+
+
+def _assert_release_absent_and_no_artifacts(target):
+    assert not target.exists()
+    assert _transaction_artifacts(target) == set()
+
+
+def _assert_legacy_migration_preserved(target, before):
+    assert writer_adapter.read_manifest(target) == {"generation": "legacy"}
+    assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+
+
+def _assert_migration_is_idempotent(target, lock_path, lock_inode):
+    assert release.migrate_release_lock(target) == lock_path
+    assert lock_path.stat().st_ino == lock_inode
+
+
+def _assert_migration_started_and_waiting(migration_started, migration_finished):
+    assert migration_started.wait(timeout=1)
+    assert not migration_finished.wait(timeout=0.05)
+
+
+def _assert_migration_threads_stopped(writer_thread, migration_thread):
+    assert not writer_thread.is_alive()
+    assert migration_thread is None or not migration_thread.is_alive()
+
+
+def _assert_migration_succeeded(errors, migration_finished, lock_path):
+    assert errors == []
+    assert migration_finished.is_set()
+    assert lock_path.is_file()
+
+
+def _assert_reader_started_and_blocked(
+    reader_started, reader_done, rename_calls, reader_errors, reader_values
+):
+    assert reader_started.wait(timeout=5)
+    assert not reader_done.wait(timeout=1), (
+        "direct manifest reads must wait while the promoted target is absent; "
+        f"rename calls={rename_calls!r}; reader errors={reader_errors!r}; "
+        f"reader values={reader_values!r}"
+    )
+
+
+def _join_reader_if_started(reader_thread):
+    if reader_thread.ident is not None:
+        reader_thread.join(timeout=30)
+
+
+def _assert_promotion_threads_finished(promotion_thread, promotion_errors, reader_thread):
+    assert not promotion_thread.is_alive()
+    assert not reader_thread.is_alive()
+    assert promotion_errors == []
+
+
+def _assert_backup_rename(target, rename):
+    source, destination = rename
+    assert source == target
+    assert destination.parent == target.parent
+    assert destination.name.startswith(f".{target.name}.backup-")
+
+
+def _assert_stage_rename(target, rename):
+    source, destination = rename
+    assert source.name.startswith(f".{target.name}.stage-")
+    assert destination == target
+
+
+def _assert_promotion_rename_sequence(target, rename_calls):
+    assert len(rename_calls) == 2, rename_calls
+    _assert_backup_rename(target, rename_calls[0])
+    _assert_stage_rename(target, rename_calls[1])
+
+
+def _assert_reader_received_new_manifest(reader_errors, reader_values):
+    assert reader_errors == []
+    assert reader_values == [{"generation": "new"}]
+
+
+def _assert_interrupted_first_build_kept_journal(target, stage):
+    assert not target.exists()
+    assert not stage.exists()
+    assert _journal_exists(target)
+
+
+def _assert_failed_rollback_kept_inputs(target):
+    assert not target.exists()
+    assert len(list(target.parent.glob(f".{target.name}.backup-*"))) == 1
+    assert len(list(target.parent.glob(f".{target.name}.stage-*"))) == 1
+    assert _journal_exists(target)
+
+
+def _assert_cleanup_failure_kept_journal(target, new):
+    assert release.core_inventory(target) == new
+    assert _journal_exists(target)
+    assert list(target.parent.glob(f".{target.name}.backup-*"))
+
+
+def _assert_partial_backup_cleanup_kept_journal(target, old, new, backup):
+    assert release.core_inventory(target) == new
+    assert _journal_exists(target)
+    assert len(list(backup.iterdir())) < len(old.files)
+
+
+def _assert_partial_stage_cleanup_kept_journal(target, stage, old):
+    assert release.inventory_release(target) == old
+    assert stage.is_dir()
+    assert not (stage / "train.parquet").exists()
+    assert _journal_exists(target)
+
+
+def _assert_hash_mismatch_kept_candidates(target, stage, backup):
+    assert _journal_exists(target)
+    assert stage.is_dir()
+    assert backup.is_dir()
+    assert not target.exists()
+
+
+def _restore_backup_files(backup, old):
+    for entry in old.files:
+        (backup / entry.name).write_bytes(f"old:{entry.name}".encode())
+
+
 def test_directory_promotion_keeps_the_new_complete_inventory(tmp_path, real_release_fsync):
     target = tmp_path / "v1.0.0"
     old = _release(target, "old", sidecars=("README.md",))
@@ -174,10 +315,8 @@ def test_migrate_release_lock_preserves_release_files_and_is_idempotent(tmp_path
     lock_inode = lock_path.stat().st_ino
 
     assert lock_path == tmp_path / f".{target.name}.lock"
-    assert writer_adapter.read_manifest(target) == {"generation": "legacy"}
-    assert release.migrate_release_lock(target) == lock_path
-    assert lock_path.stat().st_ino == lock_inode
-    assert {path.name: path.read_bytes() for path in target.iterdir()} == before
+    _assert_legacy_migration_preserved(target, before)
+    _assert_migration_is_idempotent(target, lock_path, lock_inode)
 
 
 def test_migrate_release_lock_rejects_an_incomplete_release_without_a_sidecar(tmp_path):
@@ -243,19 +382,15 @@ def test_migrate_release_lock_waits_for_a_modern_writer(tmp_path):
         assert writer_holds_lock.wait(timeout=1)
         migration_thread = threading.Thread(target=migrate, name="release-lock-migration")
         migration_thread.start()
-        assert migration_started.wait(timeout=1)
-        assert not migration_finished.wait(timeout=0.05)
+        _assert_migration_started_and_waiting(migration_started, migration_finished)
     finally:
         release_writer.set()
     writer_thread.join(timeout=1)
     if migration_thread is not None:
         migration_thread.join(timeout=1)
 
-    assert not writer_thread.is_alive()
-    assert migration_thread is None or not migration_thread.is_alive()
-    assert errors == []
-    assert migration_finished.is_set()
-    assert (target.parent / f".{target.name}.lock").is_file()
+    _assert_migration_threads_stopped(writer_thread, migration_thread)
+    _assert_migration_succeeded(errors, migration_finished, target.parent / f".{target.name}.lock")
 
 
 def test_read_manifest_fails_closed_when_release_recovery_is_needed(tmp_path):
@@ -304,31 +439,17 @@ def test_direct_read_manifest_waits_for_release_promotion(tmp_path, monkeypatch)
             f"promotion errors={promotion_errors!r}; rename calls={rename_calls!r}"
         )
         reader_thread.start()
-        assert reader_started.wait(timeout=5)
-        assert not reader_done.wait(timeout=1), (
-            "direct manifest reads must wait while the promoted target is absent; "
-            f"rename calls={rename_calls!r}; reader errors={reader_errors!r}; "
-            f"reader values={reader_values!r}"
+        _assert_reader_started_and_blocked(
+            reader_started, reader_done, rename_calls, reader_errors, reader_values
         )
     finally:
         continue_promotion.set()
         promotion_thread.join(timeout=30)
-        if reader_thread.ident is not None:
-            reader_thread.join(timeout=30)
+        _join_reader_if_started(reader_thread)
 
-    assert not promotion_thread.is_alive()
-    assert not reader_thread.is_alive()
-    assert promotion_errors == []
-    assert len(rename_calls) == 2, rename_calls
-    backup_source, backup_destination = rename_calls[0]
-    stage_source, promoted_target = rename_calls[1]
-    assert backup_source == target
-    assert backup_destination.parent == target.parent
-    assert backup_destination.name.startswith(f".{target.name}.backup-")
-    assert stage_source.name.startswith(f".{target.name}.stage-")
-    assert promoted_target == target
-    assert reader_errors == []
-    assert reader_values == [{"generation": "new"}]
+    _assert_promotion_threads_finished(promotion_thread, promotion_errors, reader_thread)
+    _assert_promotion_rename_sequence(target, rename_calls)
+    _assert_reader_received_new_manifest(reader_errors, reader_values)
 
 
 def test_create_stage_requires_the_exclusive_target_lock(tmp_path):
@@ -561,15 +682,12 @@ def test_first_build_abort_after_stage_removal_finishes_after_restart(tmp_path, 
     with pytest.raises(SimulatedCrash):
         release.recover_release(target)
 
-    assert not target.exists()
-    assert not stage.exists()
-    assert _journal_exists(target)
+    _assert_interrupted_first_build_kept_journal(target, stage)
 
     monkeypatch.setattr(release, "fsync_directory", original_fsync_directory)
     _recover_twice(target)
 
-    assert not target.exists()
-    assert _transaction_artifacts(target) == set()
+    _assert_release_absent_and_no_artifacts(target)
 
 
 def test_recovery_replaces_a_stale_owned_journal_temporary(tmp_path, monkeypatch):
@@ -603,17 +721,11 @@ def test_each_promotion_directory_fsync_recovers_to_one_complete_inventory(
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
     original = release.fsync_directory
-    calls = 0
-
-    def fail_once(path):
-        nonlocal calls
-        if path == target.parent:
-            calls += 1
-            if calls == failed_boundary:
-                raise OSError(f"injected promotion directory fsync {calls}")
-        original(path)
-
-    monkeypatch.setattr(release, "fsync_directory", fail_once)
+    monkeypatch.setattr(
+        release,
+        "fsync_directory",
+        _fail_once_at_parent_sync(target, failed_boundary),
+    )
     with release.release_lock(target):
         try:
             release.commit_release(target, stage, new)
@@ -624,8 +736,7 @@ def test_each_promotion_directory_fsync_recovers_to_one_complete_inventory(
     _recover_twice(target)
     expected = old if failed_boundary <= 3 else new
 
-    assert release.inventory_release(target) == expected
-    assert _transaction_artifacts(target) == set()
+    _assert_release_and_no_artifacts(target, expected)
 
 
 @pytest.mark.parametrize("crash_after", ["target-to-backup", "stage-to-target"])
@@ -692,16 +803,12 @@ def test_failed_rollback_retains_all_recovery_inputs(tmp_path, monkeypatch):
     with release.release_lock(target), pytest.raises(release.ReleaseCommitError, match="recovery"):
         release.commit_release(target, stage, new)
 
-    assert not target.exists()
-    assert len(list(target.parent.glob(f".{target.name}.backup-*"))) == 1
-    assert len(list(target.parent.glob(f".{target.name}.stage-*"))) == 1
-    assert _journal_exists(target)
+    _assert_failed_rollback_kept_inputs(target)
 
     monkeypatch.setattr(release, "_rename_directory", original)
     _recover_twice(target)
 
-    assert release.inventory_release(target) == old
-    assert _transaction_artifacts(target) == set()
+    _assert_release_and_no_artifacts(target, old)
 
 
 def test_cleanup_failure_keeps_the_committed_release_and_journal_for_retry(tmp_path, monkeypatch):
@@ -723,15 +830,12 @@ def test_cleanup_failure_keeps_the_committed_release_and_journal_for_retry(tmp_p
     with release.release_lock(target), pytest.raises(release.ReleaseCommitError, match="recovery"):
         release.commit_release(target, stage, new)
 
-    assert release.core_inventory(target) == new
-    assert _journal_exists(target)
-    assert list(target.parent.glob(f".{target.name}.backup-*"))
+    _assert_cleanup_failure_kept_journal(target, new)
 
     monkeypatch.setattr(release.shutil, "rmtree", original)
     _recover_twice(target)
 
-    assert release.inventory_release(target) == new
-    assert _transaction_artifacts(target) == set()
+    _assert_release_and_no_artifacts(target, new)
 
 
 def test_recovery_finishes_partial_backup_cleanup_by_hashing_remaining_files(tmp_path, monkeypatch):
@@ -755,16 +859,13 @@ def test_recovery_finishes_partial_backup_cleanup_by_hashing_remaining_files(tmp
     with release.release_lock(target), pytest.raises(release.ReleaseCommitError, match="recovery"):
         release.commit_release(target, stage, new)
 
-    assert release.core_inventory(target) == new
-    assert _journal_exists(target)
     backup = next(target.parent.glob(f".{target.name}.backup-*"))
-    assert len(list(backup.iterdir())) < len(old.files)
+    _assert_partial_backup_cleanup_kept_journal(target, old, new, backup)
 
     monkeypatch.setattr(release.shutil, "rmtree", original)
     _recover_twice(target)
 
-    assert release.inventory_release(target) == new
-    assert _transaction_artifacts(target) == set()
+    _assert_release_and_no_artifacts(target, new)
 
 
 def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_path, monkeypatch):
@@ -794,16 +895,12 @@ def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_
     with pytest.raises(SimulatedCrash):
         release.recover_release(target)
 
-    assert release.inventory_release(target) == old
-    assert stage.is_dir()
-    assert not (stage / "train.parquet").exists()
-    assert _journal_exists(target)
+    _assert_partial_stage_cleanup_kept_journal(target, stage, old)
 
     monkeypatch.setattr(release.shutil, "rmtree", original_rmtree)
     _recover_twice(target)
 
-    assert release.inventory_release(target) == old
-    assert _transaction_artifacts(target) == set()
+    _assert_release_and_no_artifacts(target, old)
 
 
 def test_recovery_rejects_a_hash_mismatch_without_deleting_candidates(tmp_path, monkeypatch):
@@ -826,16 +923,11 @@ def test_recovery_rejects_a_hash_mismatch_without_deleting_candidates(tmp_path, 
     (backup / "train.parquet").write_bytes(b"tampered")
     with pytest.raises(release.ReleaseCommitError, match="backup"):
         release.recover_release(target)
-    assert _journal_exists(target)
-    assert stage.is_dir()
-    assert backup.is_dir()
-    assert not target.exists()
+    _assert_hash_mismatch_kept_candidates(target, stage, backup)
 
-    for entry in old.files:
-        (backup / entry.name).write_bytes(f"old:{entry.name}".encode())
+    _restore_backup_files(backup, old)
     _recover_twice(target)
-    assert release.inventory_release(target) == old
-    assert _transaction_artifacts(target) == set()
+    _assert_release_and_no_artifacts(target, old)
 
 
 def test_shared_reader_lock_blocks_finalization_for_the_entire_read(tmp_path):

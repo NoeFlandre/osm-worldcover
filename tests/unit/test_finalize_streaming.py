@@ -100,6 +100,66 @@ def shards(tmp_path):
     return d
 
 
+def _clear_shards(shards):
+    for path in shards.glob("*.parquet"):
+        path.unlink()
+
+
+def _assert_empty_rerun_preserves_release(result, target, before):
+    import hashlib
+
+    assert result.rows == 0
+    assert result.paths == []
+    assert _file_snapshot(target) == before
+    assert (
+        hashlib.sha256((target / "manifest.json").read_bytes()).hexdigest()
+        == before["manifest.json"][0]
+    )
+
+
+def _assert_empty_result(result):
+    assert result.rows == 0
+    assert result.paths == []
+
+
+def _assert_release_recovered_and_clean(target, before, out):
+    import osm_worldcover.release_commit as release
+
+    assert release.inventory_release(target) == before
+    assert not list(out.glob(f".{target.name}.stage-*"))
+    assert not list(out.glob(f".{target.name}.backup-*"))
+    assert not (out / f".{target.name}.transaction.json").exists()
+
+
+def _assert_failed_validation_result(result):
+    assert result.rows == 8
+    assert result.paths == []
+    assert not result.report.ok
+
+
+def _assert_old_release_unchanged_and_unstaged(target, before, out):
+    assert _file_snapshot(target) == before
+    assert not list(out.glob(f".{target.name}.stage-*"))
+
+
+def _recover_twice_and_assert_snapshot(target, before):
+    import osm_worldcover.release_commit as release
+
+    release.recover_release(target)
+    release.recover_release(target)
+    assert _file_snapshot(target) == before
+
+
+def _assert_unchanged_rerun_result(result):
+    assert result.rows == 3
+    assert {path.name for path in result.paths} == {
+        "train.parquet",
+        "validation.parquet",
+        "test.parquet",
+        "manifest.json",
+    }
+
+
 def test_a_single_shard_becomes_a_dataset(shards, tmp_path) -> None:
     shard(shards / "a.parquet", n=3)
     result = finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out")
@@ -756,25 +816,16 @@ def test_an_empty_build_has_no_files_and_no_manifest(shards, tmp_path) -> None:
 def test_empty_rerun_preserves_the_last_release_without_claiming_new_paths(
     shards, tmp_path
 ) -> None:
-    import hashlib
-
     shard(shards / "first.parquet", n=3)
     out = tmp_path / "out"
     target = out / f"v{Config().dataset_version}"
     first = finalize_shards(shards, Config(), tmp_path / "work", out)
     before = _file_snapshot(target)
 
-    for path in shards.glob("*.parquet"):
-        path.unlink()
+    _clear_shards(shards)
     second = finalize_shards(shards, Config(), tmp_path / "work", out)
 
-    assert second.rows == 0
-    assert second.paths == []
-    assert _file_snapshot(target) == before
-    assert (
-        hashlib.sha256((target / "manifest.json").read_bytes()).hexdigest()
-        == before["manifest.json"][0]
-    )
+    _assert_empty_rerun_preserves_release(second, target, before)
     assert first.paths
 
 
@@ -830,16 +881,11 @@ def test_empty_rerun_recovers_an_interrupted_promotion_before_counting_rows(
             release.commit_release(target, stage, new)
     monkeypatch.setattr(release, "_rename_directory", original)
 
-    for path in shards.glob("*.parquet"):
-        path.unlink()
+    _clear_shards(shards)
     result = finalize_shards(shards, Config(), tmp_path / "work", out)
 
-    assert result.rows == 0
-    assert result.paths == []
-    assert release.inventory_release(target) == before
-    assert not list(out.glob(f".{target.name}.stage-*"))
-    assert not list(out.glob(f".{target.name}.backup-*"))
-    assert not (out / f".{target.name}.transaction.json").exists()
+    _assert_empty_result(result)
+    _assert_release_recovered_and_clean(target, before, out)
 
 
 def test_failed_staged_validation_does_not_promote_or_replace_the_old_release(
@@ -858,16 +904,9 @@ def test_failed_staged_validation_does_not_promote_or_replace_the_old_release(
 
     result = finalize_shards(shards, Config(), tmp_path / "work", out)
 
-    assert result.rows == 8
-    assert result.paths == []
-    assert not result.report.ok
-    assert _file_snapshot(target) == before
-    assert not list(out.glob(f".{target.name}.stage-*"))
-    import osm_worldcover.release_commit as release
-
-    release.recover_release(target)
-    release.recover_release(target)
-    assert _file_snapshot(target) == before
+    _assert_failed_validation_result(result)
+    _assert_old_release_unchanged_and_unstaged(target, before, out)
+    _recover_twice_and_assert_snapshot(target, before)
 
 
 @pytest.mark.parametrize("failed_split", ["train", "validation", "test"])
@@ -944,20 +983,9 @@ def test_unchanged_rerun_keeps_release_files_and_publication_sidecars_untouched(
 
     result = finalize_shards(shards, Config(), tmp_path / "work", out)
 
-    assert result.rows == 3
-    assert {path.name for path in result.paths} == {
-        "train.parquet",
-        "validation.parquet",
-        "test.parquet",
-        "manifest.json",
-    }
-    assert _file_snapshot(target) == before
-    assert not list(out.glob(f".{target.name}.stage-*"))
-    import osm_worldcover.release_commit as release
-
-    release.recover_release(target)
-    release.recover_release(target)
-    assert _file_snapshot(target) == before
+    _assert_unchanged_rerun_result(result)
+    _assert_old_release_unchanged_and_unstaged(target, before, out)
+    _recover_twice_and_assert_snapshot(target, before)
 
 
 def _file_snapshot(directory):
