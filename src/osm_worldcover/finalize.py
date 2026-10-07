@@ -18,11 +18,13 @@ global work is left to DuckDB over files, and the result is streamed to Parquet
 in batches rather than collected first.
 """
 
+from __future__ import annotations
+
 import shutil
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -40,6 +42,9 @@ from osm_worldcover.domain.validation import (
     validate,
 )
 from osm_worldcover.pipeline import TEXT_COLUMNS
+
+if TYPE_CHECKING:
+    from duckdb import DuckDBPyConnection
 
 __all__ = ["StreamedBuild", "finalize_shards"]
 
@@ -157,7 +162,7 @@ def _attach_provenance(frame: pd.DataFrame, config: Config) -> pd.DataFrame:
     )
 
 
-def _deduplicate(enriched: Path) -> tuple[Any, dict[str, int], dict[str, Any]]:
+def _deduplicate(enriched: Path) -> tuple[DuckDBPyConnection, dict[str, int], dict[str, Any]]:
     """Collapse duplicates and split conflicts across every shard, using DuckDB.
 
     The open connection is returned so the surviving rows can be streamed out
@@ -311,7 +316,7 @@ def _retained_text_diagnostics(connection: Any) -> dict[str, int]:
     return retained_text_counts(label_groups, text_groups)
 
 
-def _write_splits(connection: Any, target: Path) -> tuple[list[Path], int]:
+def _write_splits(connection: DuckDBPyConnection, target: Path) -> tuple[list[Path], int]:
     """Stream each split from DuckDB into its own Parquet file."""
     paths: list[Path] = []
     rows = 0
@@ -376,7 +381,7 @@ def _aggregate(
     )
 
 
-def _example_polygons(connection: Any) -> list[dict[str, str]]:
+def _example_polygons(connection: DuckDBPyConnection) -> list[dict[str, str]]:
     """Choose one stable named polygon for every represented ESA class.
 
     Small compatibility fixtures and older intermediate shards may omit the
@@ -400,7 +405,7 @@ def _example_polygons(connection: Any) -> list[dict[str, str]]:
     return [{"name": str(name), "worldcover_label": str(label)} for name, label in rows]
 
 
-def _by_split(connection: Any, expression: str) -> dict[str, int]:
+def _by_split(connection: DuckDBPyConnection, expression: str) -> dict[str, int]:
     """Evaluate ``expression`` per split."""
     rows = connection.execute(f"SELECT split, {expression} FROM kept GROUP BY 1").fetchall()
     return {str(split): int(value) for split, value in rows}
@@ -415,7 +420,7 @@ def _language_key(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
-def _tally(connection: Any, column: str, cast: Any) -> dict[Any, int]:
+def _tally(connection: DuckDBPyConnection, column: str, cast: Any) -> dict[Any, int]:
     """Count rows per distinct value of ``column``."""
     rows = connection.execute(
         f"SELECT {column}, count(*) FROM kept GROUP BY 1 ORDER BY 1"
@@ -423,7 +428,7 @@ def _tally(connection: Any, column: str, cast: Any) -> dict[Any, int]:
     return {cast(value): int(n) for value, n in rows}
 
 
-def _count(connection: Any, sql: str) -> int:
+def _count(connection: DuckDBPyConnection, sql: str) -> int:
     """Run a counting query, refusing the empty result a count cannot produce."""
     row = connection.execute(sql).fetchone()
     if row is None:

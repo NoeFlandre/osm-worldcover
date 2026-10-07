@@ -7,7 +7,9 @@ recompute raster labels, or prove that excluded source polygons were processed.
 """
 
 import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from ._audit.aggregates import (
     _retained_text_diagnostics as _retained_text_diagnostics,
@@ -64,6 +66,12 @@ def audit_build(
     return report
 
 
-def _audit_contents(paths, scratch, manifest, checks, strict_text_leakage) -> None:
+def _audit_contents(
+    paths: Sequence[Path],
+    scratch: Path,
+    manifest: Mapping[str, Any],
+    checks: _Checks,
+    strict_text_leakage: bool,
+) -> None:
     hashes = scan_rows(paths, manifest["settings"], scratch, checks)
     check_aggregates(paths, hashes, scratch, manifest, checks, strict_text_leakage)
