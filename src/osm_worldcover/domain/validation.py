@@ -44,6 +44,7 @@ class Check(Enum):
     EMPTY_DATASET = "empty_dataset"
     INVALID_SPLIT = "invalid_split"
     INVALID_LABEL = "invalid_label"
+    INVALID_FRACTION = "invalid_fraction"
     BELOW_THRESHOLD = "below_threshold"
     UNUSABLE_TEXT = "unusable_text"
     DUPLICATE_EXAMPLE = "duplicate_example"
@@ -127,7 +128,11 @@ def _label_violations(
         yield Check.INVALID_SPLIT, polygon_id
     if CLASS_LABELS.get(int(r["worldcover_code"])) != r["worldcover_label"]:
         yield Check.INVALID_LABEL, polygon_id
-    if float(r["dominant_fraction"]) < threshold:
+    fraction = float(r["dominant_fraction"])
+    # Written as a positive range test so NaN, which fails every comparison, is rejected.
+    if not 0.0 <= fraction <= 1.0:
+        yield Check.INVALID_FRACTION, polygon_id
+    elif fraction < threshold:
         yield Check.BELOW_THRESHOLD, polygon_id
 
 
