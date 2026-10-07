@@ -1,8 +1,7 @@
 """Tiles are reused between polygon groups instead of re-downloaded."""
 
-from pathlib import Path
-
 import pytest
+from tests.conftest import FakeUrlopen
 
 from osm_worldcover.adapters import worldcover as wc
 from osm_worldcover.adapters.worldcover import WorldCoverTiles
@@ -10,15 +9,10 @@ from osm_worldcover.domain.tiling import Tile
 
 
 @pytest.fixture
-def downloads(monkeypatch) -> list[str]:
-    seen: list[str] = []
-
-    def retrieve(url: str, target: str) -> None:
-        seen.append(url)
-        Path(target).write_bytes(b"tif")
-
-    monkeypatch.setattr(wc.urllib.request, "urlretrieve", retrieve)
-    return seen
+def downloads(monkeypatch) -> list[tuple[str, float | None]]:
+    fake = FakeUrlopen(b"tif")
+    monkeypatch.setattr(wc.urllib.request, "urlopen", fake)
+    return fake.calls
 
 
 def test_a_released_tile_is_reused_while_it_fits_in_the_cache(tmp_path, downloads) -> None:

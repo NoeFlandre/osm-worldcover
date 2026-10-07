@@ -13,6 +13,7 @@ the sum over the tiles it touches.
 """
 
 import math
+import shutil
 import urllib.error
 import urllib.request
 from collections import OrderedDict, defaultdict
@@ -44,6 +45,10 @@ DEFAULT_BASE_URL: Final[str] = "https://esa-worldcover.s3.eu-central-1.amazonaws
 #: Released tiles kept on disk against a neighbouring group wanting them again.
 #: Eight tiles is roughly 750 MB, a good trade against a 94 MB re-download.
 DEFAULT_CACHED_TILES: Final[int] = 8
+
+#: Seconds a tile download may wait on one socket read before it is abandoned.
+#: This bounds each stall, not the whole ~94 MB transfer.
+DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 60.0
 
 #: exactextract operations needed to correct pixel-boundary coverage.
 _OPS: Final[Sequence[str]] = ("cell_id", "coverage", "values")
@@ -87,6 +92,24 @@ class TileSource(Protocol):
     def discard(self, tile: Tile) -> None:
         """Release ``tile``; the store decides when to delete it."""
         ...
+
+
+def _download(url: str, target: Path) -> None:
+    """Stream ``url`` into ``target``, failing on a stall or a short body.
+
+    ``urlretrieve`` offers no timeout, so the request is made with ``urlopen``.
+    The body is checked against ``Content-Length`` as ``urlretrieve`` did, so a
+    truncated tile is never renamed into the cache.
+    """
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+        expected = response.headers.get("Content-Length")
+        with target.open("wb") as out:
+            shutil.copyfileobj(response, out)
+            written = out.tell()
+    if expected is not None and written != int(expected):
+        raise urllib.error.ContentTooShortError(
+            f"retrieved {written} of {expected} bytes", (str(target), response.headers)
+        )
 
 
 class WorldCoverTiles:
@@ -143,16 +166,18 @@ class WorldCoverTiles:
             return path
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         # Download beside the target and rename, so an interrupted run never
-        # leaves a truncated tile that a later run would trust.
+        # leaves a truncated tile that a later run would trust. The partial file
+        # is removed on every failure, not only HTTP errors.
         partial = path.with_suffix(path.suffix + ".part")
         try:
-            urllib.request.urlretrieve(self.url_for(tile), partial)
+            _download(self.url_for(tile), partial)
+            partial.rename(path)
         except urllib.error.HTTPError as exc:
-            partial.unlink(missing_ok=True)
             if exc.code == 404:
                 raise TileNotPublishedError(f"{tile.name} is not published") from exc
             raise
-        partial.rename(path)
+        finally:
+            partial.unlink(missing_ok=True)
         return path
 
     def discard(self, tile: Tile) -> None:

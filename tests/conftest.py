@@ -4,7 +4,10 @@ The raster fixtures are deliberately tiny and hand-laid so expected coverage
 fractions can be reasoned about exactly rather than approximated.
 """
 
+import io
+import urllib.error
 from collections import Counter
+from email.message import Message
 from pathlib import Path
 
 import geopandas as gpd
@@ -20,6 +23,65 @@ from osm_worldcover.adapters.worldcover import TileNotPublishedError
 from osm_worldcover.config import Config
 from osm_worldcover.domain.tiling import Tile
 from osm_worldcover.pipeline import RegionOutcome
+
+
+class FakeResponse(io.BytesIO):
+    """What ``urlopen`` returns: a readable body and its response headers."""
+
+    def __init__(self, body: bytes, headers: Message) -> None:
+        super().__init__(body)
+        self.headers = headers
+
+
+class BrokenResponse(FakeResponse):
+    """Delivers its body, then fails the way a dropped or stalled connection does."""
+
+    def __init__(self, body: bytes, error: BaseException, headers: Message) -> None:
+        super().__init__(body, headers)
+        self.error = error
+
+    def read(self, size: int | None = -1) -> bytes:
+        chunk = super().read(size)
+        if chunk:
+            return chunk
+        raise self.error
+
+
+class FakeUrlopen:
+    """Stand in for ``urllib.request.urlopen``, recording each ``(url, timeout)``.
+
+    Serves ``body``, declaring ``content_length`` (default: the body's length).
+    ``status`` fails the request with an HTTP error, ``error`` raises before any
+    body arrives, and ``error_after_body`` delivers the body and then raises.
+    """
+
+    def __init__(
+        self,
+        body: bytes = b"tif",
+        *,
+        content_length: int | None = None,
+        status: int | None = None,
+        error: BaseException | None = None,
+        error_after_body: BaseException | None = None,
+    ) -> None:
+        self.body = body
+        self.content_length = len(body) if content_length is None else content_length
+        self.status = status
+        self.error = error
+        self.error_after_body = error_after_body
+        self.calls: list[tuple[str, float | None]] = []
+
+    def __call__(self, url: str, timeout: float | None = None) -> FakeResponse:
+        self.calls.append((url, timeout))
+        if self.status is not None:
+            raise urllib.error.HTTPError(url, self.status, "boom", Message(), None)
+        if self.error is not None:
+            raise self.error
+        headers = Message()
+        headers["Content-Length"] = str(self.content_length)
+        if self.error_after_body is not None:
+            return BrokenResponse(self.body, self.error_after_body, headers)
+        return FakeResponse(self.body, headers)
 
 
 @pytest.fixture

@@ -11,7 +11,7 @@ import rasterio
 import shapely
 from rasterio.windows import Window
 from shapely.geometry import MultiPolygon, Polygon
-from tests.conftest import write_raster
+from tests.conftest import FakeUrlopen, write_raster
 
 import osm_worldcover.adapters.worldcover as worldcover
 from osm_worldcover.adapters.worldcover import (
@@ -871,20 +871,6 @@ class TestBoundaryCells:
         assert ids.tolist() == sorted(_halo_cells(geometry, 5, 4))
 
 
-class FakeDownload:
-    """Stand in for ``urlretrieve``: write bytes, or fail with an HTTP status."""
-
-    def __init__(self, status: int | None = None) -> None:
-        self.status = status
-        self.calls: list[tuple[str, Path]] = []
-
-    def __call__(self, url: str, target: Path) -> None:
-        self.calls.append((url, Path(target)))
-        Path(target).write_bytes(b"tile")
-        if self.status is not None:
-            raise urllib.error.HTTPError(url, self.status, "boom", None, None)  # type: ignore[arg-type]
-
-
 class TestTileCache:
     def test_defaults_describe_the_published_product(self, tmp_path) -> None:
         tiles = WorldCoverTiles(str(tmp_path), base_url="https://example.test/rootX//")
@@ -906,8 +892,8 @@ class TestTileCache:
         )
 
     def test_download_lands_atomically_in_the_cache(self, tmp_path, monkeypatch) -> None:
-        fake = FakeDownload()
-        monkeypatch.setattr(worldcover.urllib.request, "urlretrieve", fake)
+        fake = FakeUrlopen(b"tile")
+        monkeypatch.setattr(worldcover.urllib.request, "urlopen", fake)
         tiles = WorldCoverTiles(tmp_path / "nested" / "cache")
         tile = Tile(48, 6)
 
@@ -918,20 +904,20 @@ class TestTileCache:
             b"tile",
             {tile.name},
         )
-        assert fake.calls == [(tiles.url_for(tile), path.with_name(path.name + ".part"))]
+        assert fake.calls == [(tiles.url_for(tile), worldcover.DOWNLOAD_TIMEOUT_SECONDS)]
         assert [p.name for p in path.parent.iterdir()] == [path.name]
 
     @pytest.mark.parametrize("cached", [b"cached", b"1"])
     def test_a_cached_tile_is_not_downloaded_again(self, tmp_path, monkeypatch, cached) -> None:
-        fake = FakeDownload()
-        monkeypatch.setattr(worldcover.urllib.request, "urlretrieve", fake)
+        fake = FakeUrlopen()
+        monkeypatch.setattr(worldcover.urllib.request, "urlopen", fake)
         tiles = WorldCoverTiles(tmp_path)
         tiles.path_for(Tile(48, 6)).write_bytes(cached)
         assert (tiles.ensure(Tile(48, 6)).read_bytes(), fake.calls) == (cached, [])
 
     def test_an_empty_cached_tile_is_downloaded_again(self, tmp_path, monkeypatch) -> None:
-        fake = FakeDownload()
-        monkeypatch.setattr(worldcover.urllib.request, "urlretrieve", fake)
+        fake = FakeUrlopen(b"tile")
+        monkeypatch.setattr(worldcover.urllib.request, "urlopen", fake)
         tiles = WorldCoverTiles(tmp_path)
         tiles.path_for(Tile(48, 6)).write_bytes(b"")
         assert tiles.ensure(Tile(48, 6)).read_bytes() == b"tile"
@@ -940,7 +926,7 @@ class TestTileCache:
     def test_an_absent_tile_is_reported_as_unpublished_and_leaves_no_partial_file(
         self, tmp_path, monkeypatch
     ) -> None:
-        monkeypatch.setattr(worldcover.urllib.request, "urlretrieve", FakeDownload(status=404))
+        monkeypatch.setattr(worldcover.urllib.request, "urlopen", FakeUrlopen(status=404))
         tiles = WorldCoverTiles(tmp_path)
         with pytest.raises(TileNotPublishedError, match=r"^N48E006 is not published$") as caught:
             tiles.ensure(Tile(48, 6))
@@ -949,7 +935,7 @@ class TestTileCache:
 
     @pytest.mark.parametrize("status", [403, 500])
     def test_other_http_errors_propagate_and_clean_up(self, tmp_path, monkeypatch, status) -> None:
-        monkeypatch.setattr(worldcover.urllib.request, "urlretrieve", FakeDownload(status=status))
+        monkeypatch.setattr(worldcover.urllib.request, "urlopen", FakeUrlopen(status=status))
         with pytest.raises(urllib.error.HTTPError) as caught:
             WorldCoverTiles(tmp_path).ensure(Tile(48, 6))
         assert caught.value.code == status
@@ -957,7 +943,7 @@ class TestTileCache:
         assert list(tmp_path.iterdir()) == []
 
     def test_an_ensured_tile_survives_the_release_of_others(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(worldcover.urllib.request, "urlretrieve", FakeDownload())
+        monkeypatch.setattr(worldcover.urllib.request, "urlopen", FakeUrlopen())
         tiles = WorldCoverTiles(tmp_path, max_cached_tiles=1)
         first, second = Tile(1, 1), Tile(2, 2)
         first_path = tiles.ensure(first)
