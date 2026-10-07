@@ -22,6 +22,7 @@ from typing import Final, Protocol
 
 import geopandas as gpd
 import numpy as np
+import pyproj
 import rasterio
 import shapely
 from exactextract import exact_extract
@@ -53,6 +54,8 @@ _OPS: Final[Sequence[str]] = ("cell_id", "coverage", "values")
 #: polygon against those cells; the halo only selects candidates for checking.
 _BOUNDARY_HALO_PIXELS: Final[float] = 0.01
 _BOUNDARY_ROW_CHUNK: Final[int] = 256
+# Boundary cells omitted by exactextract are read in windows this many rows tall.
+_MISSING_READ_ROWS: Final[int] = 64
 
 # exactextract returns one cell-level result array per feature. Bound each
 # batch by both feature count and polygon area so one busy tile cannot make a
@@ -199,6 +202,7 @@ def _add_raster(
 ) -> None:
     """Add one raster's contribution to every polygon's running totals."""
     with rasterio.open(path) as dataset:
+        _check_same_crs(frame.crs, dataset.crs, path)
         transform = dataset.transform
         cell_area = abs(transform.a * transform.e - transform.b * transform.d)
         for start, stop in _feature_batches(frame, transform, dataset.width, dataset.height):
@@ -218,6 +222,14 @@ def _add_raster(
                     cell_area,
                     areas[index],
                 )
+
+
+def _check_same_crs(frame_crs, raster_crs, path: Path) -> None:
+    """Reject polygons and raster in different CRSs; their cells would not line up."""
+    if frame_crs is None or raster_crs is None:
+        return
+    if pyproj.CRS.from_user_input(frame_crs) != pyproj.CRS.from_user_input(raster_crs):
+        raise ValueError(f"frame CRS {frame_crs} does not match CRS of raster {path}: {raster_crs}")
 
 
 def _partition_feature_batch(
@@ -733,15 +745,47 @@ def _read_missing_classes(
     classes: np.ndarray,
     positions: np.ndarray,
 ) -> None:
-    """Read valid pixel classes for boundary cells omitted by exactextract."""
-    for row, column, position in zip(rows, columns, positions, strict=True):
-        value = dataset.read(
-            1,
-            window=((int(row), int(row) + 1), (int(column), int(column) + 1)),
-            masked=True,
-        )[0, 0]
-        if not np.ma.is_masked(value):
-            classes[position] = float(value)
+    """Read valid pixel classes for boundary cells omitted by exactextract.
+
+    Cells are read one window per band of ``_MISSING_READ_ROWS`` rows, not one
+    GDAL read per cell.
+    """
+    if not len(rows) == len(columns) == len(positions):
+        raise ValueError("rows, columns and positions must have the same length")
+    if len(rows) == 0:
+        return
+    rows, columns, positions = (np.asarray(a, dtype=np.intp) for a in (rows, columns, positions))
+    order = np.argsort(rows, kind="stable")
+    rows, columns, positions = rows[order], columns[order], positions[order]
+    bands = rows // _MISSING_READ_ROWS
+    starts = np.flatnonzero(np.r_[True, bands[1:] != bands[:-1]])
+    for start, stop in zip(starts, np.r_[starts[1:], len(rows)], strict=True):
+        _read_band_classes(
+            dataset,
+            rows[start:stop],
+            columns[start:stop],
+            classes,
+            positions[start:stop],
+        )
+
+
+def _read_band_classes(
+    dataset: rasterio.DatasetReader,
+    rows: np.ndarray,
+    columns: np.ndarray,
+    classes: np.ndarray,
+    positions: np.ndarray,
+) -> None:
+    """Read one window covering a band's cells and fill the unmasked ones."""
+    top, left = int(rows.min()), int(columns.min())
+    window = dataset.read(
+        1,
+        window=((top, int(rows.max()) + 1), (left, int(columns.max()) + 1)),
+        masked=True,
+    )
+    values = window[rows - top, columns - left]
+    valid = ~np.ma.getmaskarray(values)
+    classes[positions[valid]] = values.data[valid].astype(float)
 
 
 def _add_class_coverage(

@@ -115,6 +115,12 @@ class TestClassCoverage:
             {10: pytest.approx(0.5), 50: pytest.approx(0.5)}
         ]
 
+    def test_a_frame_in_a_different_crs_than_the_raster_is_rejected(self, tmp_path) -> None:
+        values = np.full((4, 4), 10, dtype="uint8")
+        mercator = write_raster(tmp_path / "mercator.tif", values, crs="EPSG:3857")
+        with pytest.raises(ValueError, match="CRS"):
+            class_coverage([mercator], one(shapely.box(0, 0, 1, 1)))
+
     def test_a_polygon_inside_one_class_is_wholly_that_class(self, half_and_half) -> None:
         left = one(Polygon([(0, 0), (0, 4), (2, 4), (2, 0)]))
         assert class_coverage([half_and_half], left) == [{10: pytest.approx(1.0)}]
@@ -1045,7 +1051,7 @@ class TestBoundaryCorrection:
         excluded = worldcover._accumulate_boundary_cells(
             totals, np.array([], dtype=np.int64), np.array([]), geometry, uniform, 0.5
         )
-        assert uniform.reads == 8
+        assert uniform.reads == 1
         assert not excluded.any()
         assert dict(totals) == {10: pytest.approx(4.0)}
 
@@ -1058,6 +1064,18 @@ class TestBoundaryCorrection:
         )
         assert uniform.reads == 1
         assert dict(totals) == {99: pytest.approx(4.75), 10: pytest.approx(0.25)}
+
+    def test_missing_cells_are_read_in_one_window_per_row_band(self, tmp_path) -> None:
+        values = np.arange(200 * 4, dtype="uint8").reshape(200, 4) % 200 + 1
+        path = write_raster(tmp_path / "tall.tif", values, origin=(0, 200))
+        rows = np.array([0, 1, 2, 150, 151, 152])
+        columns = np.array([0, 1, 2, 1, 2, 3])
+        with rasterio.open(path) as dataset:
+            counted = ReadCounter(dataset)
+            classes = np.full(len(rows), np.nan)
+            worldcover._read_missing_classes(counted, rows, columns, classes, np.arange(len(rows)))
+        assert counted.reads == 2
+        assert classes.tolist() == values[rows, columns].astype(float).tolist()
 
     def test_stable_coverage_keeps_the_precision_of_float32_results(self, tmp_path) -> None:
         path = write_raster(tmp_path / "big.tif", np.full((20, 20), 10, dtype="uint8"), (0, 20))
@@ -1084,7 +1102,7 @@ class TestBoundaryCorrection:
 
         classes = np.full(2, np.nan)
         for rows, columns, positions in [([0, 1], [0, 1], [0]), ([0], [0, 1], [0, 1])]:
-            with pytest.raises(ValueError, match="zip"):
+            with pytest.raises(ValueError, match="same length"):
                 worldcover._read_missing_classes(
                     AllMasked(), np.array(rows), np.array(columns), classes, np.array(positions)
                 )
