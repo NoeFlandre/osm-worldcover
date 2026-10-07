@@ -72,6 +72,19 @@ docker run --rm -v "$PWD/data:/data" osm-worldcover \
   build --source description --out /data/out --cache /data/cache
 ```
 
+Release finalization uses POSIX file locks and directory fsync. Run it on
+macOS or Linux; Windows is not a supported release environment.
+
+For a release created before reader locking was added, initialize its
+persistent lock after stopping any older finalizer:
+
+```bash
+uv run owc migrate-release-lock data/out/v1.1.0
+```
+
+The command requires the four core files and no pending recovery journal. It
+only initializes the lock; it does not audit the release contents.
+
 ## Guarantees
 
 The build checks each published release against these rules. The build fails if

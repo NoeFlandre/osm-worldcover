@@ -13,6 +13,7 @@ from osm_worldcover.adapters.writer import (
     write_batches,
     write_manifest,
 )
+from osm_worldcover.release_commit import release_lock
 
 
 def reader(n: int = 3, max_chunksize: int = 2) -> pa.RecordBatchReader:
@@ -83,10 +84,14 @@ def test_manifest_is_written_as_readable_json(tmp_path) -> None:
 
 
 def test_manifest_round_trips_through_read_manifest(tmp_path) -> None:
-    write_manifest({"counts": {"examples": {"total": 7}}}, tmp_path / "manifest.json")
+    with release_lock(tmp_path):
+        write_manifest({"counts": {"examples": {"total": 7}}}, tmp_path / "manifest.json")
     assert read_manifest(tmp_path)["counts"]["examples"]["total"] == 7
 
 
 def test_read_manifest_rejects_a_missing_build(tmp_path) -> None:
+    target = tmp_path / "nope"
+    with release_lock(target):
+        pass
     with pytest.raises(FileNotFoundError):
-        read_manifest(tmp_path / "nope")
+        read_manifest(target)

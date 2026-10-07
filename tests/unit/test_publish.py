@@ -27,6 +27,7 @@ from osm_worldcover.adapters.publish import (
 from osm_worldcover.config import Config
 from osm_worldcover.domain.splits import assign_cell
 from osm_worldcover.pipeline import RegionOutcome
+from osm_worldcover.release_commit import release_lock
 
 CONFIG = Config(source="description", source_revision="a" * 40, min_words=10)
 SETTINGS = CONFIG.as_manifest_settings()
@@ -134,6 +135,8 @@ def build(tmp_path):
         },
     }
     (target / "manifest.json").write_text(json.dumps(manifest))
+    with release_lock(target):
+        pass
     return target
 
 
@@ -320,6 +323,8 @@ def test_valid_fixture_passes_full_source_audit(build):
 
 
 def test_build_without_inputs_is_refused(tmp_path):
+    with release_lock(tmp_path):
+        pass
     with pytest.raises(FileNotFoundError):
         files_to_publish(tmp_path)
 

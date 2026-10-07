@@ -20,8 +20,10 @@ in batches rather than collected first.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Iterable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,6 +44,16 @@ from osm_worldcover.domain.validation import (
     validate,
 )
 from osm_worldcover.pipeline import TEXT_COLUMNS
+from osm_worldcover.release_commit import (
+    ReleaseCommitError,
+    commit_release,
+    core_inventory,
+    create_stage,
+    discard_stage,
+    release_write_lock,
+    stage_inventory,
+    transaction_pending,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -71,29 +83,88 @@ def finalize_shards(
     processing: dict[str, Any] | None = None,
 ) -> StreamedBuild:
     """Assemble region shards into the dataset written under ``out_dir``."""
-    work_dir, out_dir = Path(work_dir), Path(out_dir)
+    shard_dir = Path(shard_dir).absolute()
+    work_dir, out_dir = Path(work_dir).absolute(), Path(out_dir).resolve()
+    target = out_dir / f"v{config.dataset_version}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with release_write_lock(target):
+        return _finalize_locked(Path(shard_dir), config, work_dir, target, rejections, processing)
+
+
+def _finalize_locked(
+    shard_dir: Path,
+    config: Config,
+    work_dir: Path,
+    target: Path,
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> StreamedBuild:
     enriched = work_dir / "enriched"
     if enriched.exists():
         shutil.rmtree(enriched)
     enriched.mkdir(parents=True)
-    target = out_dir / f"v{config.dataset_version}"
-    target.mkdir(parents=True, exist_ok=True)
 
-    if _enrich_shards(Path(shard_dir), enriched, config) == 0:
+    if _enrich_shards(shard_dir, enriched, config) == 0:
         return StreamedBuild(0, [], {}, validate([]))
 
     connection, dropped, deduplication_analysis = _deduplicate(enriched)
     try:
-        paths, rows = _write_splits(connection, target)
-        counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
+        return _build_candidate(
+            connection,
+            config,
+            target,
+            dropped,
+            deduplication_analysis,
+            rejections,
+            processing,
+        )
     finally:
         connection.close()
 
-    manifest = manifest_module.build(counts, config.as_manifest_settings())
-    if processing is not None:
-        manifest["processing"] = processing
-    report = _validate_written(paths, config)
-    paths.append(write_manifest(manifest, target / "manifest.json"))
+
+def _build_candidate(
+    connection: DuckDBPyConnection,
+    config: Config,
+    target: Path,
+    dropped: dict[str, int],
+    deduplication_analysis: dict[str, Any],
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> StreamedBuild:
+    stage: Path | None = None
+    try:
+        stage = create_stage(target)
+        paths, rows = _write_splits(connection, stage)
+        counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
+        manifest = manifest_module.build(counts, config.as_manifest_settings())
+        if processing is not None:
+            manifest["processing"] = processing
+        manifest_path = write_manifest(manifest, stage / "manifest.json")
+        report = _validate_written(paths, config)
+        _validate_staged_manifest(manifest_path, paths, manifest, rows)
+        if not report.ok:
+            discard_stage(target, stage)
+            return _streamed_result(rows, [], manifest, report, dropped)
+        inventory = stage_inventory(stage)
+        if core_inventory(target) == inventory:
+            discard_stage(target, stage)
+        else:
+            commit_release(target, stage, inventory)
+        return _streamed_result(rows, _target_paths(target), manifest, report, dropped)
+    except BaseException:
+        if stage is not None and not transaction_pending(target):
+            with suppress(Exception):
+                discard_stage(target, stage)
+        raise
+
+
+def _streamed_result(
+    rows: int,
+    paths: list[Path],
+    manifest: dict[str, Any],
+    report: ValidationReport,
+    dropped: dict[str, int],
+) -> StreamedBuild:
     return StreamedBuild(
         rows=rows,
         paths=paths,
@@ -103,6 +174,30 @@ def finalize_shards(
         duplicate_records=dropped["duplicate_polygon_text_label_records"],
         documents_split_across_splits=dropped["documents_split_across_splits"],
     )
+
+
+def _target_paths(target: Path) -> list[Path]:
+    return [
+        *(target / f"{split}.parquet" for split in manifest_module.SPLIT_ORDER),
+        target / "manifest.json",
+    ]
+
+
+def _validate_staged_manifest(
+    manifest_path: Path,
+    split_paths: Sequence[Path],
+    expected: dict[str, Any],
+    rows: int,
+) -> None:
+    actual = json.loads(manifest_path.read_text())
+    if actual != expected:
+        raise ReleaseCommitError("staged manifest changed after it was written")
+    examples = actual.get("counts", {}).get("examples", {})
+    counts = {path.stem: int(pq.ParquetFile(path).metadata.num_rows) for path in split_paths}
+    if any(examples.get(split) != count for split, count in counts.items()):
+        raise ReleaseCommitError("staged manifest split counts do not match the Parquet files")
+    if examples.get("total") != rows or sum(counts.values()) != rows:
+        raise ReleaseCommitError("staged manifest total does not match the Parquet files")
 
 
 def _enrich_shards(shard_dir: Path, enriched: Path, config: Config) -> int:

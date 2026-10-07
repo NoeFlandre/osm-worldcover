@@ -18,6 +18,8 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from osm_worldcover.release_commit import release_read_lock
+
 __all__ = [
     "MANIFEST_NAME",
     "PARQUET_ROW_GROUP_SIZE",
@@ -32,10 +34,11 @@ PARQUET_ROW_GROUP_SIZE = 25_000
 
 def read_manifest(build_dir: Path) -> dict:
     """Read the manifest written beside a build."""
-    path = Path(build_dir) / MANIFEST_NAME
-    if not path.exists():
-        raise FileNotFoundError(f"no manifest in {build_dir}")
-    return json.loads(path.read_text())
+    with release_read_lock(build_dir):
+        path = Path(build_dir) / MANIFEST_NAME
+        if not path.exists():
+            raise FileNotFoundError(f"no manifest in {build_dir}")
+        return json.loads(path.read_text())
 
 
 def write_batches(reader: pa.RecordBatchReader, path: Path) -> int:

@@ -11,6 +11,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from osm_worldcover.release_commit import release_read_lock
+
 from ._audit.aggregates import (
     _retained_text_diagnostics as _retained_text_diagnostics,
 )
@@ -44,9 +46,25 @@ def audit_build(
     remain visible as warnings; ``strict_text_leakage`` makes cross-split text
     identity fatal even when the labels or document identities differ.
     """
+    build_dir = Path(build_dir)
+    with release_read_lock(build_dir):
+        return _audit_build_locked(
+            build_dir,
+            require_complete=require_complete,
+            require_card=require_card,
+            strict_text_leakage=strict_text_leakage,
+        )
+
+
+def _audit_build_locked(
+    build_dir: Path,
+    *,
+    require_complete: bool,
+    require_card: bool,
+    strict_text_leakage: bool,
+) -> AuditReport:
     report = AuditReport()
     checks = _Checks(report)
-    build_dir = Path(build_dir)
     manifest = _load_manifest(build_dir, checks)
     paths = _inspect_files(build_dir, checks)
     if manifest is None or checks.counts:

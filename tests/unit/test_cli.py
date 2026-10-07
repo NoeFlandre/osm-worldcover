@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from osm_worldcover.config import Config
 from osm_worldcover.domain.validation import Check, ValidationReport, Violation
 from osm_worldcover.finalize import StreamedBuild
 from osm_worldcover.pipeline import RegionOutcome
+from osm_worldcover.release_commit import release_lock
 
 runner = CliRunner()
 
@@ -51,6 +53,11 @@ def frame(n: int = 4) -> pd.DataFrame:
     )
 
 
+def _seed_release_lock(build_dir: Path) -> None:
+    with release_lock(build_dir):
+        pass
+
+
 def built(tmp_path, report=None) -> StreamedBuild:
     """A StreamedBuild as run_build would return it, already written to disk."""
     target = tmp_path / "v1.0.0"
@@ -62,6 +69,7 @@ def built(tmp_path, report=None) -> StreamedBuild:
         paths.append(path)
     paths.append(target / "manifest.json")
     paths[-1].write_text(json.dumps(MANIFEST))
+    _seed_release_lock(target)
     return StreamedBuild(4, paths, MANIFEST, report or ValidationReport(4))
 
 
@@ -88,6 +96,7 @@ def test_verify_accepts_a_sound_build(tmp_path) -> None:
     build.mkdir(parents=True)
     for split in ("train", "validation", "test"):
         frame()[frame()["split"] == split].to_parquet(build / f"{split}.parquet", index=False)
+    _seed_release_lock(build)
     outcome = runner.invoke(cli.app, ["verify", str(build)])
     assert outcome.exit_code == 0
     assert "every guarantee holds" in outcome.output
@@ -103,6 +112,7 @@ def test_verify_uses_the_manifest_text_threshold(tmp_path, minimum, expected_exi
     (build / "manifest.json").write_text(
         json.dumps({"settings": {"source": "description", "min_words": minimum}})
     )
+    _seed_release_lock(build)
 
     outcome = runner.invoke(cli.app, ["verify", str(build)])
 
@@ -118,6 +128,7 @@ def test_verify_uses_ten_words_for_legacy_manifest_without_settings(tmp_path) ->
     rows["text"] = ["Small public wooded garden"]
     rows.to_parquet(build / "train.parquet", index=False)
     (build / "manifest.json").write_text(json.dumps(MANIFEST))
+    _seed_release_lock(build)
 
     outcome = runner.invoke(cli.app, ["verify", str(build)])
 
@@ -131,12 +142,14 @@ def test_verify_rejects_a_build_that_breaks_a_guarantee(tmp_path) -> None:
     bad = frame(2)
     bad.loc[:, "dominant_fraction"] = 0.4
     bad.to_parquet(build / "train.parquet", index=False)
+    _seed_release_lock(build)
     outcome = runner.invoke(cli.app, ["verify", str(build)])
     assert outcome.exit_code == 1
     assert "below_threshold" in outcome.output
 
 
 def test_verify_refuses_a_directory_with_no_splits(tmp_path) -> None:
+    _seed_release_lock(tmp_path)
     outcome = runner.invoke(cli.app, ["verify", str(tmp_path)])
     assert outcome.exit_code == 1
     assert "no splits" in outcome.output
@@ -216,10 +229,65 @@ def test_info_summarises_a_manifest(tmp_path) -> None:
     build = tmp_path / "v1.0.0"
     build.mkdir(parents=True)
     (build / "manifest.json").write_text(json.dumps(MANIFEST))
+    _seed_release_lock(build)
     outcome = runner.invoke(cli.app, ["info", str(build)])
     assert outcome.exit_code == 0
     assert "Tree cover" in outcome.output
     assert "examples: 4" in outcome.output
+
+
+def test_migrate_release_lock_cli_is_idempotent(tmp_path) -> None:
+    build = tmp_path / "v1.0.0"
+    build.mkdir()
+    for name in ("train.parquet", "validation.parquet", "test.parquet", "manifest.json"):
+        (build / name).write_bytes(name.encode())
+    command = ["migrate-release-lock", str(build)]
+
+    first = runner.invoke(cli.app, command)
+    second = runner.invoke(cli.app, command)
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert (tmp_path / ".v1.0.0.lock").is_file()
+
+
+def test_migrate_release_lock_cli_rejects_an_incomplete_release(tmp_path) -> None:
+    build = tmp_path / "v1.0.0"
+    build.mkdir()
+    (build / "manifest.json").write_text("{}")
+
+    result = runner.invoke(cli.app, ["migrate-release-lock", str(build)])
+
+    assert result.exit_code == 1
+    assert "missing core file" in result.output
+    assert not (tmp_path / ".v1.0.0.lock").exists()
+
+
+def test_info_holds_a_release_read_lock_while_loading_the_manifest(tmp_path, monkeypatch) -> None:
+    build = tmp_path / "v1.0.0"
+    events = []
+
+    @contextmanager
+    def observed_lock(path):
+        events.append(("lock-enter", path))
+        yield
+        events.append(("lock-exit", path))
+
+    def observed_read(path):
+        events.append(("read-manifest", path))
+        return MANIFEST
+
+    monkeypatch.setattr(cli, "release_read_lock", observed_lock)
+    monkeypatch.setattr(cli, "read_manifest", observed_read)
+
+    outcome = runner.invoke(cli.app, ["info", str(build)])
+
+    assert outcome.exit_code == 0
+    assert events == [
+        ("lock-enter", build),
+        ("read-manifest", build),
+        ("lock-exit", build),
+    ]
 
 
 def test_build_reads_regions_from_a_file(tmp_path, monkeypatch) -> None:
@@ -295,7 +363,15 @@ def test_assemble_turns_shards_into_a_dataset(tmp_path) -> None:
     shard_file(shards / "a.parquet")
     outcome = runner.invoke(
         cli.app,
-        ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            str(shards),
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
     assert (tmp_path / "out" / "v1.1.0" / "train.parquet").exists()
@@ -311,7 +387,16 @@ def test_assemble_accepts_several_shard_directories(tmp_path) -> None:
         shard_file(d / f"{name}.parquet", n=2)
         dirs.append(str(d))
     outcome = runner.invoke(
-        cli.app, ["assemble", "--allow-unverified-shards", *dirs, "--out", str(tmp_path / "out")]
+        cli.app,
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            *dirs,
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 0, outcome.output
     train = pd.read_parquet(tmp_path / "out" / "v1.1.0" / "train.parquet")
@@ -327,7 +412,15 @@ def test_assemble_fails_when_a_guarantee_breaks(tmp_path) -> None:
     frame.to_parquet(shards / "a.parquet", index=False)
     outcome = runner.invoke(
         cli.app,
-        ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
+        [
+            "assemble",
+            "--allow-unverified-shards",
+            str(shards),
+            "--out",
+            str(tmp_path / "out"),
+            "--work",
+            str(tmp_path / "work"),
+        ],
     )
     assert outcome.exit_code == 1
     assert "below_threshold" in outcome.output
@@ -925,6 +1018,7 @@ def test_info_without_manifest_exits_cleanly(tmp_path) -> None:
 
 def test_info_with_incomplete_manifest_exits_cleanly(tmp_path) -> None:
     (tmp_path / "manifest.json").write_text("{}")
+    _seed_release_lock(tmp_path)
     result = runner.invoke(cli.app, ["info", str(tmp_path)])
     assert result.exit_code == 1
     assert "missing key" in result.output

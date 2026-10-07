@@ -23,6 +23,12 @@ from osm_worldcover.config import (
 )
 from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
+from osm_worldcover.release_commit import (
+    migrate_release_lock as _migrate_release_lock,
+)
+from osm_worldcover.release_commit import (
+    release_read_lock,
+)
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -341,6 +347,14 @@ def _link_into(combined: Path, directory: Path, prefix: str) -> None:
             (combined / f"{prefix}__{path.name}").symlink_to(path.resolve())
 
 
+@app.command("migrate-release-lock")
+@_fail
+def migrate_release_lock(build_dir: BuildDirArgument) -> None:
+    """Initialize the reader lock for an existing release directory."""
+    lock_path = _migrate_release_lock(build_dir)
+    typer.echo(f"release lock initialized: {lock_path}")
+
+
 @app.command()
 @_fail
 def verify(
@@ -350,6 +364,11 @@ def verify(
     ] = DEFAULT_THRESHOLD,
 ) -> None:
     """Re-check a build on disk against every dataset guarantee."""
+    with release_read_lock(build_dir):
+        _verify_locked(build_dir, threshold)
+
+
+def _verify_locked(build_dir: Path, threshold: float) -> None:
     from osm_worldcover.domain.validation import validate
 
     rows = _load_splits(build_dir)
@@ -457,7 +476,8 @@ def _print_audit_report(report) -> None:
 @_fail
 def info(build_dir: BuildDirArgument) -> None:
     """Summarise a build's manifest."""
-    manifest = read_manifest(build_dir)
+    with release_read_lock(build_dir):
+        manifest = read_manifest(build_dir)
     counts = manifest["counts"]["examples"]
     typer.echo(
         f"examples: {counts['total']:,}  "
