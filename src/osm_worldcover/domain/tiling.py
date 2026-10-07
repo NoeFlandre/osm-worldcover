@@ -69,7 +69,9 @@ def tiles_for_bbox(bbox: Bbox) -> list[Tile]:
 
 
 def _floor_to_grid(value: float) -> int:
-    return int(math.floor(value / TILE_DEGREES) * TILE_DEGREES)
+    # Float floor division, not value / TILE_DEGREES: a subnormal negative value
+    # divides to -0.0 and would floor to the wrong tile.
+    return int(math.floor(value // TILE_DEGREES) * TILE_DEGREES)
 
 
 def _upper_grid(low: float, high: float) -> int:
