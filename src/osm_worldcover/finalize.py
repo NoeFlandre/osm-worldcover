@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -77,14 +77,37 @@ def finalize_shards(
         shutil.rmtree(enriched)
     enriched.mkdir(parents=True)
     target = out_dir / f"v{config.dataset_version}"
-    target.mkdir(parents=True, exist_ok=True)
 
     if _enrich_shards(Path(shard_dir), enriched, config) == 0:
+        # Nothing to publish: retire the previous release rather than leave it current.
+        _replace_release(None, target)
         return StreamedBuild(0, [], {}, validate([]))
 
+    # Everything is written beside the target, and only swapped in once complete,
+    # so a failure part-way leaves the previous release exactly as it was.
+    staging = out_dir / f"{target.name}.staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    try:
+        build = _write_release(enriched, staging, config, rejections, processing)
+        _replace_release(staging, target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return replace(build, paths=[target / path.relative_to(staging) for path in build.paths])
+
+
+def _write_release(
+    enriched: Path,
+    staging: Path,
+    config: Config,
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> StreamedBuild:
+    """Write every split and the manifest into ``staging``."""
     connection, dropped, deduplication_analysis = _deduplicate(enriched)
     try:
-        paths, rows = _write_splits(connection, target)
+        paths, rows = _write_splits(connection, staging)
         counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
     finally:
         connection.close()
@@ -93,7 +116,7 @@ def finalize_shards(
     if processing is not None:
         manifest["processing"] = processing
     report = _validate_written(paths, config)
-    paths.append(write_manifest(manifest, target / "manifest.json"))
+    paths.append(write_manifest(manifest, staging / "manifest.json"))
     return StreamedBuild(
         rows=rows,
         paths=paths,
@@ -103,6 +126,26 @@ def finalize_shards(
         duplicate_records=dropped["duplicate_polygon_text_label_records"],
         documents_split_across_splits=dropped["documents_split_across_splits"],
     )
+
+
+def _replace_release(staging: Path | None, target: Path) -> None:
+    """Swap ``staging`` in for ``target``, or retire ``target`` when ``staging`` is None.
+
+    The old release is renamed aside first and only deleted once the new one is
+    in place, so a failed rename restores it instead of losing it.
+    """
+    retired = target.with_name(f"{target.name}.retired")
+    shutil.rmtree(retired, ignore_errors=True)
+    if target.exists():
+        target.rename(retired)
+    if staging is not None:
+        try:
+            staging.rename(target)
+        except BaseException:
+            if retired.exists():
+                retired.rename(target)
+            raise
+    shutil.rmtree(retired, ignore_errors=True)
 
 
 def _enrich_shards(shard_dir: Path, enriched: Path, config: Config) -> int:
