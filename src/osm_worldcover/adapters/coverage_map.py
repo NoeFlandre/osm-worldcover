@@ -6,6 +6,7 @@ from typing import Final
 import duckdb
 import geopandas as gpd
 import pandas as pd
+from pyogrio.errors import DataSourceError
 
 from osm_worldcover.domain.manifest import SPLIT_ORDER
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
@@ -270,7 +271,7 @@ def _reject_mismatched_labels(frame: pd.DataFrame) -> None:
 def _load_land() -> gpd.GeoDataFrame:
     try:
         land = gpd.read_file(_WORLD_LAND_URL)
-    except Exception as exc:
+    except (OSError, ValueError, DataSourceError) as exc:
         raise CoverageMapError("could not load the Natural Earth world land outline") from exc
     if land.empty:
         raise CoverageMapError("Natural Earth world land outline is empty")
