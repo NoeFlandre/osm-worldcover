@@ -33,8 +33,9 @@ def test_build_area_default_is_config_area_in_km2() -> None:
     assert _defaults("build")["max_area_km2"] * 1e6 == Config().max_polygon_area_m2
 
 
-def test_verify_threshold_default_equals_config_default() -> None:
-    assert _defaults("verify")["threshold"] == Config().threshold
+def test_verify_threshold_defaults_to_the_manifest_then_config() -> None:
+    """None means "read it from the build's manifest"; see test_cli for the fallback."""
+    assert _defaults("verify")["threshold"] is None
 
 
 def test_effective_defaults_are_unchanged() -> None:

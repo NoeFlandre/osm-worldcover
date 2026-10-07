@@ -346,8 +346,12 @@ def _link_into(combined: Path, directory: Path, prefix: str) -> None:
 def verify(
     build_dir: BuildDirArgument,
     threshold: Annotated[
-        float, typer.Option(help="Minimum dominant-class fraction every row must meet.")
-    ] = DEFAULT_THRESHOLD,
+        float | None,
+        typer.Option(
+            help="Minimum dominant-class fraction every row must meet. "
+            "Defaults to the manifest's dominance_threshold."
+        ),
+    ] = None,
 ) -> None:
     """Re-check a build on disk against every dataset guarantee."""
     from osm_worldcover.domain.validation import validate
@@ -357,6 +361,8 @@ def verify(
         typer.echo(f"no splits found in {build_dir}", err=True)
         raise typer.Exit(1)
     settings = _verification_settings(build_dir)
+    if threshold is None:
+        threshold = settings.get("dominance_threshold", DEFAULT_THRESHOLD)
     report = validate(
         rows, threshold=threshold, min_words=settings.get("min_words", DEFAULT_MIN_WORDS)
     )
