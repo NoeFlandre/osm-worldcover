@@ -8,8 +8,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Self
 
-import yaml
-
 from osm_worldcover.adapters.worldcover import DEFAULT_CACHED_TILES
 from osm_worldcover.domain.dominance import DEFAULT_THRESHOLD
 from osm_worldcover.domain.splits import DEFAULT_RATIOS, DEFAULT_RESOLUTION, DEFAULT_SEED
@@ -103,21 +101,6 @@ class Config:
         """Resolve a text-length override or the source-specific default."""
         return self.source_recipe.min_words if self.min_words is None else self.min_words
 
-    @classmethod
-    def from_yaml(cls, path: Path) -> Self:
-        """Load a config from ``path``, filling unset keys with defaults."""
-        raw = yaml.safe_load(path.read_text()) or {}
-        return cls.from_mapping(raw)
-
-    @classmethod
-    def from_mapping(cls, raw: dict[str, Any]) -> Self:
-        """Build a config from a plain mapping, rejecting unknown keys."""
-        known = {f.name for f in cls.__dataclass_fields__.values()}
-        unknown = set(raw) - known
-        if unknown:
-            raise ValueError(f"unknown config keys: {sorted(unknown)}")
-        return cls(**_coerce(dict(raw)))
-
     def with_overrides(self, **over: Any) -> Self:
         """Return a copy with ``over`` applied, ignoring ``None`` values."""
         return replace(self, **{k: v for k, v in over.items() if v is not None})
@@ -157,14 +140,3 @@ def _validate_min_words(value: int) -> None:
     """Require a positive integer so an override can never admit empty text."""
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError("min_words must be a positive integer or null for the source default")
-
-
-def _coerce(data: dict[str, Any]) -> dict[str, Any]:
-    """Turn YAML's strings and lists into the types the dataclass declares."""
-    for key in ("out_dir", "cache_dir"):
-        if key in data:
-            data[key] = Path(data[key])
-    regions = data.get("regions")
-    if regions is not None:
-        data["regions"] = tuple(regions)
-    return data
