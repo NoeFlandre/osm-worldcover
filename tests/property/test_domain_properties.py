@@ -46,12 +46,15 @@ def test_tiles_for_bbox_covers_bbox(a, b, c, d):
     bbox = (min(a, b), min(c, d), max(a, b), max(c, d))
     tiles = tiles_for_bbox(bbox)
     assert tiles == sorted(set(tiles))
-    bounds = [tile_bounds(t) for t in tiles]
-    assert min(b_[0] for b_ in bounds) <= bbox[0]
-    assert min(b_[1] for b_ in bounds) <= bbox[1]
-    assert max(b_[2] for b_ in bounds) >= bbox[2]
-    assert max(b_[3] for b_ in bounds) >= bbox[3]
     assert tile_for(bbox[0], bbox[1]) in tiles
+    union = _union_bounds(tiles)
+    assert all(u <= v for u, v in zip(union[:2], bbox[:2], strict=True))
+    assert all(u >= v for u, v in zip(union[2:], bbox[2:], strict=True))
+
+
+def _union_bounds(tiles):
+    mins_x, mins_y, maxs_x, maxs_y = zip(*(tile_bounds(t) for t in tiles), strict=True)
+    return (min(mins_x), min(mins_y), max(maxs_x), max(maxs_y))
 
 
 @PROFILE
