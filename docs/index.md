@@ -27,18 +27,7 @@ To select another source, use `--source description` or `--source website`.
 
 A global run uses the CPU heavily and uses one thread. Give each process a
 separate list of regions and its own cache. Then assemble the shards one time.
-
-```bash
-# Region stems go to stdout; pin the source revision for a reproducible list.
-SOURCE_REVISION=5c8e56a50b5679118a28aef057af002209f80a5e
-uv run owc regions --source website --revision "$SOURCE_REVISION" > regions.txt
-# Deterministically partition the pinned listing into the two worker files.
-awk 'NF { output = "regions-" ((count++ % 2) ? "b" : "a") ".txt"; print > output }' regions.txt
-
-uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file regions-a.txt --cache data/w0 --out data/w0/out
-uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file regions-b.txt --cache data/w1 --out data/w1/out
-uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
-```
+The commands are in the [Use section of the README](https://github.com/NoeFlandre/osm-worldcover#use).
 
 If you do not give `--revision`, `owc regions` uses the current Hub commit. It
 prints that commit to stderr. The region file stays clean for redirection. Give
