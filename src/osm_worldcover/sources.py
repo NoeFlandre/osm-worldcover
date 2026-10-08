@@ -8,6 +8,7 @@ while the WorldCover pipeline consumes the same canonical tables for every recip
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from osm_worldcover.domain.identity import HUB_NAMESPACE, WIKIDATA_OUTPUT_DATASET
 from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 
 __all__ = [
@@ -67,8 +68,8 @@ class SourceRecipe:
 _RECIPES: Final[dict[str, SourceRecipe]] = {
     "wikidata": SourceRecipe(
         name="wikidata",
-        source_dataset="NoeFlandre/osm-polygon-wikidata-and-wikipedia",
-        output_dataset="NoeFlandre/osm-wikidata-worldcover",
+        source_dataset=f"{HUB_NAMESPACE}/osm-polygon-wikidata-and-wikipedia",
+        output_dataset=WIKIDATA_OUTPUT_DATASET,
         display_name="OSM Wikidata WorldCover",
         text_description="Wikipedia and Wikivoyage article text",
         dataset_license="cc-by-sa-4.0",
@@ -82,8 +83,8 @@ _RECIPES: Final[dict[str, SourceRecipe]] = {
     ),
     "description": SourceRecipe(
         name="description",
-        source_dataset="NoeFlandre/osm-polygon-description-tag",
-        output_dataset="NoeFlandre/osm-polygon-description-tag-worldcover",
+        source_dataset=f"{HUB_NAMESPACE}/osm-polygon-description-tag",
+        output_dataset=f"{HUB_NAMESPACE}/osm-polygon-description-tag-worldcover",
         display_name="OSM Description Tag WorldCover",
         text_description="OpenStreetMap description and localized-description tag text",
         dataset_license="odbl",
@@ -94,8 +95,8 @@ _RECIPES: Final[dict[str, SourceRecipe]] = {
     ),
     "website": SourceRecipe(
         name="website",
-        source_dataset="NoeFlandre/osm-polygon-website-tag",
-        output_dataset="NoeFlandre/osm-polygon-website-tag-worldcover",
+        source_dataset=f"{HUB_NAMESPACE}/osm-polygon-website-tag",
+        output_dataset=f"{HUB_NAMESPACE}/osm-polygon-website-tag-worldcover",
         display_name="OSM Website Tag WorldCover",
         text_description="Text extracted from websites linked by OSM website tags",
         dataset_license="other",
