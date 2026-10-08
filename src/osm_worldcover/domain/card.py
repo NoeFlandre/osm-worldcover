@@ -7,6 +7,8 @@ description can never drift from the data it describes.
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from osm_worldcover.domain.identity import CODE_REPOSITORY, WIKIDATA_OUTPUT_DATASET
+
 __all__ = ["render"]
 
 
@@ -97,7 +99,7 @@ configs:
 
 def _intro(counts: Mapping[str, Any], threshold_pct: int, settings: Mapping[str, Any]) -> str:
     total = counts["examples"]["total"]
-    output_dataset = settings.get("output_dataset", "NoeFlandre/osm-wikidata-worldcover")
+    output_dataset = settings.get("output_dataset", WIKIDATA_OUTPUT_DATASET)
     title = str(output_dataset).rsplit("/", 1)[-1]
     # Used verbatim: every recipe phrases this to read after "pairs", and
     # lowercasing the first letter mangled names like OpenStreetMap.
@@ -247,9 +249,7 @@ def _provenance(
 ) -> str:
     source_dataset = settings.get("source_dataset")
     source_url = settings.get("source_url", f"https://huggingface.co/datasets/{source_dataset}")
-    code_repository = settings.get(
-        "code_repository", "https://github.com/NoeFlandre/osm-worldcover"
-    )
+    code_repository = settings.get("code_repository", CODE_REPOSITORY)
     text_license = settings.get(
         "text_license", "Article text is CC BY-SA 4.0 (Wikipedia/Wikivoyage)"
     )
