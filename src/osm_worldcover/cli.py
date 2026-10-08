@@ -4,8 +4,9 @@ import functools
 import math
 import shutil
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
@@ -26,7 +27,24 @@ from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
+if TYPE_CHECKING:
+    from osm_worldcover.adapters.audit import AuditReport
+
 app = typer.Typer(add_completion=False, help=__doc__)
+
+
+@dataclass(frozen=True, slots=True)
+class AssembleOptions:
+    """Settings for one assembly, named so a revision and a dataset version cannot be swapped."""
+
+    out: Path
+    work: Path
+    source: str | None
+    threshold: float | None
+    revision: str | None
+    dataset_version: str | None
+    legacy_code_revision: str | None
+    allow_unverified: bool
 
 
 def _fail[**P, R](command: Callable[P, R]) -> Callable[P, R]:
@@ -170,14 +188,16 @@ def assemble(
     try:
         result = _assemble(
             shard_dirs,
-            out,
-            work,
-            source,
-            threshold,
-            revision,
-            dataset_version,
-            legacy_code_revision,
-            allow_unverified_shards,
+            AssembleOptions(
+                out=out,
+                work=work,
+                source=source,
+                threshold=threshold,
+                revision=revision,
+                dataset_version=dataset_version,
+                legacy_code_revision=legacy_code_revision,
+                allow_unverified=allow_unverified_shards,
+            ),
         )
     except (OSError, ValueError) as error:
         typer.echo(f"assembly refused: {error}", err=True)
@@ -188,55 +208,36 @@ def assemble(
     _report(result)
 
 
-def _assemble(
-    shard_dirs: list[Path],
-    out: Path,
-    work: Path,
-    source: str | None,
-    threshold: float | None,
-    revision: str | None,
-    dataset_version: str | None,
-    legacy_code_revision: str | None,
-    allow_unverified: bool,
-) -> StreamedBuild:
+def _assemble(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     """Keep the legacy recovery route visibly separate from verified assembly."""
-    if allow_unverified:
-        return _assemble_unverified(
-            shard_dirs, out, work, source, threshold, revision, dataset_version
-        )
-    return _assemble_verified(
-        shard_dirs,
-        out,
-        work,
-        source,
-        threshold,
-        revision,
-        dataset_version,
-        legacy_code_revision,
-    )
+    if options.allow_unverified:
+        return _assemble_unverified(shard_dirs, options)
+    return _assemble_verified(shard_dirs, options)
 
 
-def _assemble_unverified(
-    shard_dirs, out, work, source, threshold, revision, dataset_version
-) -> StreamedBuild:
+def _assemble_unverified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     typer.echo(
         "WARNING: recovering UNVERIFIED shards; provenance and full-source completion "
         "are unproven. This output is not publishable.",
         err=True,
     )
     config = Config(
-        source=source if source is not None else DEFAULT_SOURCE,
-        out_dir=out,
-        threshold=threshold if threshold is not None else DEFAULT_THRESHOLD,
-        source_revision=revision,
-        dataset_version=dataset_version if dataset_version is not None else DEFAULT_DATASET_VERSION,
+        source=options.source if options.source is not None else DEFAULT_SOURCE,
+        out_dir=options.out,
+        threshold=options.threshold if options.threshold is not None else DEFAULT_THRESHOLD,
+        source_revision=options.revision,
+        dataset_version=(
+            options.dataset_version
+            if options.dataset_version is not None
+            else DEFAULT_DATASET_VERSION
+        ),
     )
-    combined = _gather(shard_dirs, work)
+    combined = _gather(shard_dirs, options.work)
     return finalize_shards(
         combined,
         config,
-        work,
-        out,
+        options.work,
+        options.out,
         ShardStore(combined).rejections(),
         processing={
             "schema_version": 1,
@@ -250,20 +251,18 @@ def _assemble_unverified(
     )
 
 
-def _assemble_verified(
-    shard_dirs, out, work, source, threshold, revision, dataset_version, legacy_code_revision
-) -> StreamedBuild:
+def _assemble_verified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     inputs = verified_assembly(
         shard_dirs,
-        out,
-        work,
+        options.out,
+        options.work,
         {
-            "source": source,
-            "threshold": threshold,
-            "source_revision": revision,
-            "dataset_version": dataset_version,
+            "source": options.source,
+            "threshold": options.threshold,
+            "source_revision": options.revision,
+            "dataset_version": options.dataset_version,
         },
-        legacy_code_revision=legacy_code_revision,
+        legacy_code_revision=options.legacy_code_revision,
     )
     if not inputs.processing["full_source_complete"]:
         typer.echo(
@@ -272,7 +271,12 @@ def _assemble_verified(
             err=True,
         )
     return finalize_shards(
-        inputs.shards, inputs.config, work, out, inputs.rejections, processing=inputs.processing
+        inputs.shards,
+        inputs.config,
+        options.work,
+        options.out,
+        inputs.rejections,
+        processing=inputs.processing,
     )
 
 
@@ -470,7 +474,7 @@ def audit(
     _print_audit_report(report)
 
 
-def _print_audit_report(report) -> None:
+def _print_audit_report(report: "AuditReport") -> None:
     typer.echo(f"rows: {report.rows:,}")
     for warning in report.warnings:
         typer.echo(f"WARNING {warning.code}: {warning.count}")
