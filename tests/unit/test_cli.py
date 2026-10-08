@@ -191,6 +191,35 @@ def test_verify_falls_back_to_the_default_threshold_for_legacy_manifests(tmp_pat
     assert "below_threshold" in outcome.output
 
 
+@pytest.mark.parametrize(
+    "bad_threshold",
+    [-1, 0, 1.5, float("nan"), float("inf"), float("-inf"), None, "0.8", True, [0.8], {"a": 1}],
+)
+def test_verify_rejects_an_invalid_manifest_dominance_threshold(tmp_path, bad_threshold) -> None:
+    rows = frame(2)
+    rows["dominant_fraction"] = 0.1
+    build = write_build(tmp_path, rows, {"dominance_threshold": bad_threshold})
+
+    outcome = runner.invoke(cli.app, ["verify", str(build)])
+
+    assert outcome.exit_code == 1, outcome.output
+    assert "dominance threshold" in outcome.output
+    assert "every guarantee holds" not in outcome.output
+
+
+@pytest.mark.parametrize("bad_threshold", ["nan", "inf", "0", "-0.5", "1.2"])
+def test_verify_rejects_an_invalid_explicit_dominance_threshold(tmp_path, bad_threshold) -> None:
+    rows = frame(2)
+    rows["dominant_fraction"] = 0.1
+    build = write_build(tmp_path, rows, {"dominance_threshold": 0.8})
+
+    outcome = runner.invoke(cli.app, ["verify", str(build), "--threshold", bad_threshold])
+
+    assert outcome.exit_code == 1, outcome.output
+    assert "dominance threshold" in outcome.output
+    assert "every guarantee holds" not in outcome.output
+
+
 @pytest.mark.parametrize("bad_fraction", [float("nan"), 1.5, -0.1])
 def test_verify_rejects_a_fraction_outside_zero_to_one(tmp_path, bad_fraction) -> None:
     rows = frame(2)

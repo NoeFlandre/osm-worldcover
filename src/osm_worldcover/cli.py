@@ -1,8 +1,9 @@
 """Command line interface."""
 
 import functools
+import math
 import shutil
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -356,13 +357,12 @@ def verify(
     """Re-check a build on disk against every dataset guarantee."""
     from osm_worldcover.domain.validation import validate
 
+    settings = _verification_settings(build_dir)
+    threshold = _verification_threshold(threshold, settings)
     rows = _load_splits(build_dir)
     if rows is None:
         typer.echo(f"no splits found in {build_dir}", err=True)
         raise typer.Exit(1)
-    settings = _verification_settings(build_dir)
-    if threshold is None:
-        threshold = settings.get("dominance_threshold", DEFAULT_THRESHOLD)
     report = validate(
         rows, threshold=threshold, min_words=settings.get("min_words", DEFAULT_MIN_WORDS)
     )
@@ -373,6 +373,28 @@ def verify(
     for violation in report.violations:
         typer.echo(f"FAILED {violation.check.value}: {violation.count} {violation.examples}")
     raise typer.Exit(1)
+
+
+def _verification_threshold(explicit: float | None, settings: Mapping[str, Any]) -> float:
+    """Pick the dominance threshold to verify against, rejecting values the policy cannot use.
+
+    An explicit ``--threshold`` wins over the manifest, which wins over the default.
+    The same range as the dominance decision applies to both: a finite number in (0, 1].
+    Anything else would make the below-threshold check silently pass.
+    """
+    value = explicit
+    if value is None:
+        value = settings.get("dominance_threshold", DEFAULT_THRESHOLD)
+    if not _is_dominance_threshold(value):
+        raise ValueError(f"dominance threshold must be a finite number in (0, 1], got {value!r}")
+    return float(value)
+
+
+def _is_dominance_threshold(value: Any) -> bool:
+    """Whether ``value`` is a finite real number the dominance decision accepts."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return math.isfinite(value) and 0.0 < value <= 1.0
 
 
 def _verification_settings(build_dir: Path) -> dict[str, Any]:
