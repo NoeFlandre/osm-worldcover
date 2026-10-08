@@ -82,8 +82,10 @@ class MissingTiles(FixedTiles):
         raise TileNotPublishedError(tile.name)
 
 
-def write_raster(path: Path, values: np.ndarray, origin=(0.0, 4.0), pixel=1.0) -> Path:
-    """Write ``values`` as a 1-band byte GeoTIFF in WGS84 with ``pixel``-degree cells."""
+def write_raster(
+    path: Path, values: np.ndarray, origin=(0.0, 4.0), pixel=1.0, crs: str = "EPSG:4326"
+) -> Path:
+    """Write ``values`` as a 1-band byte GeoTIFF (WGS84 unless ``crs`` says otherwise)."""
     transform = from_origin(origin[0], origin[1], pixel, pixel)
     with rasterio.open(
         path,
@@ -93,7 +95,7 @@ def write_raster(path: Path, values: np.ndarray, origin=(0.0, 4.0), pixel=1.0) -
         width=values.shape[1],
         count=1,
         dtype="uint8",
-        crs="EPSG:4326",
+        crs=crs,
         transform=transform,
         nodata=0,
     ) as dst:
