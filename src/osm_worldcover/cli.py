@@ -1,8 +1,10 @@
 """Command line interface."""
 
 import functools
+import logging
 import math
 import shutil
+import sys
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Annotated, Any
@@ -27,6 +29,16 @@ from osm_worldcover.finalize import StreamedBuild, finalize_shards
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
 app = typer.Typer(add_completion=False, help=__doc__)
+logger = logging.getLogger(__name__)
+
+
+def _enable_verbose_logging(verbose: bool) -> None:
+    """With --verbose, send the package's INFO logs to stderr; default output is unchanged."""
+    if not verbose:
+        return
+    # Only this package is raised to INFO, so third-party libraries stay quiet.
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    logging.getLogger("osm_worldcover").setLevel(logging.INFO)
 
 
 def _fail[**P, R](command: Callable[P, R]) -> Callable[P, R]:
@@ -51,6 +63,9 @@ SourceOption = Annotated[
 ]
 BuildDirArgument = Annotated[Path, typer.Argument(help="A versioned build directory.")]
 OutOption = Annotated[Path, typer.Option(help="Directory to write the dataset into.")]
+VerboseOption = Annotated[
+    bool, typer.Option("--verbose", "-v", help="Log run settings and steps to stderr.")
+]
 
 
 @app.command()
@@ -87,12 +102,22 @@ def build(
     dataset_version: Annotated[
         str, typer.Option(help="Version of the output.")
     ] = DEFAULT_DATASET_VERSION,
+    verbose: VerboseOption = False,
 ) -> None:
     """Build the dataset and write it to disk."""
+    _enable_verbose_logging(verbose)
     config = _build_config(
         source, out, cache, threshold, max_area_km2, cached_tiles, revision, dataset_version
     )
     regions = list(region or []) + _read_regions(regions_file)
+    logger.info(
+        "build source=%s threshold=%s revision=%s regions=%s out=%s",
+        source,
+        threshold,
+        revision or "head",
+        len(regions) or "all",
+        out,
+    )
     report = run_build(config, regions=regions or None, keep_tiles=keep_tiles, progress=typer.echo)
     _report(report.result)
 
@@ -157,6 +182,7 @@ def assemble(
         bool,
         typer.Option(help="Recover legacy shards without receipts; output is not publishable."),
     ] = False,
+    verbose: VerboseOption = False,
 ) -> None:
     """Combine region shards into the published dataset.
 
@@ -167,6 +193,13 @@ def assemble(
     such. Legacy recovery uses wikidata/0.8/1.1.0 defaults and never proves
     whole-source completeness.
     """
+    _enable_verbose_logging(verbose)
+    logger.info(
+        "assemble shard_dirs=%d mode=%s out=%s",
+        len(shard_dirs),
+        "unverified" if allow_unverified_shards else "verified",
+        out,
+    )
     try:
         result = _assemble(
             shard_dirs,

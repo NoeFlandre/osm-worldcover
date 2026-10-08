@@ -1,6 +1,7 @@
 """Command line behaviour."""
 
 import json
+import logging
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -83,6 +84,21 @@ def test_build_fails_when_a_guarantee_is_broken(tmp_path, monkeypatch) -> None:
     outcome = runner.invoke(cli.app, ["build", "--out", str(tmp_path), "--cache", str(tmp_path)])
     assert outcome.exit_code == 1
     assert "polygon_leakage" in outcome.output
+
+
+def test_build_logs_run_settings_only_when_verbose(tmp_path, monkeypatch, caplog) -> None:
+    result = built(tmp_path)
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: type("R", (), {"result": result})())
+    args = ["build", "--out", str(tmp_path), "--cache", str(tmp_path)]
+
+    quiet = runner.invoke(cli.app, args)
+    assert not [record for record in caplog.records if record.levelno == logging.INFO]
+
+    with caplog.at_level(logging.INFO, logger="osm_worldcover"):
+        loud = runner.invoke(cli.app, [*args, "--verbose"])
+    assert loud.exit_code == 0, loud.output
+    assert loud.stdout == quiet.stdout
+    assert "build source=" in caplog.text
 
 
 def test_verify_accepts_a_sound_build(tmp_path) -> None:
