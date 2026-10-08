@@ -414,8 +414,7 @@ def test_split_writes_enable_large_arrow_string_buffers(tmp_path) -> None:
 
         assert rows == 1
         setting = connection.execute("SELECT current_setting('arrow_large_buffer_size')").fetchone()
-        assert setting is not None
-        assert str(setting[0]).lower() == "true"
+        assert setting == (True,)
         assert {path.stem for path in paths} == {"train", "validation", "test"}
     finally:
         connection.close()

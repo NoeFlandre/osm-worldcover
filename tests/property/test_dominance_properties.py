@@ -18,9 +18,22 @@ polygon_areas = st.floats(min_value=1e-3, max_value=1e12, allow_nan=False, allow
 thresholds = st.floats(min_value=0.01, max_value=1.0, allow_nan=False, allow_infinity=False)
 
 
-def _assert_accepted_decision(outcome, threshold: float) -> None:
-    assert outcome.code is not None
-    assert is_valid_code(outcome.code)
+def _top_class(pairs, polygon_area: float) -> tuple[int, float] | None:
+    """The valid class with the largest share; ties break on the lowest code."""
+    fractions = {
+        code: fraction
+        for code, fraction in class_fractions(dict(pairs), polygon_area).items()
+        if is_valid_code(code)
+    }
+    if not fractions:
+        return None
+    code = min(fractions, key=lambda c: (-fractions[c], c))
+    return code, fractions[code]
+
+
+def _assert_accepted_decision(outcome, threshold: float, top: tuple[int, float]) -> None:
+    assert outcome.code == top[0]
+    assert outcome.fraction == top[1]
     assert outcome.fraction >= threshold
     assert outcome.reason is None
 
@@ -67,7 +80,7 @@ def test_acceptance_implies_a_valid_class_at_or_above_threshold(case, threshold)
     pairs, polygon_area = case
     outcome = decide(dict(pairs), polygon_area, threshold)
     if outcome.accepted:
-        _assert_accepted_decision(outcome, threshold)
+        _assert_accepted_decision(outcome, threshold, _top_class(pairs, polygon_area))
     else:
         assert outcome.reason in {
             RejectionReason.NO_VALID_CLASS,
@@ -79,15 +92,16 @@ def test_acceptance_implies_a_valid_class_at_or_above_threshold(case, threshold)
 def test_rejection_reason_matches_the_state_it_describes(case, threshold) -> None:
     pairs, polygon_area = case
     outcome = decide(dict(pairs), polygon_area, threshold)
-    _assert_rejection_reason(outcome, threshold)
+    _assert_rejection_reason(outcome, threshold, _top_class(pairs, polygon_area))
 
 
-def _assert_no_valid_class(outcome, threshold: float) -> None:
+def _assert_no_valid_class(outcome, threshold: float, top) -> None:
     assert outcome.code is None
 
 
-def _assert_below_threshold(outcome, threshold: float) -> None:
-    assert outcome.code is not None
+def _assert_below_threshold(outcome, threshold: float, top) -> None:
+    assert outcome.code == top[0]
+    assert outcome.fraction == top[1]
     assert outcome.fraction < threshold
 
 
@@ -97,10 +111,10 @@ _REASON_CHECKS = {
 }
 
 
-def _assert_rejection_reason(outcome, threshold: float) -> None:
+def _assert_rejection_reason(outcome, threshold: float, top) -> None:
     check = _REASON_CHECKS.get(outcome.reason)
     if check is not None:
-        check(outcome, threshold)
+        check(outcome, threshold, top)
 
 
 @given(coverage(), thresholds)
