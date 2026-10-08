@@ -36,7 +36,7 @@ def _crash_at_parent_sync(target, boundary, message):
         nonlocal calls
         if path == target.parent:
             calls += 1
-            if calls == boundary:
+            if calls == boundary + 1:  # Ignore the durable lock-entry sync.
                 raise SimulatedCrash(message)
         original(path)
 
@@ -51,8 +51,8 @@ def _fail_once_at_parent_sync(target, boundary):
         nonlocal calls
         if path == target.parent:
             calls += 1
-            if calls == boundary:
-                raise OSError(f"injected promotion directory fsync {calls}")
+            if calls == boundary + 1:  # Ignore the durable lock-entry sync.
+                raise OSError(f"injected promotion directory fsync {boundary}")
         original(path)
 
     return fail_once
@@ -298,6 +298,17 @@ def test_stage_inventory_rejects_auxiliary_files(tmp_path):
         release.stage_inventory(stage)
 
 
+def test_unrecorded_auxiliary_file_does_not_match_a_new_transaction_target(tmp_path):
+    target = tmp_path / "v1.0.0"
+    _release(target, "new")
+    expected = release.core_inventory(target)
+    assert expected is not None
+
+    (target / "audit.json").write_text("unexpected during recovery")
+
+    assert not release._target_matches_new(target, expected)
+
+
 def test_failed_promotion_restores_arbitrary_auxiliary_files(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     old = _release(target, "old", sidecars=("audit.json",))
@@ -351,9 +362,8 @@ def test_exclusive_lock_does_not_enter_writer_when_parent_sync_fails(tmp_path, m
         raise OSError("injected lock parent fsync")
 
     monkeypatch.setattr(release, "fsync_directory", fail_parent_sync)
-    with pytest.raises(OSError, match="lock parent fsync"):
-        with release.release_lock(target):
-            entered_writer = True
+    with pytest.raises(OSError, match="lock parent fsync"), release.release_lock(target):
+        entered_writer = True
 
     assert not entered_writer
 
@@ -671,10 +681,10 @@ def test_staged_directory_fsync_failure_leaves_old_release_untouched(
             raise OSError(f"injected directory fsync: {failed_directory}")
         original(path)
 
-    monkeypatch.setattr(release, "fsync_directory", fail_selected)
-
-    with release.release_lock(target), pytest.raises(OSError, match="injected directory fsync"):
-        release.sync_stage(stage, target.parent)
+    with release.release_lock(target):
+        monkeypatch.setattr(release, "fsync_directory", fail_selected)
+        with pytest.raises(OSError, match="injected directory fsync"):
+            release.sync_stage(stage, target.parent)
 
     assert release.inventory_release(target) == old
     assert not _journal_exists(target)

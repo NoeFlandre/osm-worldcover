@@ -820,6 +820,7 @@ def test_empty_rerun_preserves_the_last_release_without_claiming_new_paths(
     out = tmp_path / "out"
     target = out / f"v{Config().dataset_version}"
     first = finalize_shards(shards, Config(), tmp_path / "work", out)
+    (target / "audit.json").write_text("local audit report")
     before = _file_snapshot(target)
 
     _clear_shards(shards)
@@ -979,6 +980,7 @@ def test_unchanged_rerun_keeps_release_files_and_publication_sidecars_untouched(
     target = out / f"v{Config().dataset_version}"
     finalize_shards(shards, Config(), tmp_path / "work", out)
     (target / "README.md").write_text("publication sidecar")
+    (target / "audit.json").write_text("local audit report")
     before = _file_snapshot(target)
 
     result = finalize_shards(shards, Config(), tmp_path / "work", out)

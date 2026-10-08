@@ -46,7 +46,7 @@ _CORE_FILE_SET = frozenset(CORE_FILES)
 _SIDECAR_FILES = frozenset(
     {"README.md", "worldcover_centroids.png", "release_checksums.json", "publication_receipt.json"}
 )
-_RELEASE_FILE_SET = _CORE_FILE_SET | _SIDECAR_FILES
+_KNOWN_NEW_FILE_SET = _CORE_FILE_SET | _SIDECAR_FILES
 _HEX_32 = re.compile(r"[0-9a-f]{32}\Z")
 _HELD_LOCKS: ContextVar[dict[Path, bool] | None] = ContextVar(
     "owc_held_release_locks", default=None
@@ -118,11 +118,13 @@ def release_lock(target: Path, *, shared: bool = False) -> Iterator[None]:
     target.parent.mkdir(parents=True, exist_ok=True)
     lock_path = target.parent / f".{target.name}.lock"
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(lock_path, flags, 0o600)
+    descriptor = os.open(lock_path, flags, 0o666)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ReleaseCommitError(f"release lock is not a regular file: {lock_path}")
         with _lock_descriptor(descriptor, target, shared, held):
+            if not shared:
+                fsync_directory(target.parent)
             yield
     finally:
         os.close(descriptor)
@@ -302,7 +304,7 @@ def inventory_release(directory: Path) -> ReleaseInventory:
     _require_real_directory(directory)
     entries = []
     for path in sorted(directory.iterdir(), key=lambda item: item.name):
-        if path.is_symlink() or not path.is_file() or path.name not in _RELEASE_FILE_SET:
+        if path.is_symlink() or not path.is_file():
             raise ReleaseCommitError(f"unexpected release entry: {path}")
         entries.append(_fingerprint(path))
     return ReleaseInventory(tuple(entries))
@@ -700,6 +702,7 @@ def _target_matches_new(target: Path, expected: ReleaseInventory) -> bool:
     files = {entry.name: entry for entry in actual.files}
     return (
         files.keys() >= _CORE_FILE_SET
+        and files.keys() <= _KNOWN_NEW_FILE_SET
         and ReleaseInventory(tuple(sorted(files[name] for name in CORE_FILES))) == expected
     )
 
@@ -857,7 +860,14 @@ def _fingerprint_from_dict(entry: Any) -> FileFingerprint:
 
 
 def _validate_fingerprint_name(name: Any) -> None:
-    if not isinstance(name, str) or name not in _RELEASE_FILE_SET:
+    if (
+        not isinstance(name, str)
+        or not name
+        or name in {".", ".."}
+        or "/" in name
+        or "\\" in name
+        or any(ord(character) < 32 or ord(character) == 127 for character in name)
+    ):
         raise ValueError("invalid inventory filename")
 
 
@@ -883,7 +893,7 @@ def _validate_release_inventory(
 
 
 def _validate_release_layout(names: set[str]) -> None:
-    if not names >= _CORE_FILE_SET or not names <= _RELEASE_FILE_SET:
+    if not names >= _CORE_FILE_SET:
         raise ValueError("inventory does not contain a complete release layout")
 
 
