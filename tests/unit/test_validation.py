@@ -70,6 +70,18 @@ def test_dominance_exactly_at_threshold_is_accepted() -> None:
     assert Check.BELOW_THRESHOLD not in checks_in([row(dominant_fraction=0.8)], threshold=0.8)
 
 
+@pytest.mark.parametrize("fraction", [float("nan"), float("inf"), -0.1, 1.5])
+def test_a_fraction_that_is_not_a_proportion_is_rejected(fraction: float) -> None:
+    checks = checks_in([row(dominant_fraction=fraction)], threshold=0.0)
+    assert Check.INVALID_FRACTION in checks
+    assert Check.BELOW_THRESHOLD not in checks
+
+
+@pytest.mark.parametrize("fraction", [0.0, 1.0])
+def test_fractions_at_the_bounds_of_zero_to_one_are_accepted(fraction: float) -> None:
+    assert Check.INVALID_FRACTION not in checks_in([row(dominant_fraction=fraction)], threshold=0.0)
+
+
 def test_too_short_text_is_rejected() -> None:
     assert Check.UNUSABLE_TEXT in checks_in([row(text="tiny")])
 

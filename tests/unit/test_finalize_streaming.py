@@ -4,13 +4,17 @@ At ~4.9 KB per row a global build is roughly 10 GB of DataFrame, so the final
 pass reads shards one at a time and does the global work in DuckDB over files.
 """
 
+import json
+
 import h3
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from osm_worldcover.adapters.writer import write_batches
 from osm_worldcover.config import Config
+from osm_worldcover.domain import manifest as manifest_module
 from osm_worldcover.domain.validation import REQUIRED_COLUMNS
 from osm_worldcover.finalize import (
     _assign_splits,
@@ -376,6 +380,94 @@ def test_reused_work_dir_does_not_retain_old_enriched_rows(shards, tmp_path) -> 
     result = finalize_shards(shards, Config(), work, work / "out")
 
     assert result.rows == 2
+
+
+def _published_files(out) -> list[str]:
+    release = out / f"v{Config().dataset_version}"
+    return sorted(p.name for p in release.iterdir()) if release.exists() else []
+
+
+def test_a_rerun_that_publishes_nothing_preserves_the_previous_release(shards, tmp_path) -> None:
+    out = tmp_path / "out"
+    shard(shards / "a.parquet", n=3)
+    finalize_shards(shards, Config(), tmp_path / "w1", out)
+    release = out / f"v{Config().dataset_version}"
+    (release / "audit.json").write_text("local audit report")
+    before = {path.name: path.read_bytes() for path in release.iterdir()}
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    result = finalize_shards(empty, Config(), tmp_path / "w2", out)
+
+    assert result.rows == 0
+    assert result.paths == []
+    assert _published_files(out) == sorted(before)
+    assert {path.name: path.read_bytes() for path in release.iterdir()} == before
+
+
+def test_a_failed_rerun_leaves_the_previous_release_intact(shards, tmp_path, monkeypatch) -> None:
+    out = tmp_path / "out"
+    shard(shards / "a.parquet", n=3)
+    finalize_shards(shards, Config(), tmp_path / "w1", out)
+    before = {
+        name: (out / f"v{Config().dataset_version}" / name).read_bytes()
+        for name in _published_files(out)
+    }
+
+    later = tmp_path / "later"
+    later.mkdir()
+    shard(later / "b.parquet", n=5, start=100)
+    calls = []
+
+    def fail_second_split(reader, path):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        return write_batches(reader, path)
+
+    monkeypatch.setattr("osm_worldcover.finalize.write_batches", fail_second_split)
+    with pytest.raises(OSError, match="disk full"):
+        finalize_shards(later, Config(), tmp_path / "w2", out)
+
+    assert _published_files(out) == sorted(before)
+    assert {
+        name: (out / f"v{Config().dataset_version}" / name).read_bytes() for name in before
+    } == before
+    assert sorted(p.name for p in out.iterdir()) == [f"v{Config().dataset_version}"]
+
+
+def test_a_failed_first_run_publishes_nothing(shards, tmp_path, monkeypatch) -> None:
+    out = tmp_path / "out"
+    shard(shards / "a.parquet", n=3)
+
+    def fail(reader, path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("osm_worldcover.finalize.write_batches", fail)
+    with pytest.raises(OSError, match="disk full"):
+        finalize_shards(shards, Config(), tmp_path / "w1", out)
+
+    assert _published_files(out) == []
+    assert not any(out.iterdir())
+
+
+def test_a_successful_rerun_replaces_every_file_of_the_previous_release(shards, tmp_path) -> None:
+    out = tmp_path / "out"
+    shard(shards / "a.parquet", n=3)
+    finalize_shards(shards, Config(), tmp_path / "w1", out)
+
+    (shards / "a.parquet").unlink()
+    shard(shards / "b.parquet", n=5, start=100)
+    result = finalize_shards(shards, Config(), tmp_path / "w2", out)
+
+    release = out / f"v{Config().dataset_version}"
+    manifest = json.loads((release / "manifest.json").read_text())
+    published = sum(
+        len(pd.read_parquet(release / f"{s}.parquet")) for s in manifest_module.SPLIT_ORDER
+    )
+    assert result.rows == 5
+    assert manifest["counts"]["examples"]["total"] == published == 5
+    assert sorted(p.name for p in out.iterdir()) == [f"v{Config().dataset_version}"]
 
 
 def test_split_writes_enable_large_arrow_string_buffers(tmp_path) -> None:
