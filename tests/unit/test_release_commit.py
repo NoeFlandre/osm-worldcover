@@ -1,5 +1,6 @@
 import builtins
 import importlib.util
+import os
 import sys
 import threading
 from pathlib import Path
@@ -271,6 +272,90 @@ def test_directory_promotion_keeps_the_new_complete_inventory(tmp_path, real_rel
     assert release.inventory_release(target) == new
     assert {entry.name for entry in old.files} == set(release.CORE_FILES) | {"README.md"}
     assert _transaction_artifacts(target) == set()
+
+
+def test_release_inventory_tracks_arbitrary_regular_auxiliary_files(tmp_path):
+    target = tmp_path / "v1.0.0"
+    core = _release(target, "old")
+    (target / "audit.json").write_text('{"report": "local"}')
+
+    assert release.core_inventory(target) == core
+    assert {entry.name for entry in release.inventory_release(target).files} == {
+        *release.CORE_FILES,
+        "audit.json",
+    }
+
+
+def test_stage_inventory_rejects_auxiliary_files(tmp_path):
+    stage = tmp_path / "stage"
+    _release(stage, "candidate")
+    (stage / "audit.json").write_text("must not enter the release stage")
+
+    with pytest.raises(
+        release.ReleaseCommitError,
+        match="staged release is missing or has extra files",
+    ):
+        release.stage_inventory(stage)
+
+
+def test_failed_promotion_restores_arbitrary_auxiliary_files(tmp_path, monkeypatch):
+    target = tmp_path / "v1.0.0"
+    old = _release(target, "old", sidecars=("audit.json",))
+    stage, new = _prepared_stage(target, "new")
+    original = release._rename_directory
+
+    def fail_new(source, destination):
+        if source == stage:
+            raise OSError("injected stage promotion failure")
+        original(source, destination)
+
+    monkeypatch.setattr(release, "_rename_directory", fail_new)
+    with release.release_lock(target), pytest.raises(OSError, match="stage promotion"):
+        release.commit_release(target, stage, new)
+
+    _recover_twice(target)
+    assert release.inventory_release(target) == old
+    assert (target / "audit.json").read_text() == "old:audit.json"
+
+
+def test_release_lock_creation_respects_umask_for_shared_readers(tmp_path):
+    target = tmp_path / "v1.0.0"
+    previous_umask = os.umask(0o027)
+    try:
+        with release.release_lock(target):
+            pass
+    finally:
+        os.umask(previous_umask)
+
+    lock_path = target.parent / f".{target.name}.lock"
+    assert lock_path.stat().st_mode & 0o777 == 0o640
+
+
+def test_exclusive_lock_syncs_its_parent_before_entering_writer(tmp_path, monkeypatch):
+    target = tmp_path / "v1.0.0"
+    events = []
+    monkeypatch.setattr(release, "fsync_directory", lambda path: events.append(Path(path)))
+
+    with release.release_lock(target):
+        events.append("writer")
+
+    assert events == [target.parent, "writer"]
+
+
+def test_exclusive_lock_does_not_enter_writer_when_parent_sync_fails(tmp_path, monkeypatch):
+    target = tmp_path / "v1.0.0"
+    entered_writer = False
+
+    def fail_parent_sync(path):
+        assert path == target.parent
+        raise OSError("injected lock parent fsync")
+
+    monkeypatch.setattr(release, "fsync_directory", fail_parent_sync)
+    with pytest.raises(OSError, match="lock parent fsync"):
+        with release.release_lock(target):
+            entered_writer = True
+
+    assert not entered_writer
 
 
 def test_read_manifest_works_with_a_read_only_release_parent(tmp_path):
