@@ -20,6 +20,7 @@ from osm_worldcover.adapters.coverage_map import MAP_FILENAME, write_coverage_ma
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.manifest import SPLIT_ORDER
 from osm_worldcover.domain.revision import is_full_revision
+from osm_worldcover.release_commit import release_read_lock, release_write_lock
 
 __all__ = ["PublicationError", "files_to_publish", "publish_dataset"]
 
@@ -47,6 +48,11 @@ class _Fingerprint:
 def files_to_publish(build_dir: Path) -> list[Path]:
     """Return mandatory build inputs, before generating the card and map."""
     build_dir = Path(build_dir)
+    with release_read_lock(build_dir):
+        return _files_to_publish_locked(build_dir)
+
+
+def _files_to_publish_locked(build_dir: Path) -> list[Path]:
     expected = [build_dir / f"{name}.parquet" for name in SPLIT_ORDER]
     expected.append(build_dir / MANIFEST_NAME)
     _require(build_dir, expected)
@@ -82,6 +88,16 @@ def publish_dataset(
     reporting success, and never leave a receipt claiming this attempt passed.
     """
     build_dir = Path(build_dir)
+    with release_write_lock(build_dir):
+        return _publish_dataset_locked(build_dir, repo_id, private, token)
+
+
+def _publish_dataset_locked(
+    build_dir: Path,
+    repo_id: str,
+    private: bool,
+    token: str | None,
+) -> str:
     (build_dir / RECEIPT_NAME).unlink(missing_ok=True)
     files = _prepare_release(build_dir, repo_id)
     fingerprints = {path.name: _fingerprint(path) for path in files}

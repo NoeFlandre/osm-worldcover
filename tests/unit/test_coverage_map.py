@@ -17,6 +17,7 @@ from osm_worldcover.adapters.coverage_map import (
     write_coverage_map,
 )
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
+from osm_worldcover.release_commit import release_lock
 
 _COLUMNS = [
     "polygon_id",
@@ -40,6 +41,8 @@ def _write_build(root: Path, rows: dict[str, list[dict[str, object]]]) -> Path:
             }
         )
         frame.to_parquet(root / f"{split}.parquet", index=False)
+    with release_lock(root):
+        pass
     return root
 
 
