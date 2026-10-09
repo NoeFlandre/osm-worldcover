@@ -447,10 +447,29 @@ def _bounded_pixel_chunks(
         yield from _split_pixel_geometry(clipped, width, height, depth=0)
 
 
+_AREAL_TYPES = ("Polygon", "MultiPolygon")
+
+
+def _areal_part(geometry: shapely.Geometry) -> shapely.Geometry:
+    """Keep only the polygonal parts of a clipped geometry.
+
+    Clipping can return a GeometryCollection that also holds zero-area lines or
+    points, which exactextract rejects as mixed-type. Those parts add no area, so
+    dropping them changes no coverage.
+    """
+    if geometry.geom_type in _AREAL_TYPES:
+        return geometry
+    areal = [part for part in shapely.get_parts(geometry) if part.geom_type in _AREAL_TYPES]
+    return shapely.union_all(areal) if areal else shapely.Polygon()
+
+
 def _split_pixel_geometry(
     geometry: shapely.Geometry, width: int, height: int, depth: int
 ) -> Iterator[shapely.Geometry]:
     """Recursively split a large feature on pixel-aligned lines."""
+    geometry = _areal_part(geometry)
+    if geometry.is_empty:
+        return
     if _geometry_is_bounded(geometry, width, height):
         yield geometry
         return
