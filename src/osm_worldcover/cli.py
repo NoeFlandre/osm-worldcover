@@ -1,10 +1,14 @@
 """Command line interface."""
 
 import functools
+import logging
+import math
 import shutil
-from collections.abc import Callable, Iterator
+import sys
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
@@ -31,7 +35,34 @@ from osm_worldcover.release_commit import (
 )
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
+if TYPE_CHECKING:
+    from osm_worldcover.adapters.audit import AuditReport
+
 app = typer.Typer(add_completion=False, help=__doc__)
+logger = logging.getLogger(__name__)
+
+
+def _enable_verbose_logging(verbose: bool) -> None:
+    """With --verbose, send the package's INFO logs to stderr; default output is unchanged."""
+    if not verbose:
+        return
+    # Only this package is raised to INFO, so third-party libraries stay quiet.
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    logging.getLogger("osm_worldcover").setLevel(logging.INFO)
+
+
+@dataclass(frozen=True, slots=True)
+class AssembleOptions:
+    """Settings for one assembly, named so a revision and a dataset version cannot be swapped."""
+
+    out: Path
+    work: Path
+    source: str | None
+    threshold: float | None
+    revision: str | None
+    dataset_version: str | None
+    legacy_code_revision: str | None
+    allow_unverified: bool
 
 
 def _fail[**P, R](command: Callable[P, R]) -> Callable[P, R]:
@@ -56,6 +87,9 @@ SourceOption = Annotated[
 ]
 BuildDirArgument = Annotated[Path, typer.Argument(help="A versioned build directory.")]
 OutOption = Annotated[Path, typer.Option(help="Directory to write the dataset into.")]
+VerboseOption = Annotated[
+    bool, typer.Option("--verbose", "-v", help="Log run settings and steps to stderr.")
+]
 
 
 @app.command()
@@ -92,12 +126,22 @@ def build(
     dataset_version: Annotated[
         str, typer.Option(help="Version of the output.")
     ] = DEFAULT_DATASET_VERSION,
+    verbose: VerboseOption = False,
 ) -> None:
     """Build the dataset and write it to disk."""
+    _enable_verbose_logging(verbose)
     config = _build_config(
         source, out, cache, threshold, max_area_km2, cached_tiles, revision, dataset_version
     )
     regions = list(region or []) + _read_regions(regions_file)
+    logger.info(
+        "build source=%s threshold=%s revision=%s regions=%s out=%s",
+        source,
+        threshold,
+        revision or "head",
+        len(regions) or "all",
+        out,
+    )
     report = run_build(config, regions=regions or None, keep_tiles=keep_tiles, progress=typer.echo)
     _report(report.result)
 
@@ -162,6 +206,7 @@ def assemble(
         bool,
         typer.Option(help="Recover legacy shards without receipts; output is not publishable."),
     ] = False,
+    verbose: VerboseOption = False,
 ) -> None:
     """Combine region shards into the published dataset.
 
@@ -172,17 +217,26 @@ def assemble(
     such. Legacy recovery uses wikidata/0.8/1.1.0 defaults and never proves
     whole-source completeness.
     """
+    _enable_verbose_logging(verbose)
+    logger.info(
+        "assemble shard_dirs=%d mode=%s out=%s",
+        len(shard_dirs),
+        "unverified" if allow_unverified_shards else "verified",
+        out,
+    )
     try:
         result = _assemble(
             shard_dirs,
-            out,
-            work,
-            source,
-            threshold,
-            revision,
-            dataset_version,
-            legacy_code_revision,
-            allow_unverified_shards,
+            AssembleOptions(
+                out=out,
+                work=work,
+                source=source,
+                threshold=threshold,
+                revision=revision,
+                dataset_version=dataset_version,
+                legacy_code_revision=legacy_code_revision,
+                allow_unverified=allow_unverified_shards,
+            ),
         )
     except (OSError, ValueError) as error:
         typer.echo(f"assembly refused: {error}", err=True)
@@ -193,55 +247,36 @@ def assemble(
     _report(result)
 
 
-def _assemble(
-    shard_dirs: list[Path],
-    out: Path,
-    work: Path,
-    source: str | None,
-    threshold: float | None,
-    revision: str | None,
-    dataset_version: str | None,
-    legacy_code_revision: str | None,
-    allow_unverified: bool,
-) -> StreamedBuild:
+def _assemble(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     """Keep the legacy recovery route visibly separate from verified assembly."""
-    if allow_unverified:
-        return _assemble_unverified(
-            shard_dirs, out, work, source, threshold, revision, dataset_version
-        )
-    return _assemble_verified(
-        shard_dirs,
-        out,
-        work,
-        source,
-        threshold,
-        revision,
-        dataset_version,
-        legacy_code_revision,
-    )
+    if options.allow_unverified:
+        return _assemble_unverified(shard_dirs, options)
+    return _assemble_verified(shard_dirs, options)
 
 
-def _assemble_unverified(
-    shard_dirs, out, work, source, threshold, revision, dataset_version
-) -> StreamedBuild:
+def _assemble_unverified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     typer.echo(
         "WARNING: recovering UNVERIFIED shards; provenance and full-source completion "
         "are unproven. This output is not publishable.",
         err=True,
     )
     config = Config(
-        source=source if source is not None else DEFAULT_SOURCE,
-        out_dir=out,
-        threshold=threshold if threshold is not None else DEFAULT_THRESHOLD,
-        source_revision=revision,
-        dataset_version=dataset_version if dataset_version is not None else DEFAULT_DATASET_VERSION,
+        source=options.source if options.source is not None else DEFAULT_SOURCE,
+        out_dir=options.out,
+        threshold=options.threshold if options.threshold is not None else DEFAULT_THRESHOLD,
+        source_revision=options.revision,
+        dataset_version=(
+            options.dataset_version
+            if options.dataset_version is not None
+            else DEFAULT_DATASET_VERSION
+        ),
     )
-    combined = _gather(shard_dirs, work)
+    combined = _gather(shard_dirs, options.work)
     return finalize_shards(
         combined,
         config,
-        work,
-        out,
+        options.work,
+        options.out,
         ShardStore(combined).rejections(),
         processing={
             "schema_version": 1,
@@ -255,20 +290,18 @@ def _assemble_unverified(
     )
 
 
-def _assemble_verified(
-    shard_dirs, out, work, source, threshold, revision, dataset_version, legacy_code_revision
-) -> StreamedBuild:
+def _assemble_verified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     inputs = verified_assembly(
         shard_dirs,
-        out,
-        work,
+        options.out,
+        options.work,
         {
-            "source": source,
-            "threshold": threshold,
-            "source_revision": revision,
-            "dataset_version": dataset_version,
+            "source": options.source,
+            "threshold": options.threshold,
+            "source_revision": options.revision,
+            "dataset_version": options.dataset_version,
         },
-        legacy_code_revision=legacy_code_revision,
+        legacy_code_revision=options.legacy_code_revision,
     )
     if not inputs.processing["full_source_complete"]:
         typer.echo(
@@ -277,7 +310,12 @@ def _assemble_verified(
             err=True,
         )
     return finalize_shards(
-        inputs.shards, inputs.config, work, out, inputs.rejections, processing=inputs.processing
+        inputs.shards,
+        inputs.config,
+        options.work,
+        options.out,
+        inputs.rejections,
+        processing=inputs.processing,
     )
 
 
@@ -375,13 +413,12 @@ def verify(
 def _verify_locked(build_dir: Path, threshold: float | None) -> None:
     from osm_worldcover.domain.validation import validate
 
+    settings = _verification_settings(build_dir)
+    threshold = _verification_threshold(threshold, settings)
     rows = _load_splits(build_dir)
     if rows is None:
         typer.echo(f"no splits found in {build_dir}", err=True)
         raise typer.Exit(1)
-    settings = _verification_settings(build_dir)
-    if threshold is None:
-        threshold = settings.get("dominance_threshold", DEFAULT_THRESHOLD)
     report = validate(
         rows, threshold=threshold, min_words=settings.get("min_words", DEFAULT_MIN_WORDS)
     )
@@ -392,6 +429,28 @@ def _verify_locked(build_dir: Path, threshold: float | None) -> None:
     for violation in report.violations:
         typer.echo(f"FAILED {violation.check.value}: {violation.count} {violation.examples}")
     raise typer.Exit(1)
+
+
+def _verification_threshold(explicit: float | None, settings: Mapping[str, Any]) -> float:
+    """Pick the dominance threshold to verify against, rejecting values the policy cannot use.
+
+    An explicit ``--threshold`` wins over the manifest, which wins over the default.
+    The same range as the dominance decision applies to both: a finite number in (0, 1].
+    Anything else would make the below-threshold check silently pass.
+    """
+    value = explicit
+    if value is None:
+        value = settings.get("dominance_threshold", DEFAULT_THRESHOLD)
+    if not _is_dominance_threshold(value):
+        raise ValueError(f"dominance threshold must be a finite number in (0, 1], got {value!r}")
+    return float(value)
+
+
+def _is_dominance_threshold(value: Any) -> bool:
+    """Whether ``value`` is a finite real number the dominance decision accepts."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    return math.isfinite(value) and 0.0 < value <= 1.0
 
 
 def _verification_settings(build_dir: Path) -> dict[str, Any]:
@@ -467,7 +526,7 @@ def audit(
     _print_audit_report(report)
 
 
-def _print_audit_report(report) -> None:
+def _print_audit_report(report: "AuditReport") -> None:
     typer.echo(f"rows: {report.rows:,}")
     for warning in report.warnings:
         typer.echo(f"WARNING {warning.code}: {warning.count}")

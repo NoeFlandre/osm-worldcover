@@ -13,6 +13,7 @@ the sum over the tiles it touches.
 """
 
 import math
+import shutil
 import urllib.error
 import urllib.request
 from collections import OrderedDict, defaultdict
@@ -22,6 +23,7 @@ from typing import Final, Protocol
 
 import geopandas as gpd
 import numpy as np
+import pyproj
 import rasterio
 import shapely
 from exactextract import exact_extract
@@ -45,6 +47,10 @@ DEFAULT_BASE_URL: Final[str] = "https://esa-worldcover.s3.eu-central-1.amazonaws
 #: Eight tiles is roughly 750 MB, a good trade against a 94 MB re-download.
 DEFAULT_CACHED_TILES: Final[int] = 8
 
+#: Seconds a tile download may wait on one socket read before it is abandoned.
+#: This bounds each stall, not the whole ~94 MB transfer.
+DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 60.0
+
 #: exactextract operations needed to correct pixel-boundary coverage.
 _OPS: Final[Sequence[str]] = ("cell_id", "coverage", "values")
 
@@ -53,6 +59,8 @@ _OPS: Final[Sequence[str]] = ("cell_id", "coverage", "values")
 #: polygon against those cells; the halo only selects candidates for checking.
 _BOUNDARY_HALO_PIXELS: Final[float] = 0.01
 _BOUNDARY_ROW_CHUNK: Final[int] = 256
+# Boundary cells omitted by exactextract are read in windows this many rows tall.
+_MISSING_READ_ROWS: Final[int] = 64
 
 # exactextract returns one cell-level result array per feature. Bound each
 # batch by both feature count and polygon area so one busy tile cannot make a
@@ -87,6 +95,24 @@ class TileSource(Protocol):
     def discard(self, tile: Tile) -> None:
         """Release ``tile``; the store decides when to delete it."""
         ...
+
+
+def _download(url: str, target: Path) -> None:
+    """Stream ``url`` into ``target``, failing on a stall or a short body.
+
+    ``urlretrieve`` offers no timeout, so the request is made with ``urlopen``.
+    The body is checked against ``Content-Length`` as ``urlretrieve`` did, so a
+    truncated tile is never renamed into the cache.
+    """
+    with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
+        expected = response.headers.get("Content-Length")
+        with target.open("wb") as out:
+            shutil.copyfileobj(response, out)
+            written = out.tell()
+    if expected is not None and written != int(expected):
+        raise urllib.error.ContentTooShortError(
+            f"retrieved {written} of {expected} bytes", (str(target), response.headers)
+        )
 
 
 class WorldCoverTiles:
@@ -143,16 +169,18 @@ class WorldCoverTiles:
             return path
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         # Download beside the target and rename, so an interrupted run never
-        # leaves a truncated tile that a later run would trust.
+        # leaves a truncated tile that a later run would trust. The partial file
+        # is removed on every failure, not only HTTP errors.
         partial = path.with_suffix(path.suffix + ".part")
         try:
-            urllib.request.urlretrieve(self.url_for(tile), partial)
+            _download(self.url_for(tile), partial)
+            partial.rename(path)
         except urllib.error.HTTPError as exc:
-            partial.unlink(missing_ok=True)
             if exc.code == 404:
                 raise TileNotPublishedError(f"{tile.name} is not published") from exc
             raise
-        partial.rename(path)
+        finally:
+            partial.unlink(missing_ok=True)
         return path
 
     def discard(self, tile: Tile) -> None:
@@ -199,6 +227,7 @@ def _add_raster(
 ) -> None:
     """Add one raster's contribution to every polygon's running totals."""
     with rasterio.open(path) as dataset:
+        _check_same_crs(frame.crs, dataset.crs, path)
         transform = dataset.transform
         cell_area = abs(transform.a * transform.e - transform.b * transform.d)
         for start, stop in _feature_batches(frame, transform, dataset.width, dataset.height):
@@ -218,6 +247,14 @@ def _add_raster(
                     cell_area,
                     areas[index],
                 )
+
+
+def _check_same_crs(frame_crs, raster_crs, path: Path) -> None:
+    """Reject polygons and raster in different CRSs; their cells would not line up."""
+    if frame_crs is None or raster_crs is None:
+        return
+    if pyproj.CRS.from_user_input(frame_crs) != pyproj.CRS.from_user_input(raster_crs):
+        raise ValueError(f"frame CRS {frame_crs} does not match CRS of raster {path}: {raster_crs}")
 
 
 def _partition_feature_batch(
@@ -733,15 +770,47 @@ def _read_missing_classes(
     classes: np.ndarray,
     positions: np.ndarray,
 ) -> None:
-    """Read valid pixel classes for boundary cells omitted by exactextract."""
-    for row, column, position in zip(rows, columns, positions, strict=True):
-        value = dataset.read(
-            1,
-            window=((int(row), int(row) + 1), (int(column), int(column) + 1)),
-            masked=True,
-        )[0, 0]
-        if not np.ma.is_masked(value):
-            classes[position] = float(value)
+    """Read valid pixel classes for boundary cells omitted by exactextract.
+
+    Cells are read one window per band of ``_MISSING_READ_ROWS`` rows, not one
+    GDAL read per cell.
+    """
+    if not len(rows) == len(columns) == len(positions):
+        raise ValueError("rows, columns and positions must have the same length")
+    if len(rows) == 0:
+        return
+    rows, columns, positions = (np.asarray(a, dtype=np.intp) for a in (rows, columns, positions))
+    order = np.argsort(rows, kind="stable")
+    rows, columns, positions = rows[order], columns[order], positions[order]
+    bands = rows // _MISSING_READ_ROWS
+    starts = np.flatnonzero(np.r_[True, bands[1:] != bands[:-1]])
+    for start, stop in zip(starts, np.r_[starts[1:], len(rows)], strict=True):
+        _read_band_classes(
+            dataset,
+            rows[start:stop],
+            columns[start:stop],
+            classes,
+            positions[start:stop],
+        )
+
+
+def _read_band_classes(
+    dataset: rasterio.DatasetReader,
+    rows: np.ndarray,
+    columns: np.ndarray,
+    classes: np.ndarray,
+    positions: np.ndarray,
+) -> None:
+    """Read one window covering a band's cells and fill the unmasked ones."""
+    top, left = int(rows.min()), int(columns.min())
+    window = dataset.read(
+        1,
+        window=((top, int(rows.max()) + 1), (left, int(columns.max()) + 1)),
+        masked=True,
+    )
+    values = window[rows - top, columns - left]
+    valid = ~np.ma.getmaskarray(values)
+    classes[positions[valid]] = values.data[valid].astype(float)
 
 
 def _add_class_coverage(

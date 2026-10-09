@@ -68,7 +68,8 @@ Docker:
 
 ```bash
 docker build -t osm-worldcover .
-docker run --rm -v "$PWD/data:/data" osm-worldcover \
+mkdir -p data
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/data:/data" osm-worldcover \
   build --source description --out /data/out --cache /data/cache
 ```
 
@@ -84,6 +85,10 @@ uv run owc migrate-release-lock data/out/v1.1.0
 
 The command requires the four core files and no pending recovery journal. It
 only initializes the lock; it does not audit the release contents.
+
+The image runs as the non-root user `owc` (UID 10001). The `--user` flag makes
+the output files owned by you on the host. Without it, the container cannot
+write to a host directory that you own.
 
 ## Guarantees
 
