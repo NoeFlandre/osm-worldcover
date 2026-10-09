@@ -372,7 +372,7 @@ def verify(
         _verify_locked(build_dir, threshold)
 
 
-def _verify_locked(build_dir: Path, threshold: float) -> None:
+def _verify_locked(build_dir: Path, threshold: float | None) -> None:
     from osm_worldcover.domain.validation import validate
 
     rows = _load_splits(build_dir)

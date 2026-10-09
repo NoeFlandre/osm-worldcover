@@ -158,6 +158,7 @@ def write_build(tmp_path, rows: pd.DataFrame, settings: dict | None = None) -> P
     pq.write_table(table, build / "train.parquet")
     if settings is not None:
         (build / "manifest.json").write_text(json.dumps({"settings": settings}))
+    _seed_release_lock(build)
     return build
 
 
