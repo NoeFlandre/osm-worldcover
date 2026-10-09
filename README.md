@@ -68,6 +68,7 @@ Docker:
 
 ```bash
 docker build -t osm-worldcover .
+mkdir -p data
 docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/data:/data" osm-worldcover \
   build --source description --out /data/out --cache /data/cache
 ```
