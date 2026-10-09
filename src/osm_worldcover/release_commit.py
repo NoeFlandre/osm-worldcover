@@ -111,8 +111,7 @@ def release_lock(target: Path, *, shared: bool = False) -> Iterator[None]:
     held = _held_locks()
     current_mode = held.get(target)
     if current_mode is not None:
-        if not current_mode and not shared:
-            raise ReleaseCommitError("cannot upgrade a shared release lock to exclusive")
+        _require_reentrant_mode(current_mode, shared)
         yield
         return
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +127,11 @@ def release_lock(target: Path, *, shared: bool = False) -> Iterator[None]:
             yield
     finally:
         os.close(descriptor)
+
+
+def _require_reentrant_mode(current_mode: bool, shared: bool) -> None:
+    if not current_mode and not shared:
+        raise ReleaseCommitError("cannot upgrade a shared release lock to exclusive")
 
 
 @contextmanager
@@ -700,9 +704,9 @@ def _target_matches_new(target: Path, expected: ReleaseInventory) -> bool:
         return False
     actual = inventory_release(target)
     files = {entry.name: entry for entry in actual.files}
+    names = set(files)
     return (
-        files.keys() >= _CORE_FILE_SET
-        and files.keys() <= _KNOWN_NEW_FILE_SET
+        _CORE_FILE_SET <= names <= _KNOWN_NEW_FILE_SET
         and ReleaseInventory(tuple(sorted(files[name] for name in CORE_FILES))) == expected
     )
 
@@ -859,15 +863,11 @@ def _fingerprint_from_dict(entry: Any) -> FileFingerprint:
     return FileFingerprint(name, size, digest)
 
 
+_UNSAFE_NAME_CHARACTERS = re.compile(r"[\x00-\x1f\x7f/\\]")
+
+
 def _validate_fingerprint_name(name: Any) -> None:
-    if (
-        not isinstance(name, str)
-        or not name
-        or name in {".", ".."}
-        or "/" in name
-        or "\\" in name
-        or any(ord(character) < 32 or ord(character) == 127 for character in name)
-    ):
+    if not isinstance(name, str) or name in {"", ".", ".."} or _UNSAFE_NAME_CHARACTERS.search(name):
         raise ValueError("invalid inventory filename")
 
 

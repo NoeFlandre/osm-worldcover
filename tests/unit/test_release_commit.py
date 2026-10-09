@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1063,3 +1064,49 @@ def test_writer_lock_is_reentrant_for_repository_readers(tmp_path):
 
     with release.release_write_lock(target), release.release_read_lock(target):
         assert not _journal_exists(target)
+
+
+def test_shared_lock_cannot_be_reentered_as_exclusive(tmp_path):
+    target = tmp_path / "v1.0.0"
+
+    with (
+        release.release_lock(target, shared=True),
+        pytest.raises(release.ReleaseCommitError, match="cannot upgrade"),
+        release.release_lock(target),
+    ):
+        pass
+
+
+@pytest.mark.parametrize(
+    "name", ["", ".", "..", "a/b", "a\\b", "bad\x00name", "bad\x7fname", None, 3]
+)
+def test_fingerprint_names_reject_path_tricks_and_control_characters(name):
+    with pytest.raises(ValueError, match="invalid inventory filename"):
+        release._validate_fingerprint_name(name)
+
+
+def test_old_backup_must_match_the_recorded_old_release(tmp_path):
+    backup = tmp_path / "backup"
+    stage = tmp_path / "stage"
+    no_old_release = SimpleNamespace(old=None)
+    missing_backup = SimpleNamespace(old=object())
+
+    for journal in (no_old_release, missing_backup):
+        with pytest.raises(release.ReleaseCommitError, match="backup does not match"):
+            release._validate_old_backup_candidates(backup, stage, False, journal)
+
+
+def test_orphan_journal_temp_must_be_a_regular_file(tmp_path):
+    directory = tmp_path / "directory-temp"
+    directory.mkdir()
+    link = tmp_path / "link-temp"
+    link.symlink_to(tmp_path / "elsewhere")
+
+    for path in (directory, link):
+        with pytest.raises(release.ReleaseCommitError, match="not a regular file"):
+            release._remove_orphan_journal_temp(path, tmp_path)
+
+    regular = tmp_path / "regular-temp"
+    regular.write_text("orphan")
+    release._remove_orphan_journal_temp(regular, tmp_path)
+    assert not regular.exists()

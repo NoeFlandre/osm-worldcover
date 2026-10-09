@@ -388,13 +388,24 @@ def _published_files(out) -> list[str]:
     return sorted(p.name for p in release.iterdir()) if release.exists() else []
 
 
+def _release_bytes(out) -> dict[str, bytes]:
+    release = out / f"v{Config().dataset_version}"
+    return {path.name: path.read_bytes() for path in release.iterdir()}
+
+
+def _release_entries() -> list[str]:
+    """The release directory and its permanent lock sidecar, as left in the output root."""
+    version = f"v{Config().dataset_version}"
+    return sorted([version, f".{version}.lock"])
+
+
 def test_a_rerun_that_publishes_nothing_preserves_the_previous_release(shards, tmp_path) -> None:
     out = tmp_path / "out"
     shard(shards / "a.parquet", n=3)
     finalize_shards(shards, Config(), tmp_path / "w1", out)
     release = out / f"v{Config().dataset_version}"
     (release / "audit.json").write_text("local audit report")
-    before = {path.name: path.read_bytes() for path in release.iterdir()}
+    before = _release_bytes(out)
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -403,7 +414,7 @@ def test_a_rerun_that_publishes_nothing_preserves_the_previous_release(shards, t
     assert result.rows == 0
     assert result.paths == []
     assert _published_files(out) == sorted(before)
-    assert {path.name: path.read_bytes() for path in release.iterdir()} == before
+    assert _release_bytes(out) == before
 
 
 def test_a_failed_rerun_leaves_the_previous_release_intact(shards, tmp_path, monkeypatch) -> None:
@@ -434,7 +445,7 @@ def test_a_failed_rerun_leaves_the_previous_release_intact(shards, tmp_path, mon
     assert {
         name: (out / f"v{Config().dataset_version}" / name).read_bytes() for name in before
     } == before
-    assert sorted(p.name for p in out.iterdir()) == [f"v{Config().dataset_version}"]
+    assert sorted(p.name for p in out.iterdir()) == _release_entries()
 
 
 def test_a_failed_first_run_publishes_nothing(shards, tmp_path, monkeypatch) -> None:
@@ -449,7 +460,7 @@ def test_a_failed_first_run_publishes_nothing(shards, tmp_path, monkeypatch) -> 
         finalize_shards(shards, Config(), tmp_path / "w1", out)
 
     assert _published_files(out) == []
-    assert not any(out.iterdir())
+    assert sorted(p.name for p in out.iterdir()) == [f".v{Config().dataset_version}.lock"]
 
 
 def test_a_successful_rerun_replaces_every_file_of_the_previous_release(shards, tmp_path) -> None:
@@ -468,7 +479,7 @@ def test_a_successful_rerun_replaces_every_file_of_the_previous_release(shards, 
     )
     assert result.rows == 5
     assert manifest["counts"]["examples"]["total"] == published == 5
-    assert sorted(p.name for p in out.iterdir()) == [f"v{Config().dataset_version}"]
+    assert sorted(p.name for p in out.iterdir()) == _release_entries()
 
 
 def test_split_writes_enable_large_arrow_string_buffers(tmp_path) -> None:
