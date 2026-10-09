@@ -40,6 +40,8 @@ uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file r
 uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
 ```
 
+The README's [Use section](https://github.com/NoeFlandre/osm-worldcover#use) is the canonical copy of these commands.
+
 If you do not give `--revision`, `owc regions` uses the current Hub commit. It
 prints that commit to stderr. The region file stays clean for redirection. Give
 each worker its own cache directory and output directory. `owc assemble`
