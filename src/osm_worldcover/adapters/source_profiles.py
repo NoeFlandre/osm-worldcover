@@ -14,6 +14,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 import shapely
 
+from osm_worldcover.sources import DESCRIPTION_DIR, POLYGONS_DIR
+
 __all__ = [
     "DOCUMENT_COLUMNS",
     "LINK_COLUMNS",
@@ -102,7 +104,7 @@ class NormalizedRegion:
 
 def load_description_region(root: Path, stem: str) -> NormalizedRegion:
     """Read a description-tag shard and expose each description as a document."""
-    raw = _read(root / "data" / f"{stem}.parquet", _DESCRIPTION_COLUMNS)
+    raw = _read(root / DESCRIPTION_DIR / f"{stem}.parquet", _DESCRIPTION_COLUMNS)
     if raw.empty:
         return _empty_region()
 
@@ -113,7 +115,7 @@ def load_description_region(root: Path, stem: str) -> NormalizedRegion:
 
 def load_website_region(root: Path, stem: str) -> NormalizedRegion:
     """Read a website-tag shard and expose successful website texts as documents."""
-    raw = _read(root / "polygons" / f"{stem}.parquet", _WEBSITE_COLUMNS)
+    raw = _read(root / POLYGONS_DIR / f"{stem}.parquet", _WEBSITE_COLUMNS)
     if raw.empty:
         return _empty_region()
 
