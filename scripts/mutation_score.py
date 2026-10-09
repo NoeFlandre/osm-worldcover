@@ -9,7 +9,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -173,9 +172,14 @@ def _check_baseline_commit(baseline: dict | None, errors: list[str]) -> None:
         errors.append("mutation baseline commit does not match this CI checkout")
 
 
-def _export_stats(started_ns: int) -> dict[str, Any]:
-    """Export mutmut's summary and reject failed, missing, or stale exports."""
-    export_started_ns = time.time_ns()
+def _export_stats() -> dict[str, Any]:
+    """Export mutmut's summary and reject failed or missing exports.
+
+    The previous export is removed first, so a file present afterwards was
+    written by this export. Comparing file mtimes with the clock would depend
+    on the filesystem's timestamp granularity.
+    """
+    STATS.unlink(missing_ok=True)
     result = subprocess.run(
         [sys.executable, "-m", "mutmut", "export-cicd-stats"],
         capture_output=True,
@@ -186,7 +190,7 @@ def _export_stats(started_ns: int) -> dict[str, Any]:
         detail = result.stderr.strip()[:500]
         suffix = f": {detail}" if detail else ""
         raise ValueError(f"mutmut stats export failed with exit code {result.returncode}{suffix}")
-    if not STATS.is_file() or STATS.stat().st_mtime_ns < max(started_ns, export_started_ns):
+    if not STATS.is_file():
         raise ValueError(f"mutmut stats export is missing or stale: {STATS}")
     return _json_object(STATS)
 
@@ -415,17 +419,10 @@ def _read_records(errors: list[str], started_ns: int | None) -> list[dict[str, A
         return []
 
 
-def _read_export(
-    started_ns: int | None,
-    summary: dict[str, Any],
-    errors: list[str],
-) -> dict[str, Any] | None:
-    """Read fresh export data and compare every exported outcome count."""
-    if started_ns is None or started_ns <= 0:
-        errors.append("mutation start timestamp is required to validate a fresh export")
-        return None
+def _read_export(summary: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
+    """Read this run's export and compare every exported outcome count."""
     try:
-        export = _export_stats(started_ns)
+        export = _export_stats()
     except (OSError, TypeError, ValueError) as error:
         errors.append(str(error))
         return None
@@ -470,7 +467,7 @@ def main() -> int:
     baseline, errors = _baseline_errors(os.environ.get("MUTATION_RUN_OUTCOME", ""), started_ns)
     records = _read_records(errors, started_ns)
     summary = _summary(records)
-    export = _read_export(started_ns, summary, errors)
+    export = _read_export(summary, errors)
     if summary["total"] == 0:
         errors.append("no per-mutant outcomes were exported")
     _write_raster_report(records, baseline, errors)

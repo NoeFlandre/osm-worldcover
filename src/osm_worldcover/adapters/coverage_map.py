@@ -8,6 +8,7 @@ import geopandas as gpd
 import pandas as pd
 from pyogrio.errors import DataSourceError
 
+from osm_worldcover.adapters.sql import sql_literal
 from osm_worldcover.domain.manifest import SPLIT_ORDER
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
 from osm_worldcover.release_commit import release_read_lock, release_write_lock
@@ -225,7 +226,7 @@ def _base_map(land: gpd.GeoDataFrame | None) -> gpd.GeoDataFrame:
 
 
 def _read_parquets_sql(paths: list[Path]) -> str:
-    quoted = ", ".join(f"'{str(path).replace(chr(39), chr(39) * 2)}'" for path in paths)
+    quoted = ", ".join(sql_literal(str(path)) for path in paths)
     return f"""
         SELECT
             CAST(polygon_id AS VARCHAR) AS polygon_id,

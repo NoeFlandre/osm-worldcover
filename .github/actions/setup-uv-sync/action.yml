@@ -1,0 +1,14 @@
+name: Set up uv and dependencies
+description: Install uv with its cache, then install the locked project dependencies. The calling job must check out the repository first.
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      with:
+        enable-cache: true
+
+    - name: Install dependencies
+      shell: bash
+      run: uv sync --frozen
