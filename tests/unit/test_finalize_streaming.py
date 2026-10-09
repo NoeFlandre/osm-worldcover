@@ -33,6 +33,14 @@ def written(result) -> pd.DataFrame:
     return pd.concat([pd.read_parquet(p) for p in splits], ignore_index=True)
 
 
+@pytest.fixture(autouse=True)
+def fast_release_fsyncs(monkeypatch):
+    import osm_worldcover.release_commit as release
+
+    monkeypatch.setattr(release, "fsync_file", lambda _path: None)
+    monkeypatch.setattr(release, "fsync_directory", lambda _path: None)
+
+
 TEXT = " ".join(["word"] * 30)
 
 
@@ -95,6 +103,66 @@ def shards(tmp_path):
     d = tmp_path / "shards"
     d.mkdir()
     return d
+
+
+def _clear_shards(shards):
+    for path in shards.glob("*.parquet"):
+        path.unlink()
+
+
+def _assert_empty_rerun_preserves_release(result, target, before):
+    import hashlib
+
+    assert result.rows == 0
+    assert result.paths == []
+    assert _file_snapshot(target) == before
+    assert (
+        hashlib.sha256((target / "manifest.json").read_bytes()).hexdigest()
+        == before["manifest.json"][0]
+    )
+
+
+def _assert_empty_result(result):
+    assert result.rows == 0
+    assert result.paths == []
+
+
+def _assert_release_recovered_and_clean(target, before, out):
+    import osm_worldcover.release_commit as release
+
+    assert release.inventory_release(target) == before
+    assert not list(out.glob(f".{target.name}.stage-*"))
+    assert not list(out.glob(f".{target.name}.backup-*"))
+    assert not (out / f".{target.name}.transaction.json").exists()
+
+
+def _assert_failed_validation_result(result):
+    assert result.rows == 8
+    assert result.paths == []
+    assert not result.report.ok
+
+
+def _assert_old_release_unchanged_and_unstaged(target, before, out):
+    assert _file_snapshot(target) == before
+    assert not list(out.glob(f".{target.name}.stage-*"))
+
+
+def _recover_twice_and_assert_snapshot(target, before):
+    import osm_worldcover.release_commit as release
+
+    release.recover_release(target)
+    release.recover_release(target)
+    assert _file_snapshot(target) == before
+
+
+def _assert_unchanged_rerun_result(result):
+    assert result.rows == 3
+    assert {path.name for path in result.paths} == {
+        "train.parquet",
+        "validation.parquet",
+        "test.parquet",
+        "manifest.json",
+    }
 
 
 def test_a_single_shard_becomes_a_dataset(shards, tmp_path) -> None:
@@ -320,11 +388,24 @@ def _published_files(out) -> list[str]:
     return sorted(p.name for p in release.iterdir()) if release.exists() else []
 
 
-def test_a_rerun_that_publishes_nothing_retires_the_previous_release(shards, tmp_path) -> None:
+def _release_bytes(out) -> dict[str, bytes]:
+    release = out / f"v{Config().dataset_version}"
+    return {path.name: path.read_bytes() for path in release.iterdir()}
+
+
+def _release_entries() -> list[str]:
+    """The release directory and its permanent lock sidecar, as left in the output root."""
+    version = f"v{Config().dataset_version}"
+    return sorted([version, f".{version}.lock"])
+
+
+def test_a_rerun_that_publishes_nothing_preserves_the_previous_release(shards, tmp_path) -> None:
     out = tmp_path / "out"
     shard(shards / "a.parquet", n=3)
     finalize_shards(shards, Config(), tmp_path / "w1", out)
-    assert _published_files(out)
+    release = out / f"v{Config().dataset_version}"
+    (release / "audit.json").write_text("local audit report")
+    before = _release_bytes(out)
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -332,7 +413,8 @@ def test_a_rerun_that_publishes_nothing_retires_the_previous_release(shards, tmp
 
     assert result.rows == 0
     assert result.paths == []
-    assert _published_files(out) == []
+    assert _published_files(out) == sorted(before)
+    assert _release_bytes(out) == before
 
 
 def test_a_failed_rerun_leaves_the_previous_release_intact(shards, tmp_path, monkeypatch) -> None:
@@ -363,7 +445,7 @@ def test_a_failed_rerun_leaves_the_previous_release_intact(shards, tmp_path, mon
     assert {
         name: (out / f"v{Config().dataset_version}" / name).read_bytes() for name in before
     } == before
-    assert sorted(p.name for p in out.iterdir()) == [f"v{Config().dataset_version}"]
+    assert sorted(p.name for p in out.iterdir()) == _release_entries()
 
 
 def test_a_failed_first_run_publishes_nothing(shards, tmp_path, monkeypatch) -> None:
@@ -378,7 +460,7 @@ def test_a_failed_first_run_publishes_nothing(shards, tmp_path, monkeypatch) -> 
         finalize_shards(shards, Config(), tmp_path / "w1", out)
 
     assert _published_files(out) == []
-    assert not any(out.iterdir())
+    assert sorted(p.name for p in out.iterdir()) == [f".v{Config().dataset_version}.lock"]
 
 
 def test_a_successful_rerun_replaces_every_file_of_the_previous_release(shards, tmp_path) -> None:
@@ -397,7 +479,7 @@ def test_a_successful_rerun_replaces_every_file_of_the_previous_release(shards, 
     )
     assert result.rows == 5
     assert manifest["counts"]["examples"]["total"] == published == 5
-    assert sorted(p.name for p in out.iterdir()) == [f"v{Config().dataset_version}"]
+    assert sorted(p.name for p in out.iterdir()) == _release_entries()
 
 
 def test_split_writes_enable_large_arrow_string_buffers(tmp_path) -> None:
@@ -864,6 +946,197 @@ def test_the_finished_build_lists_its_splits_then_its_manifest(shards, tmp_path)
 def test_an_empty_build_has_no_files_and_no_manifest(shards, tmp_path) -> None:
     result = run(shards, tmp_path)
     assert (result.rows, result.paths, result.manifest) == (0, [], {})
+
+
+def test_empty_rerun_preserves_the_last_release_without_claiming_new_paths(
+    shards, tmp_path
+) -> None:
+    shard(shards / "first.parquet", n=3)
+    out = tmp_path / "out"
+    target = out / f"v{Config().dataset_version}"
+    first = finalize_shards(shards, Config(), tmp_path / "work", out)
+    (target / "audit.json").write_text("local audit report")
+    before = _file_snapshot(target)
+
+    _clear_shards(shards)
+    second = finalize_shards(shards, Config(), tmp_path / "work", out)
+
+    _assert_empty_rerun_preserves_release(second, target, before)
+    assert first.paths
+
+
+def test_finalize_shards_accepts_a_symlinked_output_directory(shards, tmp_path):
+    shard(shards / "first.parquet", n=3)
+    real_out = tmp_path / "real-out"
+    real_out.mkdir()
+    output_alias = tmp_path / "out-link"
+    output_alias.symlink_to(real_out, target_is_directory=True)
+
+    result = finalize_shards(
+        shards,
+        Config(),
+        tmp_path / "work",
+        output_alias,
+    )
+
+    assert result.rows == 3
+    assert {path.name for path in result.paths} == {
+        "train.parquet",
+        "validation.parquet",
+        "test.parquet",
+        "manifest.json",
+    }
+    assert all(path.is_file() for path in result.paths)
+    assert list(real_out.glob(f"v{Config().dataset_version}"))
+
+
+def test_empty_rerun_recovers_an_interrupted_promotion_before_counting_rows(
+    shards, tmp_path, monkeypatch
+) -> None:
+    import osm_worldcover.release_commit as release
+
+    shard(shards / "first.parquet", n=3)
+    out = tmp_path / "out"
+    target = out / f"v{Config().dataset_version}"
+    finalize_shards(shards, Config(), tmp_path / "work", out)
+    before = release.inventory_release(target)
+    original = release._rename_directory
+
+    def stop_after_backup(source, destination):
+        original(source, destination)
+        if source == target:
+            raise SystemExit("simulated process interruption")
+
+    monkeypatch.setattr(release, "_rename_directory", stop_after_backup)
+    with release.release_lock(target):
+        stage = release.create_stage(target)
+        for name in release.CORE_FILES:
+            (stage / name).write_bytes(f"uncommitted:{name}".encode())
+        new = release.stage_inventory(stage)
+        with pytest.raises(SystemExit):
+            release.commit_release(target, stage, new)
+    monkeypatch.setattr(release, "_rename_directory", original)
+
+    _clear_shards(shards)
+    result = finalize_shards(shards, Config(), tmp_path / "work", out)
+
+    _assert_empty_result(result)
+    _assert_release_recovered_and_clean(target, before, out)
+
+
+def test_failed_staged_validation_does_not_promote_or_replace_the_old_release(
+    shards, tmp_path, monkeypatch
+) -> None:
+    import osm_worldcover.finalize as module
+
+    shard(shards / "first.parquet", n=3)
+    out = tmp_path / "out"
+    target = out / f"v{Config().dataset_version}"
+    finalize_shards(shards, Config(), tmp_path / "work", out)
+    before = _file_snapshot(target)
+    shard(shards / "second.parquet", n=5, start=100)
+    invalid = module.ValidationReport(8, [module.validate([]).violations[0]])
+    monkeypatch.setattr(module, "_validate_written", lambda *_args: invalid)
+
+    result = finalize_shards(shards, Config(), tmp_path / "work", out)
+
+    _assert_failed_validation_result(result)
+    _assert_old_release_unchanged_and_unstaged(target, before, out)
+    _recover_twice_and_assert_snapshot(target, before)
+
+
+@pytest.mark.parametrize("failed_split", ["train", "validation", "test"])
+def test_failed_split_write_never_changes_the_previous_release(
+    shards, tmp_path, monkeypatch, failed_split
+) -> None:
+    import osm_worldcover.finalize as module
+
+    shard(shards / "first.parquet", n=3)
+    out = tmp_path / "out"
+    target = out / f"v{Config().dataset_version}"
+    finalize_shards(shards, Config(), tmp_path / "work", out)
+    before = _file_snapshot(target)
+    shard(shards / "second.parquet", n=5, start=100)
+    original = module.write_batches
+
+    def interrupted(reader, path):
+        if path.name == f"{failed_split}.parquet":
+            path.write_bytes(b"partial split")
+            raise OSError("injected split write interruption")
+        return original(reader, path)
+
+    monkeypatch.setattr(module, "write_batches", interrupted)
+
+    with pytest.raises(OSError, match="injected split write interruption"):
+        finalize_shards(shards, Config(), tmp_path / "work", out)
+
+    import osm_worldcover.release_commit as release
+
+    release.recover_release(target)
+    release.recover_release(target)
+    assert _file_snapshot(target) == before
+    assert not list(out.glob(f".{target.name}.stage-*"))
+
+
+def test_failed_manifest_write_never_changes_the_previous_release(
+    shards, tmp_path, monkeypatch
+) -> None:
+    import osm_worldcover.finalize as module
+
+    shard(shards / "first.parquet", n=3)
+    out = tmp_path / "out"
+    target = out / f"v{Config().dataset_version}"
+    finalize_shards(shards, Config(), tmp_path / "work", out)
+    before = _file_snapshot(target)
+    shard(shards / "second.parquet", n=5, start=100)
+
+    def interrupted(manifest, path):
+        path.write_text("partial manifest")
+        raise OSError("injected manifest write interruption")
+
+    monkeypatch.setattr(module, "write_manifest", interrupted)
+
+    with pytest.raises(OSError, match="injected manifest write interruption"):
+        finalize_shards(shards, Config(), tmp_path / "work", out)
+
+    import osm_worldcover.release_commit as release
+
+    release.recover_release(target)
+    release.recover_release(target)
+    assert _file_snapshot(target) == before
+    assert not list(out.glob(f".{target.name}.stage-*"))
+
+
+def test_unchanged_rerun_keeps_release_files_and_publication_sidecars_untouched(
+    shards, tmp_path
+) -> None:
+    shard(shards / "first.parquet", n=3)
+    out = tmp_path / "out"
+    target = out / f"v{Config().dataset_version}"
+    finalize_shards(shards, Config(), tmp_path / "work", out)
+    (target / "README.md").write_text("publication sidecar")
+    (target / "audit.json").write_text("local audit report")
+    before = _file_snapshot(target)
+
+    result = finalize_shards(shards, Config(), tmp_path / "work", out)
+
+    _assert_unchanged_rerun_result(result)
+    _assert_old_release_unchanged_and_unstaged(target, before, out)
+    _recover_twice_and_assert_snapshot(target, before)
+
+
+def _file_snapshot(directory):
+    import hashlib
+
+    return {
+        path.name: (
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            path.stat().st_size,
+            path.stat().st_mtime_ns,
+        )
+        for path in sorted(directory.iterdir())
+        if path.is_file()
+    }
 
 
 def test_the_written_dataset_is_validated_against_the_configured_threshold(

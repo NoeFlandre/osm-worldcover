@@ -11,6 +11,7 @@ from pyogrio.errors import DataSourceError
 from osm_worldcover.adapters.sql import sql_literal
 from osm_worldcover.domain.manifest import SPLIT_ORDER
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
+from osm_worldcover.release_commit import release_read_lock, release_write_lock
 
 __all__ = [
     "CLASS_COLORS",
@@ -43,6 +44,11 @@ class CoverageMapError(ValueError):
 
 def centroids_from_build(build_dir: Path) -> pd.DataFrame:
     """Return one validated ESA-labelled centroid row per polygon."""
+    with release_read_lock(build_dir):
+        return _centroids_from_build_locked(Path(build_dir))
+
+
+def _centroids_from_build_locked(build_dir: Path) -> pd.DataFrame:
     source = _read_parquets_sql(_split_paths(Path(build_dir)))
     connection = duckdb.connect()
     try:
@@ -120,6 +126,16 @@ def write_coverage_map(
     land: gpd.GeoDataFrame | None = None,
 ) -> int:
     """Render the release centroid map and return its unique-polygon count."""
+    with release_write_lock(build_dir):
+        return _write_coverage_map_locked(build_dir, output_path, land=land)
+
+
+def _write_coverage_map_locked(
+    build_dir: Path,
+    output_path: Path,
+    *,
+    land: gpd.GeoDataFrame | None = None,
+) -> int:
     import matplotlib
 
     matplotlib.use("Agg")

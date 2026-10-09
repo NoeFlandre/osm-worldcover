@@ -20,9 +20,11 @@ in batches rather than collected first.
 
 from __future__ import annotations
 
+import json
 import shutil
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, replace
+from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 
@@ -43,6 +45,16 @@ from osm_worldcover.domain.validation import (
     validate,
 )
 from osm_worldcover.pipeline import TEXT_COLUMNS
+from osm_worldcover.release_commit import (
+    ReleaseCommitError,
+    commit_release,
+    core_inventory,
+    create_stage,
+    discard_stage,
+    release_write_lock,
+    stage_inventory,
+    transaction_pending,
+)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -75,52 +87,123 @@ def finalize_shards(
     processing: dict[str, Any] | None = None,
 ) -> StreamedBuild:
     """Assemble region shards into the dataset written under ``out_dir``."""
-    work_dir, out_dir = Path(work_dir), Path(out_dir)
+    shard_dir = Path(shard_dir).absolute()
+    work_dir, out_dir = Path(work_dir).absolute(), Path(out_dir).resolve()
+    target = out_dir / f"v{config.dataset_version}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with release_write_lock(target):
+        return _finalize_locked(Path(shard_dir), config, work_dir, target, rejections, processing)
+
+
+def _finalize_locked(
+    shard_dir: Path,
+    config: Config,
+    work_dir: Path,
+    target: Path,
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> StreamedBuild:
     enriched = work_dir / "enriched"
     if enriched.exists():
         shutil.rmtree(enriched)
     enriched.mkdir(parents=True)
-    target = out_dir / f"v{config.dataset_version}"
 
-    if _enrich_shards(Path(shard_dir), enriched, config) == 0:
-        # Nothing to publish: retire the previous release rather than leave it current.
-        _replace_release(None, target)
+    if _enrich_shards(shard_dir, enriched, config) == 0:
         return StreamedBuild(0, [], {}, validate([]))
 
-    # Everything is written beside the target, and only swapped in once complete,
-    # so a failure part-way leaves the previous release exactly as it was.
-    staging = out_dir / f"{target.name}.staging"
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True)
-    try:
-        build = _write_release(enriched, staging, config, rejections, processing)
-        _replace_release(staging, target)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
-    return replace(build, paths=[target / path.relative_to(staging) for path in build.paths])
-
-
-def _write_release(
-    enriched: Path,
-    staging: Path,
-    config: Config,
-    rejections: dict[str, int] | None,
-    processing: dict[str, Any] | None,
-) -> StreamedBuild:
-    """Write every split and the manifest into ``staging``."""
     connection, dropped, deduplication_analysis = _deduplicate(enriched)
     try:
-        paths, rows = _write_splits(connection, staging)
-        counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
+        return _build_candidate(
+            connection,
+            config,
+            target,
+            dropped,
+            deduplication_analysis,
+            rejections,
+            processing,
+        )
     finally:
         connection.close()
 
+
+def _build_candidate(
+    connection: DuckDBPyConnection,
+    config: Config,
+    target: Path,
+    dropped: dict[str, int],
+    deduplication_analysis: dict[str, Any],
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> StreamedBuild:
+    stage = create_stage(target)
+    try:
+        rows, manifest, report = _prepare_candidate(
+            connection,
+            config,
+            stage,
+            dropped,
+            deduplication_analysis,
+            rejections,
+            processing,
+        )
+        if not report.ok:
+            discard_stage(target, stage)
+            return _streamed_result(rows, [], manifest, report, dropped)
+        _retain_or_promote_candidate(target, stage)
+        return _streamed_result(rows, _target_paths(target), manifest, report, dropped)
+    except BaseException:
+        _discard_candidate_after_error(target, stage)
+        raise
+
+
+def _prepare_candidate(
+    connection: DuckDBPyConnection,
+    config: Config,
+    stage: Path,
+    dropped: dict[str, int],
+    deduplication_analysis: dict[str, Any],
+    rejections: dict[str, int] | None,
+    processing: dict[str, Any] | None,
+) -> tuple[int, dict[str, Any], ValidationReport]:
+    paths, rows = _write_splits(connection, stage)
+    counts = _aggregate(connection, rejections or {}, dropped, deduplication_analysis)
+    manifest = _build_candidate_manifest(counts, config, processing)
+    manifest_path = write_manifest(manifest, stage / "manifest.json")
+    report = _validate_written(paths, config)
+    _validate_staged_manifest(manifest_path, paths, manifest, rows)
+    return rows, manifest, report
+
+
+def _build_candidate_manifest(
+    counts: DatasetCounts, config: Config, processing: dict[str, Any] | None
+) -> dict[str, Any]:
     manifest = manifest_module.build(counts, config.as_manifest_settings())
     if processing is not None:
         manifest["processing"] = processing
-    report = _validate_written(paths, config)
-    paths.append(write_manifest(manifest, staging / "manifest.json"))
+    return manifest
+
+
+def _retain_or_promote_candidate(target: Path, stage: Path) -> None:
+    inventory = stage_inventory(stage)
+    if core_inventory(target) == inventory:
+        discard_stage(target, stage)
+    else:
+        commit_release(target, stage, inventory)
+
+
+def _discard_candidate_after_error(target: Path, stage: Path) -> None:
+    if not transaction_pending(target):
+        with suppress(Exception):
+            discard_stage(target, stage)
+
+
+def _streamed_result(
+    rows: int,
+    paths: list[Path],
+    manifest: dict[str, Any],
+    report: ValidationReport,
+    dropped: dict[str, int],
+) -> StreamedBuild:
     return StreamedBuild(
         rows=rows,
         paths=paths,
@@ -132,24 +215,45 @@ def _write_release(
     )
 
 
-def _replace_release(staging: Path | None, target: Path) -> None:
-    """Swap ``staging`` in for ``target``, or retire ``target`` when ``staging`` is None.
+def _target_paths(target: Path) -> list[Path]:
+    return [
+        *(target / f"{split}.parquet" for split in manifest_module.SPLIT_ORDER),
+        target / "manifest.json",
+    ]
 
-    The old release is renamed aside first and only deleted once the new one is
-    in place, so a failed rename restores it instead of losing it.
-    """
-    retired = target.with_name(f"{target.name}.retired")
-    shutil.rmtree(retired, ignore_errors=True)
-    if target.exists():
-        target.rename(retired)
-    if staging is not None:
-        try:
-            staging.rename(target)
-        except BaseException:
-            if retired.exists():
-                retired.rename(target)
-            raise
-    shutil.rmtree(retired, ignore_errors=True)
+
+def _validate_staged_manifest(
+    manifest_path: Path,
+    split_paths: Sequence[Path],
+    expected: dict[str, Any],
+    rows: int,
+) -> None:
+    actual = _read_expected_staged_manifest(manifest_path, expected)
+    examples = actual.get("counts", {}).get("examples", {})
+    counts = _staged_split_counts(split_paths)
+    _validate_staged_split_counts(examples, counts)
+    _validate_staged_total(rows, examples, counts)
+
+
+def _read_expected_staged_manifest(manifest_path: Path, expected: dict[str, Any]) -> dict[str, Any]:
+    actual = json.loads(manifest_path.read_text())
+    if actual != expected:
+        raise ReleaseCommitError("staged manifest changed after it was written")
+    return actual
+
+
+def _staged_split_counts(split_paths: Sequence[Path]) -> dict[str, int]:
+    return {path.stem: int(pq.ParquetFile(path).metadata.num_rows) for path in split_paths}
+
+
+def _validate_staged_split_counts(examples: dict[str, Any], counts: dict[str, int]) -> None:
+    if any(examples.get(split) != count for split, count in counts.items()):
+        raise ReleaseCommitError("staged manifest split counts do not match the Parquet files")
+
+
+def _validate_staged_total(rows: int, examples: dict[str, Any], counts: dict[str, int]) -> None:
+    if examples.get("total") != rows or sum(counts.values()) != rows:
+        raise ReleaseCommitError("staged manifest total does not match the Parquet files")
 
 
 def _enrich_shards(shard_dir: Path, enriched: Path, config: Config) -> int:

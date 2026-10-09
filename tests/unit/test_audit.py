@@ -14,6 +14,7 @@ import yaml
 from osm_worldcover.adapters.audit import _SCHEMA, audit_build
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.splits import assign_cell
+from osm_worldcover.release_commit import release_lock
 
 SPLITS = ("train", "validation", "test")
 SETTINGS = {
@@ -184,6 +185,8 @@ def build(tmp_path):
         },
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with release_lock(tmp_path):
+        pass
     return tmp_path
 
 

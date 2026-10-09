@@ -21,6 +21,8 @@ uv run owc build --source website --revision "$SOURCE_REVISION" --regions-file r
 uv run owc assemble data/w0/shards data/w1/shards --source website --revision "$SOURCE_REVISION" --out data/out
 ```
 
+The README's [Use section](https://github.com/NoeFlandre/osm-worldcover#use) is the canonical copy of these commands.
+
 The ignored release scratch at `data/releases/description/parallel` is recovery
 evidence. It is not repository source. Keep it while a resume, a verification or
 a publication check can still need it. Remove it only after two conditions are
