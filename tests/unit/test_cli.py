@@ -1,6 +1,7 @@
 """Command line behaviour."""
 
 import json
+import logging
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -85,6 +86,21 @@ def test_build_fails_when_a_guarantee_is_broken(tmp_path, monkeypatch) -> None:
     assert "polygon_leakage" in outcome.output
 
 
+def test_build_logs_run_settings_only_when_verbose(tmp_path, monkeypatch, caplog) -> None:
+    result = built(tmp_path)
+    monkeypatch.setattr(cli, "run_build", lambda *a, **k: type("R", (), {"result": result})())
+    args = ["build", "--out", str(tmp_path), "--cache", str(tmp_path)]
+
+    quiet = runner.invoke(cli.app, args)
+    assert not [record for record in caplog.records if record.levelno == logging.INFO]
+
+    with caplog.at_level(logging.INFO, logger="osm_worldcover"):
+        loud = runner.invoke(cli.app, [*args, "--verbose"])
+    assert loud.exit_code == 0, loud.output
+    assert loud.stdout == quiet.stdout
+    assert "build source=" in caplog.text
+
+
 def test_verify_accepts_a_sound_build(tmp_path) -> None:
     build = tmp_path / "v1.0.0"
     build.mkdir(parents=True)
@@ -95,7 +111,7 @@ def test_verify_accepts_a_sound_build(tmp_path) -> None:
     assert "every guarantee holds" in outcome.output
 
 
-@pytest.mark.parametrize("minimum, expected_exit", [(1, 0), (10, 1)])
+@pytest.mark.parametrize("minimum, expected_exit", [(1, 0), (4, 0), (5, 1), (10, 1)])
 def test_verify_uses_the_manifest_text_threshold(tmp_path, minimum, expected_exit) -> None:
     build = tmp_path / "v1.0.0"
     build.mkdir()
@@ -135,7 +151,7 @@ def test_verify_rejects_a_build_that_breaks_a_guarantee(tmp_path) -> None:
     bad.to_parquet(build / "train.parquet", index=False)
     outcome = runner.invoke(cli.app, ["verify", str(build)])
     assert outcome.exit_code == 1
-    assert "below_threshold" in outcome.output
+    assert outcome.output.splitlines() == ["rows: 2", "FAILED below_threshold: 2 ('p0', 'p1')"]
 
 
 def write_build(tmp_path, rows: pd.DataFrame, settings: dict | None = None) -> Path:
@@ -427,7 +443,7 @@ def test_assemble_fails_when_a_guarantee_breaks(tmp_path) -> None:
         ["assemble", "--allow-unverified-shards", str(shards), "--out", str(tmp_path / "out")],
     )
     assert outcome.exit_code == 1
-    assert "below_threshold" in outcome.output
+    assert "  FAILED below_threshold: 3" in outcome.output.splitlines()
 
 
 def test_assemble_refuses_an_empty_shard_directory(tmp_path) -> None:

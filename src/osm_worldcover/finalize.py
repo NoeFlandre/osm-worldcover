@@ -205,86 +205,96 @@ def _attach_provenance(frame: pd.DataFrame, config: Config) -> pd.DataFrame:
     )
 
 
+def _sql_string(value: str) -> str:
+    """Quote ``value`` as a SQL string literal, so a quote in it cannot end the literal early."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _deduplicate(enriched: Path) -> tuple[DuckDBPyConnection, dict[str, int], dict[str, Any]]:
     """Collapse duplicates and split conflicts across every shard, using DuckDB.
 
     The open connection is returned so the surviving rows can be streamed out
-    rather than collected. Every ordering is fully specified, so no survivor
-    depends on the order files happened to be read in.
+    rather than collected. It is closed here if anything fails before that.
+    Every ordering is fully specified, so no survivor depends on the order
+    files happened to be read in.
     """
     import duckdb
 
-    pattern = str(enriched / "*.parquet")
+    source = _sql_string(str(enriched / "*.parquet"))
     connection = duckdb.connect()
-    connection.execute("SET memory_limit = '2GB'")
-    connection.execute("SET threads = 2")
-    connection.execute("SET preserve_insertion_order = false")
-    connection.execute("SET temp_directory = ?", [str(enriched.parent / "duckdb-spill")])
-    before = _count(connection, f"SELECT count(*) FROM read_parquet('{pattern}')")
+    try:
+        connection.execute("SET memory_limit = '2GB'")
+        connection.execute("SET threads = 2")
+        connection.execute("SET preserve_insertion_order = false")
+        connection.execute("SET temp_directory = ?", [str(enriched.parent / "duckdb-spill")])
+        before = _count(connection, f"SELECT count(*) FROM read_parquet({source})")
 
-    # One region per OSM object, so an object cannot wear two polygon_ids.
-    connection.execute(
-        f"""
-        CREATE TEMP TABLE objects AS
-        WITH home_region AS (
-            SELECT osm_type, osm_id, region AS _home_region FROM (
-                SELECT osm_type, osm_id, region, row_number() OVER (
-                    PARTITION BY osm_type, osm_id ORDER BY region
+        # One region per OSM object, so an object cannot wear two polygon_ids.
+        connection.execute(
+            f"""
+            CREATE TEMP TABLE objects AS
+            WITH home_region AS (
+                SELECT osm_type, osm_id, region AS _home_region FROM (
+                    SELECT osm_type, osm_id, region, row_number() OVER (
+                        PARTITION BY osm_type, osm_id ORDER BY region
+                    ) AS _rank
+                    FROM (SELECT DISTINCT osm_type, osm_id, region FROM read_parquet({source}))
+                ) WHERE _rank = 1
+            ),
+            canonical AS (
+                SELECT r.* FROM read_parquet({source}) r
+                JOIN home_region h USING (osm_type, osm_id)
+                WHERE r.region = h._home_region
+            )
+            SELECT * EXCLUDE (_rank) FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY osm_type, osm_id, document_id ORDER BY polygon_id
                 ) AS _rank
-                FROM (SELECT DISTINCT osm_type, osm_id, region FROM read_parquet('{pattern}'))
+                FROM canonical
             ) WHERE _rank = 1
-        ),
-        canonical AS (
-            SELECT r.* FROM read_parquet('{pattern}') r
-            JOIN home_region h USING (osm_type, osm_id)
-            WHERE r.region = h._home_region
+            """
         )
-        SELECT * EXCLUDE (_rank) FROM (
-            SELECT *, row_number() OVER (
-                PARTITION BY osm_type, osm_id, document_id ORDER BY polygon_id
-            ) AS _rank
-            FROM canonical
-        ) WHERE _rank = 1
-        """
-    )
-    after_objects = _count(connection, "SELECT count(*) FROM objects")
-    analysis = _deduplication_analysis(connection)
+        after_objects = _count(connection, "SELECT count(*) FROM objects")
+        analysis = _deduplication_analysis(connection)
 
-    # Remove only repeated records for the same stable polygon, text and label.
-    connection.execute(
-        """
-        CREATE TEMP TABLE examples AS
-        SELECT * EXCLUDE (_rank) FROM (
-            SELECT *, row_number() OVER (
-                PARTITION BY polygon_id, _dedup_key ORDER BY document_id
-            ) AS _rank
-            FROM objects
-        ) WHERE _rank = 1
-        """
-    )
-    after_examples = _count(connection, "SELECT count(*) FROM examples")
-
-    # One split per document: the one holding most of its rows.
-    connection.execute(
-        """
-        CREATE TEMP TABLE kept AS
-        WITH document_home AS (
-            SELECT document_id, split AS _home FROM (
-                SELECT document_id, split, count(*) AS n, row_number() OVER (
-                    PARTITION BY document_id ORDER BY count(*) DESC, split
+        # Remove only repeated records for the same stable polygon, text and label.
+        connection.execute(
+            """
+            CREATE TEMP TABLE examples AS
+            SELECT * EXCLUDE (_rank) FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY polygon_id, _dedup_key ORDER BY document_id
                 ) AS _rank
-                FROM examples GROUP BY document_id, split
+                FROM objects
             ) WHERE _rank = 1
+            """
         )
-        SELECT e.* FROM examples e
-        JOIN document_home h USING (document_id)
-        WHERE e.split = h._home
-        """
-    )
-    after = _count(connection, "SELECT count(*) FROM kept")
-    analysis.update(_retained_text_diagnostics(connection))
-    connection.execute("DROP TABLE objects")
-    connection.execute("DROP TABLE examples")
+        after_examples = _count(connection, "SELECT count(*) FROM examples")
+
+        # One split per document: the one holding most of its rows.
+        connection.execute(
+            """
+            CREATE TEMP TABLE kept AS
+            WITH document_home AS (
+                SELECT document_id, split AS _home FROM (
+                    SELECT document_id, split, count(*) AS n, row_number() OVER (
+                        PARTITION BY document_id ORDER BY count(*) DESC, split
+                    ) AS _rank
+                    FROM examples GROUP BY document_id, split
+                ) WHERE _rank = 1
+            )
+            SELECT e.* FROM examples e
+            JOIN document_home h USING (document_id)
+            WHERE e.split = h._home
+            """
+        )
+        after = _count(connection, "SELECT count(*) FROM kept")
+        analysis.update(_retained_text_diagnostics(connection))
+        connection.execute("DROP TABLE objects")
+        connection.execute("DROP TABLE examples")
+    except BaseException:
+        connection.close()
+        raise
 
     return (
         connection,

@@ -10,6 +10,7 @@ from typing import Any, Self
 
 from osm_worldcover.adapters.worldcover import DEFAULT_CACHED_TILES
 from osm_worldcover.domain.dominance import DEFAULT_THRESHOLD
+from osm_worldcover.domain.identity import CODE_REPOSITORY
 from osm_worldcover.domain.splits import DEFAULT_RATIOS, DEFAULT_RESOLUTION, DEFAULT_SEED
 from osm_worldcover.sources import DEFAULT_SOURCE, SourceRecipe, recipe_for
 
@@ -46,7 +47,6 @@ DEFAULT_DATASET_VERSION = "1.1.0"
 
 #: Equal-area projection used whenever a real-world area is needed.
 EQUAL_AREA_CRS = "EPSG:6933"
-CODE_REPOSITORY = "https://github.com/NoeFlandre/osm-worldcover"
 
 
 @dataclass(frozen=True, slots=True)
