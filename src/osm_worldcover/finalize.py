@@ -24,11 +24,12 @@ import shutil
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import pandas as pd
 import pyarrow.parquet as pq
 
+from osm_worldcover.adapters.sql import sql_literal
 from osm_worldcover.adapters.writer import write_batches, write_manifest
 from osm_worldcover.config import Config
 from osm_worldcover.domain import manifest as manifest_module
@@ -47,6 +48,9 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 __all__ = ["StreamedBuild", "finalize_shards"]
+
+# DuckDB's working-memory budget for the global deduplication pass.
+_DEDUP_MEMORY_LIMIT: Final = "2GB"
 
 
 @dataclass(slots=True)
@@ -205,11 +209,6 @@ def _attach_provenance(frame: pd.DataFrame, config: Config) -> pd.DataFrame:
     )
 
 
-def _sql_string(value: str) -> str:
-    """Quote ``value`` as a SQL string literal, so a quote in it cannot end the literal early."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _deduplicate(enriched: Path) -> tuple[DuckDBPyConnection, dict[str, int], dict[str, Any]]:
     """Collapse duplicates and split conflicts across every shard, using DuckDB.
 
@@ -220,10 +219,10 @@ def _deduplicate(enriched: Path) -> tuple[DuckDBPyConnection, dict[str, int], di
     """
     import duckdb
 
-    source = _sql_string(str(enriched / "*.parquet"))
+    source = sql_literal(str(enriched / "*.parquet"))
     connection = duckdb.connect()
     try:
-        connection.execute("SET memory_limit = '2GB'")
+        connection.execute(f"SET memory_limit = '{_DEDUP_MEMORY_LIMIT}'")
         connection.execute("SET threads = 2")
         connection.execute("SET preserve_insertion_order = false")
         connection.execute("SET temp_directory = ?", [str(enriched.parent / "duckdb-spill")])

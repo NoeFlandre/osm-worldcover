@@ -1,3 +1,5 @@
+from typing import Final
+
 import duckdb
 
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
@@ -6,11 +8,14 @@ from osm_worldcover.domain.text_diagnostics import group_counts_sql, retained_te
 from .report import AuditProblem
 from .schema import _SPLITS
 
+# DuckDB's working-memory budget for the release audit's aggregate checks.
+_AUDIT_MEMORY_LIMIT: Final = "256MB"
+
 
 def check_aggregates(paths, hashes, scratch, manifest, checks, strict_text_leakage):
     connection = duckdb.connect()
     try:
-        connection.execute("SET memory_limit = '256MB'")
+        connection.execute(f"SET memory_limit = '{_AUDIT_MEMORY_LIMIT}'")
         connection.execute("SET threads = 2")
         connection.execute("SET preserve_insertion_order = false")
         connection.execute("SET temp_directory = ?", [str(scratch / "spill")])
