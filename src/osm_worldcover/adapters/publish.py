@@ -7,7 +7,7 @@ upload request finished. The local receipt is never part of the upload.
 
 import hashlib
 import json
-import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -258,7 +258,11 @@ def _write_receipt(build_dir, repo_id, oid, url, verification, audit) -> None:
         "verification": verification,
         "audit": audit,
     }
-    with tempfile.TemporaryDirectory(prefix=".publication-", dir=build_dir) as scratch:
-        temporary = Path(scratch) / RECEIPT_NAME
+    # A plain file, not a directory: a leftover after a crash must not block the
+    # release inventory (which rejects directories) and is replaced on the next promotion.
+    temporary = build_dir / f".{RECEIPT_NAME}.{uuid.uuid4().hex}.tmp"
+    try:
         temporary.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
         temporary.replace(build_dir / RECEIPT_NAME)
+    finally:
+        temporary.unlink(missing_ok=True)

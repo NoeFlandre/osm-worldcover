@@ -4,6 +4,7 @@ Every knob that changes the published data lives here and is copied into the
 manifest, so a dataset can always be traced back to the settings that made it.
 """
 
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Self
@@ -85,6 +86,7 @@ class Config:
             object.__setattr__(self, "source_dataset", recipe_for(self.source).source_dataset)
         if self.min_words is not None:
             _validate_min_words(self.min_words)
+        _validate_dataset_version(self.dataset_version)
 
     @classmethod
     def from_cli(cls, *, max_area_km2: float, **options: Any) -> Self:
@@ -134,6 +136,15 @@ class Config:
             },
             "equal_area_crs": EQUAL_AREA_CRS,
         }
+
+
+_DATASET_VERSION_PATTERN = re.compile(r"[0-9A-Za-z][0-9A-Za-z._-]{0,63}")
+
+
+def _validate_dataset_version(value: str) -> None:
+    """Accept one plain path component, so the release stays inside the output root."""
+    if not _DATASET_VERSION_PATTERN.fullmatch(value):
+        raise ValueError(f"invalid dataset version: {value!r}")
 
 
 def _validate_min_words(value: int) -> None:

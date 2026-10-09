@@ -445,12 +445,45 @@ def _recover_failed_promotion(
     return _target_matches_new(target, new)
 
 
+@contextmanager
+def scratch_lock(directory: Path) -> Iterator[None]:
+    """Serialise runs that share one scratch directory, since each rebuilds its contents."""
+    lock_module = _require_posix_lock_support()
+    directory.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(directory / ".scratch.lock", flags, 0o666)
+    try:
+        lock_module.flock(descriptor, lock_module.LOCK_EX)
+        try:
+            yield
+        finally:
+            lock_module.flock(descriptor, lock_module.LOCK_UN)
+    finally:
+        os.close(descriptor)
+
+
+def _flush_to_media(descriptor: int) -> None:
+    """Flush to the storage device, not just the OS cache.
+
+    On macOS ``os.fsync`` stops at the drive cache, so ``F_FULLFSYNC`` is used when
+    the platform has it. A filesystem that refuses it falls back to ``os.fsync``.
+    """
+    full_sync = getattr(fcntl, "F_FULLFSYNC", None)
+    if fcntl is None or full_sync is None:
+        os.fsync(descriptor)
+        return
+    try:
+        fcntl.fcntl(descriptor, full_sync)
+    except OSError:
+        os.fsync(descriptor)
+
+
 def fsync_file(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise ReleaseCommitError(f"release file is not regular: {path}")
-        os.fsync(descriptor)
+        _flush_to_media(descriptor)
     finally:
         os.close(descriptor)
 
@@ -461,7 +494,7 @@ def fsync_directory(path: Path) -> None:
     try:
         if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
             raise ReleaseCommitError(f"release path is not a directory: {path}")
-        os.fsync(descriptor)
+        _flush_to_media(descriptor)
     finally:
         os.close(descriptor)
 

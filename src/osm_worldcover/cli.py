@@ -32,6 +32,7 @@ from osm_worldcover.release_commit import (
 )
 from osm_worldcover.release_commit import (
     release_read_lock,
+    scratch_lock,
 )
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
@@ -249,9 +250,10 @@ def assemble(
 
 def _assemble(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
     """Keep the legacy recovery route visibly separate from verified assembly."""
-    if options.allow_unverified:
-        return _assemble_unverified(shard_dirs, options)
-    return _assemble_verified(shard_dirs, options)
+    with scratch_lock(options.work):
+        if options.allow_unverified:
+            return _assemble_unverified(shard_dirs, options)
+        return _assemble_verified(shard_dirs, options)
 
 
 def _assemble_unverified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
