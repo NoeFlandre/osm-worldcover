@@ -13,9 +13,9 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from osm_worldcover.adapters._audit.aggregates import check_aggregates
-from osm_worldcover.adapters._audit.report import AuditReport, _Checks
 from osm_worldcover.adapters.audit import _SCHEMA, audit_build
+from osm_worldcover.adapters.audit.report import AuditReport, _Checks
+from osm_worldcover.adapters.audit.sql import check_aggregates
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.splits import assign_cell
 from osm_worldcover.release_commit import release_lock
@@ -216,6 +216,25 @@ def test_complete_release_passes_and_report_serializes(build):
 
 def test_release_fixture_schema_is_independent_and_private_alias_remains_compatible():
     assert _SCHEMA == FIELD_TYPES
+
+
+def test_audit_package_public_surface_is_stable() -> None:
+    """The CLI, publish and tests import these names from the audit package path."""
+    from osm_worldcover.adapters import audit as package
+
+    assert package.__all__ == ["AuditProblem", "AuditReport", "audit_build"]
+    assert package.AuditProblem.__module__ == "osm_worldcover.adapters.audit"
+    assert package.AuditReport.__module__ == "osm_worldcover.adapters.audit"
+    assert callable(package.audit_build)
+
+
+def test_audit_package_helpers_and_pickling_are_stable() -> None:
+    """Importers use the retained-diagnostics helper, and problems pickle by path."""
+    from osm_worldcover.adapters import audit as package
+
+    assert callable(package._retained_text_diagnostics)
+    problem = package.AuditProblem("example_code", 2, ("row",))
+    assert pickle.loads(pickle.dumps(problem)) == problem
 
 
 def test_complete_release_accepts_partitioned_mixed_code_provenance(build):

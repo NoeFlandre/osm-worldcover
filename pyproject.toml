@@ -88,12 +88,13 @@ do_not_mutate = [
 	# The WorldCover raster adapter contains the PR13 extraction logic and is
 	# mutation-tested with its real-raster regressions. Other adapters are I/O
 	# boundaries whose behavior is covered by focused contract tests.
-	"*/adapters/audit.py",
-	"*/adapters/_audit/aggregates.py",
-	"*/adapters/_audit/card.py",
-	"*/adapters/_audit/manifest.py",
-	"*/adapters/_audit/rows.py",
-	"*/adapters/_audit/schema.py",
+	"*/adapters/audit/__init__.py",
+	"*/adapters/audit/run.py",
+	"*/adapters/audit/sql.py",
+	"*/adapters/audit/card.py",
+	"*/adapters/audit/manifest.py",
+	"*/adapters/audit/rows.py",
+	"*/adapters/audit/schema.py",
 	"*/adapters/coverage_map.py",
 	"*/adapters/hub.py",
 	"*/adapters/publish.py",

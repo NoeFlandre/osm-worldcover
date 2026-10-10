@@ -1,11 +1,3 @@
-"""Read back release files and independently check publication guarantees.
-
-Python keeps only one Arrow batch and bounded diagnostic samples. Global
-identity checks run in DuckDB with a memory limit and disk-backed spill space.
-The input files are never modified. Passing this audit does not independently
-recompute raster labels, or prove that excluded source polygons were processed.
-"""
-
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -13,22 +5,11 @@ from typing import Any
 
 from osm_worldcover.release_commit import release_read_lock
 
-from ._audit.aggregates import (
-    _retained_text_diagnostics as _retained_text_diagnostics,
-)
-from ._audit.aggregates import (
-    check_aggregates,
-)
-from ._audit.card import _check_card
-from ._audit.manifest import _check_completion, _check_settings, _load_manifest
-from ._audit.report import AuditProblem, AuditReport, _Checks
-from ._audit.rows import _inspect_files, scan_rows
-from ._audit.schema import _SCHEMA as _SCHEMA
-
-__all__ = ["AuditProblem", "AuditReport", "audit_build"]
-
-AuditProblem.__module__ = __name__
-AuditReport.__module__ = __name__
+from .card import _check_card
+from .manifest import _check_completion, _check_settings, _load_manifest
+from .report import AuditReport, _Checks
+from .rows import _inspect_files, scan_rows
+from .sql import check_aggregates
 
 
 def audit_build(

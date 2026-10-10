@@ -30,10 +30,10 @@ tests observe.
   finalized files. It must be able to catch an error in the producer schema. It
   also checks the provenance columns, the split columns and the H3 columns. The
   build adds these columns after the pipeline output.
-- `accounting.COUNT_FIELDS` and `adapters.audit._OUTCOME_COUNTS` name the same
-  serialized counters. The audit validates the receipt that accounting writes.
-  Its expected field list stays independent. The audit can then detect a
-  missing or changed writer field.
+- `accounting.COUNT_FIELDS` and `adapters.audit.manifest._OUTCOME_COUNTS`
+  name the same serialized counters. The audit validates the receipt that
+  accounting writes. Its expected field list stays independent. The audit can
+  then detect a missing or changed writer field.
 
 These matches are deliberate duplicated contracts. They are not shared
 processing logic. The remaining clone reports are only these declarations. The
