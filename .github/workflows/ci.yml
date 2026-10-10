@@ -24,28 +24,28 @@ jobs:
         uses: ./.github/actions/setup-uv-sync
 
       - name: Lint
-        run: uv run ruff check .
+        run: scripts/check.sh lint
 
       - name: Format
-        run: uv run ruff format --check .
+        run: scripts/check.sh format
 
       - name: Types
-        run: uv run ty check src/
+        run: scripts/check.sh types
 
       - name: Architecture boundaries
-        run: uv run lint-imports
+        run: scripts/check.sh architecture
 
       # One coverage pass over every suite: CRAP is computed from it, and
       # splitting the runs would make code covered only by the acceptance
       # tests look untested. Test helpers are included in the CRAP inventory.
       - name: Tests (unit, property, acceptance)
-        run: uv run pytest --cov --cov-report=json -q
+        run: scripts/check.sh tests
 
       - name: CRAP score
-        run: uv run python scripts/crap.py src scripts tests
+        run: scripts/check.sh crap
 
       - name: Docs build
-        run: uv run mkdocs build --strict
+        run: scripts/check.sh docs
 
   mutation:
     name: Mutation testing
@@ -59,7 +59,7 @@ jobs:
         name: Mutate the domain logic
         run: |
           echo "started_ns=$(date +%s%N)" >> "$GITHUB_OUTPUT"
-          uv run mutmut run
+          scripts/check.sh mutation
 
       - name: Mutation score
         if: always()
