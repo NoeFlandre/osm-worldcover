@@ -440,6 +440,7 @@ def test_normalized_regions_are_immutable_value_objects() -> None:
     region = sp.NormalizedRegion(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
     with pytest.raises(dataclasses.FrozenInstanceError):
         region.polygons = pd.DataFrame()  # type: ignore[misc]
+    assert not hasattr(region, "__dict__")
 
 
 def test_contact_website_language_is_read_from_its_own_column(tmp_path) -> None:
