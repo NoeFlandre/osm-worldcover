@@ -80,26 +80,24 @@ source = ["src/osm_worldcover", "scripts", "tests"]
 branch = true
 
 [tool.mutmut]
-# The whole package is copied so imports resolve. The WorldCover raster adapter
-# is included because it contains extraction logic; remaining adapters and the
-# CLI are I/O boundaries whose contracts have focused tests.
+# The whole package is copied so imports resolve. Only the WorldCover raster
+# adapter is mutation-tested, because it contains the extraction logic. The
+# other adapters and the CLI are I/O boundaries whose contracts have focused
+# tests, so they are excluded from mutation.
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
-	# The WorldCover raster adapter contains the PR13 extraction logic and is
-	# mutation-tested with its real-raster regressions. Other adapters are I/O
-	# boundaries whose behavior is covered by focused contract tests.
-	"*/adapters/audit/__init__.py",
-	"*/adapters/audit/run.py",
-	"*/adapters/audit/sql.py",
-	"*/adapters/audit/card.py",
-	"*/adapters/audit/manifest.py",
-	"*/adapters/audit/rows.py",
-	"*/adapters/audit/schema.py",
-	"*/adapters/coverage_map.py",
-	"*/adapters/hub.py",
-	"*/adapters/publish.py",
-	"*/adapters/source.py",
-	"*/adapters/writer.py",
+    "*/adapters/audit/__init__.py",
+    "*/adapters/audit/run.py",
+    "*/adapters/audit/sql.py",
+    "*/adapters/audit/card.py",
+    "*/adapters/audit/manifest.py",
+    "*/adapters/audit/rows.py",
+    "*/adapters/audit/schema.py",
+    "*/adapters/coverage_map.py",
+    "*/adapters/hub.py",
+    "*/adapters/publish.py",
+    "*/adapters/source.py",
+    "*/adapters/writer.py",
     "*/cli.py",
     # card.py is a prose template. Its mutants rewrite headings, URLs and join
     # separators, which changes the wording of a README and nothing else; the
