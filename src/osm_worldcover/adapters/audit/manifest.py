@@ -12,12 +12,9 @@ from .report import _Checks
 from .schema import _PROVENANCE
 
 
-# Genuine I/O: reads manifest.json from disk, so it is excluded from mutation.
-def _load_manifest(
-    build_dir: Path, checks: _Checks
-) -> dict[str, Any] | None:  # pragma: no mutate block
+def _load_manifest(build_dir: Path, checks: _Checks) -> dict[str, Any] | None:
     try:
-        manifest = json.loads((build_dir / "manifest.json").read_text())
+        manifest = json.loads((build_dir / "manifest.json").read_text())  # pragma: no mutate
     except (OSError, ValueError) as error:
         checks.add("missing_or_invalid_manifest", error)
         return None
@@ -339,8 +336,7 @@ def _check_deduplication_counters(analysis: dict) -> None:
 def _deduplication_length_counts(analysis: dict) -> dict:
     by_length = analysis.get("duplicate_records_removed_by_text_words")
     _require(isinstance(by_length, dict), "invalid duplicate-record length counters")
-    if not isinstance(by_length, dict):
-        raise TypeError("invalid duplicate-record length counters")
+    by_length = cast(dict[str, Any], by_length)
     expected = {*(str(words) for words in range(1, 10)), "10+"}
     _require(
         set(by_length) == expected and all(_nonnegative_integer(v) for v in by_length.values()),

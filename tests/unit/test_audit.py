@@ -1,5 +1,6 @@
 """Publication audit checks bytes on disk, including corruptions validation missed."""
 
+import contextlib
 import copy
 import dataclasses
 import hashlib
@@ -1009,6 +1010,8 @@ def test_share_is_zero_for_an_empty_release() -> None:
     checks = _checks()
     audit_sql._check_shares([{"examples": 0, "share": 0}], checks)
     assert not checks.counts
+    audit_sql._check_shares([{"examples": 0, "share": 0.5}], checks)
+    assert checks.counts == Counter({"manifest_share_mismatch": 1})
 
 
 def test_class_labels_must_match_the_nomenclature() -> None:
@@ -1040,6 +1043,10 @@ def test_an_empty_release_has_no_dominant_quantiles() -> None:
         (0, 0, None, None, None, None, None), {"dominant_fraction": {}}, checks
     )
     assert not checks.counts
+    audit_sql._check_dominant_quantiles(
+        (0, 0, None, None, None, None, None), {"dominant_fraction": {"p50": 0.5}}, checks
+    )
+    assert checks.counts == Counter({"manifest_quantile_mismatch": 1})
 
 
 def test_geographic_coverage_must_match_the_aggregates_exactly() -> None:
@@ -1342,50 +1349,74 @@ def test_each_ledger_rejection_names_its_specific_reason(mutation, message) -> N
     assert _ledger_problems(manifest) == [message]
 
 
+@contextlib.contextmanager
 def _release_connection(*rows):
     """An in-memory DuckDB release view with the columns the aggregate checks read."""
     connection = duckdb.connect()
-    connection.execute(
-        "CREATE TABLE release (split VARCHAR, polygon_id VARCHAR, document_id VARCHAR, "
-        "worldcover_code INTEGER, language VARCHAR, h3_cell VARCHAR, region VARCHAR, "
-        "lon DOUBLE, lat DOUBLE, dominant_fraction DOUBLE)"
-    )
-    for row in rows:
-        connection.execute("INSERT INTO release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
-    return connection
+    try:
+        connection.execute(
+            "CREATE TABLE release (split VARCHAR, polygon_id VARCHAR, document_id VARCHAR, "
+            "worldcover_code INTEGER, language VARCHAR, h3_cell VARCHAR, region VARCHAR, "
+            "lon DOUBLE, lat DOUBLE, dominant_fraction DOUBLE)"
+        )
+        for row in rows:
+            connection.execute("INSERT INTO release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        yield connection
+    finally:
+        connection.close()
 
 
 def _train_row(index: int = 0) -> tuple:
     return ("train", f"p{index}", f"d{index}", 10, None, f"cell{index}", "region", 1.0, 45.0, 1.0)
 
 
+def _manifest_counts(counts: dict) -> dict:
+    return {"counts": {key: counts for key in ("examples", "polygons", "documents")}}
+
+
 def test_splits_without_rows_are_counted_as_zero_in_the_manifest_check() -> None:
-    connection = _release_connection(_train_row())
-    checks = _checks()
-    checks.report.rows = 1
-    counts = {"train": 1, "validation": 0, "test": 0, "total": 1}
-    audit_sql._check_manifest(
-        connection,
-        {"counts": {key: counts for key in ("examples", "polygons", "documents")}},
-        checks,
-    )
-    assert "manifest_count_mismatch:examples" not in checks.counts
-    assert "empty_dataset" not in checks.counts
+    with _release_connection(_train_row()) as connection:
+        checks = _checks()
+        checks.report.rows = 1
+        audit_sql._check_manifest(
+            connection,
+            _manifest_counts({"train": 1, "validation": 0, "test": 0, "total": 1}),
+            checks,
+        )
+        assert "manifest_count_mismatch:examples" not in checks.counts
+        assert "empty_dataset" not in checks.counts
+
+        wrong = _checks()
+        wrong.report.rows = 1
+        audit_sql._check_manifest(
+            connection,
+            _manifest_counts({"train": 2, "validation": 0, "test": 0, "total": 2}),
+            wrong,
+        )
+        assert wrong.counts["manifest_count_mismatch:examples"] == 1
 
 
 def test_an_empty_release_is_reported_as_empty() -> None:
     checks = _checks()
-    audit_sql._check_manifest(_release_connection(), {"counts": {}}, checks)
+    with _release_connection() as connection:
+        audit_sql._check_manifest(connection, {"counts": {}}, checks)
     assert "empty_dataset" in checks.counts
 
 
 def test_duplicate_distribution_entries_are_a_manifest_mismatch() -> None:
-    connection = _release_connection(_train_row())
-    checks = _checks()
-    checks.report.rows = 1
     entry = {"code": 10, "label": "Tree cover", "examples": 1, "share": 1.0}
-    audit_sql._check_distributions(connection, {"class_distribution": [entry, dict(entry)]}, checks)
-    assert "manifest_mismatch:class_distribution" in checks.counts
+    with _release_connection(_train_row()) as connection:
+        duplicated = _checks()
+        duplicated.report.rows = 1
+        audit_sql._check_distributions(
+            connection, {"class_distribution": [entry, dict(entry)]}, duplicated
+        )
+        assert "manifest_mismatch:class_distribution" in duplicated.counts
+
+        single = _checks()
+        single.report.rows = 1
+        audit_sql._check_distributions(connection, {"class_distribution": [entry]}, single)
+        assert "manifest_mismatch:class_distribution" not in single.counts
 
 
 @pytest.mark.parametrize(
@@ -1421,23 +1452,27 @@ def test_centroid_latitude_uses_the_same_seven_decimal_tolerance(lat_text, valid
     assert ("centroid_wkt_mismatch" not in checks.counts) is valid
 
 
+@contextlib.contextmanager
 def _global_connection(release_rows, hash_rows):
     """DuckDB release and hash views for the global identity and text checks."""
     connection = duckdb.connect()
-    connection.execute(
-        "CREATE TABLE release (split VARCHAR, polygon_id VARCHAR, document_id VARCHAR, "
-        "h3_cell VARCHAR, osm_type VARCHAR, osm_id BIGINT, worldcover_code INTEGER, "
-        "lat DOUBLE, lon DOUBLE, polygon_area_m2 DOUBLE)"
-    )
-    connection.execute(
-        "CREATE TABLE hashes (text_hash BLOB, worldcover_code INTEGER, "
-        "split VARCHAR, polygon_id VARCHAR)"
-    )
-    for row in release_rows:
-        connection.execute("INSERT INTO release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
-    for row in hash_rows:
-        connection.execute("INSERT INTO hashes VALUES (?, ?, ?, ?)", row)
-    return connection
+    try:
+        connection.execute(
+            "CREATE TABLE release (split VARCHAR, polygon_id VARCHAR, document_id VARCHAR, "
+            "h3_cell VARCHAR, osm_type VARCHAR, osm_id BIGINT, worldcover_code INTEGER, "
+            "lat DOUBLE, lon DOUBLE, polygon_area_m2 DOUBLE)"
+        )
+        connection.execute(
+            "CREATE TABLE hashes (text_hash BLOB, worldcover_code INTEGER, "
+            "split VARCHAR, polygon_id VARCHAR)"
+        )
+        for row in release_rows:
+            connection.execute("INSERT INTO release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        for row in hash_rows:
+            connection.execute("INSERT INTO hashes VALUES (?, ?, ?, ?)", row)
+        yield connection
+    finally:
+        connection.close()
 
 
 def _object_row(polygon_id: str, osm_id: int) -> tuple:
@@ -1445,25 +1480,21 @@ def _object_row(polygon_id: str, osm_id: int) -> tuple:
 
 
 def test_one_osm_object_under_two_polygon_ids_is_an_identity_conflict() -> None:
-    connection = _global_connection([_object_row("p1", 1), _object_row("p2", 1)], [])
     checks = _checks()
-    audit_sql._check_global(connection, checks, strict_text_leakage=False)
+    with _global_connection([_object_row("p1", 1), _object_row("p2", 1)], []) as connection:
+        audit_sql._check_global(connection, checks, strict_text_leakage=False)
     assert "object_identity_conflict" in {problem.code for problem in checks.report.problems}
 
 
 def test_distinct_osm_objects_are_not_an_identity_conflict() -> None:
-    connection = _global_connection([_object_row("p1", 1), _object_row("p2", 2)], [])
     checks = _checks()
-    audit_sql._check_global(connection, checks, strict_text_leakage=False)
+    with _global_connection([_object_row("p1", 1), _object_row("p2", 2)], []) as connection:
+        audit_sql._check_global(connection, checks, strict_text_leakage=False)
     assert "object_identity_conflict" not in {problem.code for problem in checks.report.problems}
 
 
 def test_retained_text_analysis_must_match_the_release_it_describes() -> None:
     text = bytes(32)
-    connection = _global_connection(
-        [],
-        [(text, 10, "train", "p1"), (text, 10, "validation", "p2"), (text, 20, "train", "p3")],
-    )
     keys = (
         "retained_identical_text_label_groups",
         "retained_identical_text_label_rows",
@@ -1472,28 +1503,40 @@ def test_retained_text_analysis_must_match_the_release_it_describes() -> None:
         "identical_text_cross_split_groups",
         "identical_text_cross_split_rows",
     )
-    actual = audit_sql._retained_text_diagnostics(connection)
-    analysis = {key: actual[key] for key in keys}
-    checks = _checks()
-    audit_sql._check_text_diagnostics(connection, {"deduplication_analysis": analysis}, checks)
-    assert not checks.counts
-    analysis[keys[1]] += 1
-    audit_sql._check_text_diagnostics(connection, {"deduplication_analysis": analysis}, checks)
-    assert checks.counts == Counter({"deduplication_analysis_mismatch:retained_text": 1})
+    hash_rows = [
+        (text, 10, "train", "p1"),
+        (text, 10, "validation", "p2"),
+        (text, 20, "train", "p3"),
+    ]
+    with _global_connection([], hash_rows) as connection:
+        actual = audit_sql._retained_text_diagnostics(connection)
+        analysis = {key: actual[key] for key in keys}
+        checks = _checks()
+        audit_sql._check_text_diagnostics(connection, {"deduplication_analysis": analysis}, checks)
+        assert not checks.counts
+        analysis[keys[1]] += 1
+        audit_sql._check_text_diagnostics(connection, {"deduplication_analysis": analysis}, checks)
+        assert checks.counts == Counter({"deduplication_analysis_mismatch:retained_text": 1})
 
 
 def test_language_distribution_is_matched_on_its_language_key() -> None:
-    connection = _release_connection(
-        ("train", "p0", "d0", 10, "en", "cell0", "region", 1.0, 45.0, 1.0)
-    )
-    checks = _checks()
-    checks.report.rows = 1
     manifest = {
         "class_distribution": [{"code": 10, "label": "Tree cover", "examples": 1, "share": 1.0}],
         "language_distribution": [{"language": "en", "examples": 1, "share": 1.0}],
     }
-    audit_sql._check_distributions(connection, manifest, checks)
-    assert not checks.counts
+    with _release_connection(
+        ("train", "p0", "d0", 10, "en", "cell0", "region", 1.0, 45.0, 1.0)
+    ) as connection:
+        checks = _checks()
+        checks.report.rows = 1
+        audit_sql._check_distributions(connection, manifest, checks)
+        assert not checks.counts
+
+        renamed = _checks()
+        renamed.report.rows = 1
+        manifest["language_distribution"] = [{"language": "fr", "examples": 1, "share": 1.0}]
+        audit_sql._check_distributions(connection, manifest, renamed)
+        assert renamed.counts == Counter({"manifest_mismatch:language_distribution": 1})
 
 
 def test_share_defaults_to_zero_examples_when_an_entry_has_none() -> None:
@@ -1501,6 +1544,8 @@ def test_share_defaults_to_zero_examples_when_an_entry_has_none() -> None:
     checks.report.rows = 3
     audit_sql._check_shares([{"share": 0.0}], checks)
     assert not checks.counts
+    audit_sql._check_shares([{"share": 0.5}], checks)
+    assert checks.counts == Counter({"manifest_share_mismatch": 1})
 
 
 def test_problems_are_frozen_and_reports_and_problems_keep_no_instance_dict() -> None:
@@ -1529,3 +1574,97 @@ def test_other_settings_must_match_the_ledger_context() -> None:
     manifest = _completion_manifest()
     manifest["settings"]["split_seed"] = 1
     assert _ledger_problems(manifest) == ["build context settings mismatch"]
+
+
+def _scan_rows(tmp_path, *split_rows):
+    """Scan one train shard with scan_rows; return the checks, hash rows and hash path."""
+    path = tmp_path / "train.parquet"
+    pq.write_table(pa.Table.from_pylist(list(split_rows), schema=SCHEMA), path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    checks = _checks()
+    hashes = audit_rows.scan_rows([path], SETTINGS, scratch, checks)
+    return checks, pq.read_table(hashes).to_pylist(), hashes
+
+
+def test_scan_counts_every_row_once(tmp_path) -> None:
+    base = rows()["train"]
+    checks, _, _ = _scan_rows(tmp_path, base, {**base, "polygon_id": "p-second"})
+    assert checks.report.rows == 2
+
+
+def test_rows_without_text_are_counted_but_not_fingerprinted(tmp_path) -> None:
+    base = rows()["train"]
+    null_text = {**base, "polygon_id": "p-null", "text": None, "text_words": 0}
+    checks, fingerprints, _ = _scan_rows(tmp_path, base, null_text)
+    assert checks.report.rows == 2
+    assert checks.counts["invalid_text"] == 1
+    assert [fingerprint["polygon_id"] for fingerprint in fingerprints] == [base["polygon_id"]]
+
+
+def test_fingerprint_is_the_sha256_of_the_whitespace_normalized_text(tmp_path) -> None:
+    base = rows()["train"]
+    _, fingerprints, hashes = _scan_rows(
+        tmp_path, {**base, "text": "alpha\tbeta \n gamma", "text_words": 3}
+    )
+    assert hashes.name == "hashes.parquet"
+    assert fingerprints == [
+        {
+            "text_hash": bytes.fromhex(
+                "64989ccbf3efa9c84e2afe7cee9bc5828bf0fcb91e44f8c1e591638a2c2e90e3"
+            ),
+            "worldcover_code": 10,
+            "split": "train",
+            "polygon_id": base["polygon_id"],
+        }
+    ]
+
+
+def test_inspect_accepts_a_shard_with_the_release_schema(build) -> None:
+    checks = _checks()
+    audit_rows._inspect_file(build / "train.parquet", checks)
+    assert checks.counts == Counter()
+
+
+def test_inspect_flags_a_shard_whose_schema_differs(tmp_path) -> None:
+    path = tmp_path / "train.parquet"
+    pq.write_table(pa.table({"polygon_id": ["p0"]}), path)
+    checks = _checks()
+    audit_rows._inspect_file(path, checks)
+    assert checks.counts == Counter({"schema_mismatch": 1})
+    assert checks.samples == {"schema_mismatch": ["train.parquet"]}
+
+
+def test_inspect_reports_an_unreadable_shard(tmp_path) -> None:
+    checks = _checks()
+    audit_rows._inspect_file(tmp_path / "train.parquet", checks)
+    assert checks.counts == Counter({"missing_or_invalid_parquet": 1})
+    samples = checks.samples["missing_or_invalid_parquet"]
+    assert [sample.split(": ", 1)[0] for sample in samples] == ["train.parquet"]
+
+
+def test_load_manifest_returns_a_well_formed_manifest(build) -> None:
+    checks = _checks()
+    manifest = audit_manifest._load_manifest(build, checks)
+    assert manifest is not None
+    assert manifest["settings"] == SETTINGS
+    assert checks.counts == Counter()
+
+
+@pytest.mark.parametrize("payload", [[], "manifest", {"settings": {}}])
+def test_load_manifest_rejects_non_objects_and_incomplete_shapes(build, payload) -> None:
+    (build / "manifest.json").write_text(json.dumps(payload))
+    checks = _checks()
+    assert audit_manifest._load_manifest(build, checks) is None
+    assert checks.counts == Counter({"missing_or_invalid_manifest": 1})
+    assert not checks.samples
+
+
+def test_load_manifest_reports_the_json_error_for_unparseable_text(build) -> None:
+    (build / "manifest.json").write_text("{not json")
+    checks = _checks()
+    assert audit_manifest._load_manifest(build, checks) is None
+    assert checks.counts == Counter({"missing_or_invalid_manifest": 1})
+    assert checks.samples["missing_or_invalid_manifest"] == [
+        "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+    ]

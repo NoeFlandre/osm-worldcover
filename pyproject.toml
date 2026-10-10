@@ -80,14 +80,15 @@ source = ["src/osm_worldcover", "scripts", "tests"]
 branch = true
 
 [tool.mutmut]
-# Mutation testing runs over src/osm_worldcover and scripts, minus the
-# do_not_mutate entries below. Those are the CLI, the network and filesystem
-# adapters (coverage_map, hub, publish, source, writer) and the card template in
-# domain/card.py, whose behaviour is asserted in tests/unit/test_card.py. Audit
-# modules are mutated; their genuine I/O functions carry narrow
-# "# pragma: no mutate block" markers instead of whole-file exclusions.
+# Mutation testing runs over src/osm_worldcover and scripts, minus the do_not_mutate
+# entries below. The audit modules are mutated in full, with two kinds of exception:
+# a `# pragma: no mutate` marker on the single line that opens or writes a file
+# (rows.py, manifest.py), and a `# pragma: no mutate block` marker on two functions
+# whose bodies only open a file or DuckDB session and delegate, with no decisions of
+# their own (rows.scan_rows, sql.check_aggregates).
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
+    # Audit card checks: string literals are the card's wording and asset names, not logic.
     "*/adapters/audit/card.py",
     "*/adapters/coverage_map.py",
     "*/adapters/hub.py",
@@ -95,7 +96,7 @@ do_not_mutate = [
     "*/adapters/source.py",
     "*/adapters/writer.py",
     "*/cli.py",
-    # card.py is a prose template. Its mutants rewrite headings, URLs and join
+    # domain/card.py is a prose template. Its mutants rewrite headings, URLs and join
     # separators, which changes the wording of a README and nothing else; the
     # card's actual behaviour is asserted in tests/unit/test_card.py.
     "*/domain/card.py",
