@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 from typer.testing import CliRunner
 
-from osm_worldcover import accounting, cli
+from osm_worldcover import cli
 from osm_worldcover.accounting import BuildContext
 from osm_worldcover.build import ShardStore
 from osm_worldcover.config import Config
@@ -817,7 +817,9 @@ def _mixed_receipt_workers(tmp_path, monkeypatch):
         config=config,
         receipt_context=BuildContext.from_document(current_document),
     )
-    monkeypatch.setattr(accounting, "_current_code_revision", lambda: "c" * 40)
+    monkeypatch.setattr(
+        "osm_worldcover.accounting.context._current_code_revision", lambda: "c" * 40
+    )
     monkeypatch.setattr(cli.hub, "list_region_stems", lambda *a: ["alpha", "beta"])
     return config, first, second
 

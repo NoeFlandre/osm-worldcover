@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from osm_worldcover import accounting, assembly
+from osm_worldcover import assembly
 from osm_worldcover.accounting import BuildContext
 from osm_worldcover.assembly import (
     _check_assertions,
@@ -25,7 +25,7 @@ HEAD = "c" * 40
 @pytest.fixture(autouse=True)
 def clean_checkout(monkeypatch):
     """Pretend the working tree is a clean checkout of one known commit."""
-    monkeypatch.setattr(accounting, "_current_code_revision", lambda: HEAD)
+    monkeypatch.setattr("osm_worldcover.accounting.context._current_code_revision", lambda: HEAD)
 
 
 @pytest.fixture
