@@ -81,18 +81,14 @@ branch = true
 
 [tool.mutmut]
 # Mutation testing runs over src/osm_worldcover and scripts, minus the
-# do_not_mutate entries below. Most of those are adapters (audit, coverage_map,
-# hub, publish, source, writer). The CLI and the card template in domain/card.py
-# are excluded too; card behaviour is asserted in tests/unit/test_card.py.
+# do_not_mutate entries below. Those are the CLI, the network and filesystem
+# adapters (coverage_map, hub, publish, source, writer) and the card template in
+# domain/card.py, whose behaviour is asserted in tests/unit/test_card.py. Audit
+# modules are mutated; their genuine I/O functions carry narrow
+# "# pragma: no mutate block" markers instead of whole-file exclusions.
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
-    "*/adapters/audit/__init__.py",
-    "*/adapters/audit/run.py",
-    "*/adapters/audit/sql.py",
     "*/adapters/audit/card.py",
-    "*/adapters/audit/manifest.py",
-    "*/adapters/audit/rows.py",
-    "*/adapters/audit/schema.py",
     "*/adapters/coverage_map.py",
     "*/adapters/hub.py",
     "*/adapters/publish.py",

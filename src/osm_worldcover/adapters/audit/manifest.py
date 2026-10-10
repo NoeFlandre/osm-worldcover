@@ -12,7 +12,10 @@ from .report import _Checks
 from .schema import _PROVENANCE
 
 
-def _load_manifest(build_dir: Path, checks: _Checks) -> dict[str, Any] | None:
+# Genuine I/O: reads manifest.json from disk, so it is excluded from mutation.
+def _load_manifest(
+    build_dir: Path, checks: _Checks
+) -> dict[str, Any] | None:  # pragma: no mutate block
     try:
         manifest = json.loads((build_dir / "manifest.json").read_text())
     except (OSError, ValueError) as error:

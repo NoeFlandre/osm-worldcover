@@ -14,7 +14,8 @@ from .report import _Checks
 from .schema import _HASH_SCHEMA, _NULLABLE, _PROVENANCE, _SCHEMA, _SPLITS
 
 
-def scan_rows(paths, settings, scratch, checks):
+# Genuine I/O: writes the hash Parquet file and streams each release shard.
+def scan_rows(paths, settings, scratch, checks):  # pragma: no mutate block
     hashes = scratch / "hashes.parquet"
     with pq.ParquetWriter(hashes, _HASH_SCHEMA, compression="zstd") as writer:
         for path in paths:
@@ -29,7 +30,8 @@ def _inspect_files(build_dir: Path, checks: _Checks) -> list[Path]:
     return paths
 
 
-def _inspect_file(path: Path, checks: _Checks) -> None:
+# Genuine I/O: opens one release Parquet file to read its schema.
+def _inspect_file(path: Path, checks: _Checks) -> None:  # pragma: no mutate block
     try:
         parquet = pq.ParquetFile(path)
         schema = {f.name: str(f.type) for f in parquet.schema_arrow}
@@ -39,7 +41,8 @@ def _inspect_file(path: Path, checks: _Checks) -> None:
         checks.add("missing_or_invalid_parquet", f"{path.name}: {error}")
 
 
-def _scan_file(path, settings, checks, writer) -> None:
+# Genuine I/O: streams Arrow batches from a release file into the hash writer.
+def _scan_file(path, settings, checks, writer) -> None:  # pragma: no mutate block
     columns = sorted(set(_SCHEMA) - _NULLABLE)
     for batch in pq.ParquetFile(path).iter_batches(batch_size=2048, columns=columns):
         fingerprints = []
