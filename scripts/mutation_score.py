@@ -270,6 +270,14 @@ def _summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _per_file_summaries(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Score each mutated source file with the same counts as the global summary."""
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        by_path.setdefault(record["path"], []).append(record)
+    return {path: _summary(by_path[path]) for path in sorted(by_path)}
+
+
 def _export_errors(export: dict, summary: dict[str, Any]) -> list[str]:
     """Require mutmut's export to match the detailed raw mutant metadata."""
     return [
@@ -442,16 +450,18 @@ def _write_raster_report(
 
 def _write_score_report(
     summary: dict[str, Any],
+    per_file: dict[str, dict[str, Any]],
     export: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    """Persist the score, provenance, all outcomes, and validation errors."""
+    """Persist the score, per-file scores, provenance, all outcomes, and validation errors."""
     report = {
         "schema_version": 1,
         "run_outcome": os.environ.get("MUTATION_RUN_OUTCOME"),
         "git_sha": os.environ.get("MUTATION_EXPECTED_GIT_SHA"),
         "floor": FLOOR,
         "summary": summary,
+        "per_file": per_file,
         "export": export,
         "errors": errors,
     }
@@ -471,7 +481,7 @@ def main() -> int:
     if summary["total"] == 0:
         errors.append("no per-mutant outcomes were exported")
     _write_raster_report(records, baseline, errors)
-    _write_score_report(summary, export, errors)
+    _write_score_report(summary, _per_file_summaries(records), export, errors)
     return _finish(summary, errors)
 
 

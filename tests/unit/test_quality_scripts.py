@@ -315,6 +315,36 @@ def test_mutation_records_keep_all_mutmut_outcomes_distinct() -> None:
     assert summary["confirmed_kill_score"] == pytest.approx(1 / 11)
 
 
+def test_per_file_scores_partition_the_global_summary() -> None:
+    records = [
+        {"path": "src/b.py", "status": "killed"},
+        {"path": "src/a.py", "status": "killed"},
+        {"path": "src/a.py", "status": "survived"},
+        {"path": "src/b.py", "status": "timeout"},
+        {"path": "src/b.py", "status": "killed"},
+    ]
+
+    per_file = mutation_score._per_file_summaries(records)
+
+    assert list(per_file) == ["src/a.py", "src/b.py"]
+    assert per_file["src/a.py"]["confirmed_kill_score"] == pytest.approx(0.5)
+    assert per_file["src/b.py"]["killed"] == 2
+    assert per_file["src/b.py"]["timeout"] == 1
+    assert per_file["src/b.py"]["confirmed_kill_score"] == pytest.approx(2 / 3)
+    assert sum(score["total"] for score in per_file.values()) == len(records)
+
+
+def test_mutation_report_writes_per_file_scores(tmp_path, monkeypatch) -> None:
+    _prepare_mutation_gate(tmp_path, monkeypatch, ["killed"] * 8 + ["timeout"] * 2)
+
+    assert mutation_score.main() == 0
+    report = json.loads((tmp_path / "mutants" / "mutation-score.json").read_text(encoding="utf-8"))
+    raster = report["per_file"][mutation_score.RASTER_SOURCE]
+
+    assert raster["total"] == report["summary"]["total"] == 10
+    assert raster["confirmed_kill_score"] == pytest.approx(0.8)
+
+
 def test_mutation_gate_uses_all_mutants_and_never_counts_timeouts_as_kills(
     tmp_path, monkeypatch, capsys
 ) -> None:
