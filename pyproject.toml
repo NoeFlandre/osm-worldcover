@@ -80,10 +80,10 @@ source = ["src/osm_worldcover", "scripts", "tests"]
 branch = true
 
 [tool.mutmut]
-# The whole package is copied so imports resolve. Only the WorldCover raster
-# adapter is mutation-tested, because it contains the extraction logic. The
-# other adapters and the CLI are I/O boundaries whose contracts have focused
-# tests, so they are excluded from mutation.
+# Mutation testing runs over src/osm_worldcover and scripts, minus the
+# do_not_mutate entries below. Most of those are adapters (audit, coverage_map,
+# hub, publish, source, writer). The CLI and the card template in domain/card.py
+# are excluded too; card behaviour is asserted in tests/unit/test_card.py.
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
     "*/adapters/audit/__init__.py",
