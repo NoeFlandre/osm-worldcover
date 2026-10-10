@@ -1,5 +1,7 @@
 """Geographically disjoint split assignment via H3 cells."""
 
+import re
+
 import pytest
 
 from osm_worldcover.domain.splits import (
@@ -54,18 +56,26 @@ def test_default_resolution_and_ratios_are_declared() -> None:
 
 
 def test_ratios_must_sum_to_one() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape("split ratios must sum to 1.0")):
         SplitRatios(0.5, 0.2, 0.2)
 
 
-@pytest.mark.parametrize(("lat", "lon"), [(91.0, 0.0), (-91.0, 0.0), (0.0, 181.0), (0.0, -181.0)])
-def test_out_of_range_coordinates_are_rejected(lat: float, lon: float) -> None:
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize(
+    ("lat", "lon", "message"),
+    [
+        (91.0, 0.0, "latitude out of range: 91.0"),
+        (-91.0, 0.0, "latitude out of range: -91.0"),
+        (0.0, 181.0, "longitude out of range: 181.0"),
+        (0.0, -181.0, "longitude out of range: -181.0"),
+    ],
+)
+def test_out_of_range_coordinates_are_rejected(lat: float, lon: float, message: str) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
         cell_for(lat, lon)
 
 
 def test_nan_coordinates_are_rejected() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape("non-finite coordinate (nan, 0.0)")):
         cell_for(float("nan"), 0.0)
 
 

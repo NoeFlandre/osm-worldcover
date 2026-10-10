@@ -22,8 +22,9 @@ def test_codes_are_the_official_non_sequential_values() -> None:
 
 
 def test_label_for_unknown_code_raises() -> None:
-    with pytest.raises(nom.UnknownLandCoverCodeError):
+    with pytest.raises(nom.UnknownLandCoverCodeError) as raised:
         nom.label_for(0)
+    assert raised.value.args == (0,)
 
 
 def test_is_valid_code_discriminates() -> None:

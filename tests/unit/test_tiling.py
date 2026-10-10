@@ -1,5 +1,7 @@
 """ESA WorldCover's own 3-degree tile grid."""
 
+import re
+
 import pytest
 
 from osm_worldcover.domain.tiling import (
@@ -52,7 +54,7 @@ def test_a_bbox_inside_one_tile_needs_one_tile() -> None:
 
 def test_a_bbox_spanning_tiles_returns_every_covering_tile() -> None:
     tiles = tiles_for_bbox((5.9, 47.9, 6.1, 48.1))
-    assert len(tiles) == 4
+    assert tiles == [Tile(45, 3), Tile(45, 6), Tile(48, 3), Tile(48, 6)]
     assert tiles == sorted(tiles)
 
 
@@ -97,7 +99,7 @@ def test_a_bbox_ending_at_zero_after_a_subnormal_negative_is_not_empty() -> None
 
 
 def test_inverted_bbox_is_rejected() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape("inverted bbox: (9.0, 48.0, 6.0, 51.0)")):
         tiles_for_bbox((9.0, 48.0, 6.0, 51.0))
 
 

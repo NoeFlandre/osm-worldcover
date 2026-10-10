@@ -96,7 +96,11 @@ def test_rejection_reason_matches_the_state_it_describes(case, threshold) -> Non
 
 
 def _assert_no_valid_class(outcome, threshold: float, top) -> None:
+    # Only no-data or nothing at all: no class to report, and no fraction to claim.
+    assert top is None
+    assert outcome.accepted is False
     assert outcome.code is None
+    assert outcome.fraction == 0.0
 
 
 def _assert_below_threshold(outcome, threshold: float, top) -> None:
@@ -112,9 +116,11 @@ _REASON_CHECKS = {
 
 
 def _assert_rejection_reason(outcome, threshold: float, top) -> None:
-    check = _REASON_CHECKS.get(outcome.reason)
-    if check is not None:
-        check(outcome, threshold, top)
+    # An accepted outcome carries no reason; a rejected one must name a known reason.
+    if outcome.reason is None:
+        assert outcome.accepted is True
+        return
+    _REASON_CHECKS[outcome.reason](outcome, threshold, top)
 
 
 @given(coverage(), thresholds)

@@ -1,6 +1,7 @@
 """Shard persistence and resume behaviour of a whole build."""
 
 import json
+import re
 from types import SimpleNamespace
 
 import pandas as pd
@@ -705,9 +706,9 @@ def test_outcome_stems_and_outcomes_must_line_up() -> None:
     from osm_worldcover.build import _missing_outcome_stems
 
     assert _missing_outcome_stems(["a", "b"], [None, object()]) == ["a"]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape("zip() argument 2 is shorter than argument 1")):
         _missing_outcome_stems(["a", "b"], [None])
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape("zip() argument 2 is longer than argument 1")):
         _missing_outcome_stems(["a"], [None, None])
 
 

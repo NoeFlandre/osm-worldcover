@@ -51,7 +51,7 @@ def test_an_unexpected_bounds_error_propagates() -> None:
         def bounds(self):
             raise RuntimeError("bug")
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="bug"):
         _all_finite(Buggy())  # ty: ignore[invalid-argument-type]
 
 
