@@ -4,13 +4,17 @@ import hashlib
 import json
 import pickle
 from collections import Counter
+from pathlib import Path
 
+import duckdb
 import h3
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
 
+from osm_worldcover.adapters._audit.aggregates import check_aggregates
+from osm_worldcover.adapters._audit.report import AuditReport, _Checks
 from osm_worldcover.adapters.audit import _SCHEMA, audit_build
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.splits import assign_cell
@@ -666,3 +670,68 @@ def test_processing_duplicate_text_length_histogram_must_be_complete(build):
     path.write_text(json.dumps(manifest))
 
     assert "invalid_processing_ledger" in problems(audit_build(build, require_complete=True))
+
+
+_SESSION_SETTINGS = ("memory_limit", "threads", "preserve_insertion_order", "temp_directory")
+
+
+class _SettingsRecorder:
+    """Forward every call to a real DuckDB connection, and note its settings as it closes."""
+
+    def __init__(self, connection) -> None:
+        self.raw = connection
+        self.settings_at_close: dict[str, object] = {}
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+    def close(self) -> None:
+        self.settings_at_close = {
+            name: self.raw.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+            for name in _SESSION_SETTINGS
+        }
+        self.raw.close()
+
+
+@pytest.fixture
+def opened_connections(monkeypatch):
+    opened: list[_SettingsRecorder] = []
+    connect = duckdb.connect
+
+    def recording_connect(*args, **kwargs):
+        recorder = _SettingsRecorder(connect(*args, **kwargs))
+        opened.append(recorder)
+        return recorder
+
+    monkeypatch.setattr(duckdb, "connect", recording_connect)
+    return opened
+
+
+def test_release_audit_runs_its_aggregates_under_the_audit_memory_budget(
+    build, opened_connections, reported_setting
+) -> None:
+    assert audit_build(build).ok
+
+    [recorder] = opened_connections
+    settings = recorder.settings_at_close
+    assert settings["memory_limit"] == reported_setting("memory_limit", "256MB")
+    assert settings["threads"] == 2
+    assert settings["preserve_insertion_order"] is False
+    spill = Path(settings["temp_directory"])
+    assert spill.name == "spill"
+    assert spill.parent.name.startswith("owc-audit-")
+
+
+def test_aggregate_audit_closes_its_connection_when_a_query_fails(
+    tmp_path, opened_connections
+) -> None:
+    checks = _Checks(AuditReport())
+
+    with pytest.raises(duckdb.IOException):
+        check_aggregates(
+            [tmp_path / "missing.parquet"], tmp_path / "hashes.parquet", tmp_path, {}, checks, False
+        )
+
+    [recorder] = opened_connections
+    with pytest.raises(duckdb.ConnectionException):
+        recorder.raw.execute("SELECT 1")

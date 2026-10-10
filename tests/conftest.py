@@ -10,6 +10,7 @@ from collections import Counter
 from email.message import Message
 from pathlib import Path
 
+import duckdb
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -23,6 +24,25 @@ from osm_worldcover.adapters.worldcover import TileNotPublishedError
 from osm_worldcover.config import Config
 from osm_worldcover.domain.tiling import Tile
 from osm_worldcover.pipeline import RegionOutcome
+
+
+@pytest.fixture
+def reported_setting():
+    """Return how DuckDB itself reports a setting once it has been set to ``value``.
+
+    Tests compare against this rather than a spelling such as ``1.8 GiB``, which
+    belongs to DuckDB and changes with its version.
+    """
+
+    def reported(name: str, value: str) -> object:
+        connection = duckdb.connect()
+        try:
+            connection.execute(f"SET {name} = '{value}'")
+            return connection.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+        finally:
+            connection.close()
+
+    return reported
 
 
 class FakeResponse(io.BytesIO):
