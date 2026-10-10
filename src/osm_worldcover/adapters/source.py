@@ -31,6 +31,7 @@ from osm_worldcover.sources import (
     DOCUMENTS_DIR,
     LINKS_DIR,
     POLYGONS_DIR,
+    Layout,
     SourceRecipe,
     recipe_for,
 )
@@ -123,7 +124,7 @@ def _normalized(loader: Callable[[Path, str], NormalizedRegion]) -> Callable[[Pa
     return load
 
 
-_LOADERS: Final[dict[str, Callable[[Path, str], _Tables]]] = {
+_LOADERS: Final[dict[Layout, Callable[[Path, str], _Tables]]] = {
     "wikidata": _load_wikidata,
     "description": _normalized(load_description_region),
     "website": _normalized(load_website_region),

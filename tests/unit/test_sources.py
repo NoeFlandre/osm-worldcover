@@ -1,14 +1,16 @@
 """Source recipes normalize heterogeneous public inputs into one contract."""
 
 import json
+from typing import get_args
 
 import pandas as pd
 import pytest
 from shapely.geometry import Polygon
 from shapely.wkb import dumps
 
+from osm_worldcover.adapters import source as source_module
 from osm_worldcover.adapters.source import RegionTables
-from osm_worldcover.sources import recipe_for
+from osm_worldcover.sources import Layout, recipe_for, source_names
 
 
 def _assert_description_polygon(tables: RegionTables) -> None:
@@ -198,6 +200,13 @@ def test_unknown_layout_raises_a_clear_error(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="no table loader for source layout 'bogus'"):
         RegionTables.load(tmp_path, "alpha", recipe)
+
+
+def test_layouts_and_table_loaders_cover_each_other_exactly() -> None:
+    layouts = set(get_args(Layout))
+
+    assert set(source_module._LOADERS) == layouts
+    assert {recipe_for(name).name for name in source_names()} == layouts
 
 
 def test_unknown_source_lists_the_sorted_choices() -> None:
