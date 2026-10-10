@@ -226,6 +226,12 @@ def test_audit_package_public_surface_is_stable() -> None:
     assert package.AuditProblem.__module__ == "osm_worldcover.adapters.audit"
     assert package.AuditReport.__module__ == "osm_worldcover.adapters.audit"
     assert callable(package.audit_build)
+
+
+def test_audit_package_helpers_and_pickling_are_stable() -> None:
+    """Importers use the retained-diagnostics helper, and problems pickle by path."""
+    from osm_worldcover.adapters import audit as package
+
     assert callable(package._retained_text_diagnostics)
     problem = package.AuditProblem("example_code", 2, ("row",))
     assert pickle.loads(pickle.dumps(problem)) == problem
