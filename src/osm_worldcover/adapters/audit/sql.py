@@ -11,7 +11,10 @@ from .schema import _SPLITS
 _AUDIT_MEMORY_LIMIT: Final = "256MB"
 
 
-def check_aggregates(paths, hashes, scratch, manifest, checks, strict_text_leakage):
+# Genuine I/O: opens a DuckDB session with a spill directory and reads the release files.
+def check_aggregates(
+    paths, hashes, scratch, manifest, checks, strict_text_leakage
+):  # pragma: no mutate block
     with session(_AUDIT_MEMORY_LIMIT, scratch / "spill") as connection:
         connection.read_parquet([str(path) for path in paths]).create_view("release")
         connection.read_parquet(str(hashes)).create_view("hashes")

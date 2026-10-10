@@ -1,5 +1,8 @@
 """Run configuration loading and overrides."""
 
+import dataclasses
+from pathlib import Path
+
 import pytest
 
 from osm_worldcover.config import Config
@@ -70,3 +73,87 @@ def test_invalid_min_words_message_names_the_constraint() -> None:
         ValueError, match=r"^min_words must be a positive integer or null for the source default$"
     ):
         Config(min_words=0)
+
+
+def test_defaults_pin_the_worldcover_year_and_the_ten_thousand_km2_cap() -> None:
+    config = Config()
+    assert config.worldcover_year == 2021
+    assert config.max_polygon_area_m2 == 1e10
+
+
+def test_config_is_an_immutable_value_object() -> None:
+    config = Config()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.threshold = 0.5  # type: ignore[misc]
+    assert not hasattr(config, "__dict__")
+
+
+def test_explicit_source_dataset_survives_a_named_source() -> None:
+    config = Config(source="website", source_dataset="example/custom-dataset")
+    assert config.source_dataset == "example/custom-dataset"
+
+
+@pytest.mark.parametrize("length, accepted", [(64, True), (65, False)])
+def test_dataset_version_is_limited_to_sixty_four_characters(length: int, accepted: bool) -> None:
+    version = "a" * length
+    if accepted:
+        assert Config(dataset_version=version).dataset_version == version
+    else:
+        with pytest.raises(ValueError, match="invalid dataset version"):
+            Config(dataset_version=version)
+
+
+MANIFEST_SETTING_KEYS = {
+    "dataset_version",
+    "deduplication_policy",
+    "source",
+    "worldcover_version",
+    "worldcover_year",
+    "source_dataset",
+    "source_revision",
+    "source_url",
+    "code_repository",
+    "source_display_name",
+    "source_text_description",
+    "output_dataset",
+    "dataset_license",
+    "text_license",
+    "dominance_threshold",
+    "max_polygon_area_m2",
+    "min_words",
+    "h3_resolution",
+    "split_seed",
+    "split_ratios",
+    "equal_area_crs",
+}
+
+
+def test_manifest_settings_name_every_recorded_knob_exactly() -> None:
+    settings = Config().as_manifest_settings()
+    assert set(settings) == MANIFEST_SETTING_KEYS
+    assert settings["deduplication_policy"] == "polygon_id+normalized_text+worldcover_code"
+    assert settings["equal_area_crs"] == "EPSG:6933"
+
+
+def test_default_paths_and_versions_are_pinned() -> None:
+    config = Config()
+    assert config.out_dir == Path("data/out")
+    assert config.cache_dir == Path("data/cache")
+    assert config.dataset_version == "1.1.0"
+    assert config.worldcover_version == "v200"
+
+
+def test_public_surface_is_pinned() -> None:
+    from osm_worldcover import config
+
+    assert config.__all__ == [
+        "DEFAULT_CACHED_TILES",
+        "DEFAULT_CACHE_DIR",
+        "DEFAULT_DATASET_VERSION",
+        "DEFAULT_MAX_POLYGON_AREA_KM2",
+        "DEFAULT_OUT_DIR",
+        "DEFAULT_SOURCE",
+        "DEFAULT_SOURCE_DATASET",
+        "DEFAULT_THRESHOLD",
+        "Config",
+    ]

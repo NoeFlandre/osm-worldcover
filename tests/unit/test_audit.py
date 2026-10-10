@@ -1,5 +1,8 @@
 """Publication audit checks bytes on disk, including corruptions validation missed."""
 
+import contextlib
+import copy
+import dataclasses
 import hashlib
 import json
 import pickle
@@ -14,9 +17,13 @@ import pytest
 import yaml
 
 from osm_worldcover.adapters.audit import _SCHEMA, audit_build
-from osm_worldcover.adapters.audit.report import AuditReport, _Checks
+from osm_worldcover.adapters.audit import manifest as audit_manifest
+from osm_worldcover.adapters.audit import rows as audit_rows
+from osm_worldcover.adapters.audit import sql as audit_sql
+from osm_worldcover.adapters.audit.report import AuditProblem, AuditReport, _Checks
 from osm_worldcover.adapters.audit.sql import check_aggregates
 from osm_worldcover.domain.card import render
+from osm_worldcover.domain.nomenclature import CLASS_LABELS
 from osm_worldcover.domain.splits import assign_cell
 from osm_worldcover.release_commit import release_lock
 
@@ -760,3 +767,913 @@ def test_aggregate_audit_closes_its_connection_when_a_query_fails(
     [recorder] = opened_connections
     with pytest.raises(duckdb.ConnectionException):
         recorder.raw.execute("SELECT 1")
+
+
+def _checks() -> _Checks:
+    return _Checks(AuditReport())
+
+
+def _manifest_shape(**changes) -> dict:
+    shape = {
+        "settings": {},
+        "counts": {},
+        "geographic_coverage": {},
+        "dominant_fraction": {},
+        "class_distribution": [],
+        "language_distribution": [],
+    }
+    shape.update(changes)
+    return shape
+
+
+@pytest.mark.parametrize(
+    "changes, valid",
+    [
+        ({}, True),
+        ({"processing": {}}, True),
+        ({"class_distribution": [{"code": 10, "examples": 3}]}, True),
+        ({"processing": []}, False),
+        ({"deduplication_analysis": []}, False),
+        ({"deduplication_analysis": {}}, True),
+        ({"settings": None}, False),
+        ({"counts": []}, False),
+        ({"class_distribution": None}, False),
+        ({"class_distribution": ["10"]}, False),
+        ({"language_distribution": [{"language": "en"}]}, False),
+    ],
+)
+def test_manifest_shape_checks_every_section(changes, valid) -> None:
+    assert audit_manifest._valid_manifest_shape(_manifest_shape(**changes)) is valid
+
+
+def test_manifest_shape_rejects_a_missing_distribution_section() -> None:
+    shape = _manifest_shape()
+    del shape["language_distribution"]
+    assert audit_manifest._valid_manifest_shape(shape) is False
+
+
+@pytest.mark.parametrize(
+    "changes, valid",
+    [
+        ({"dominance_threshold": 0}, True),
+        ({"dominance_threshold": 1}, True),
+        ({"dominance_threshold": 1.0001}, False),
+        ({"dominance_threshold": -0.0001}, False),
+        ({"min_words": 1}, True),
+        ({"min_words": 0}, False),
+        ({"h3_resolution": 0}, True),
+        ({"h3_resolution": 15}, True),
+        ({"h3_resolution": 16}, False),
+        ({"split_seed": "1"}, False),
+        ({"deduplication_policy": "another-policy"}, False),
+    ],
+)
+def test_settings_admit_exactly_the_documented_ranges(changes, valid) -> None:
+    checks = _checks()
+    audit_manifest._check_settings({**SETTINGS, **changes}, checks)
+    assert ("invalid_settings" not in checks.counts) is valid
+
+
+def test_settings_without_provenance_are_invalid_even_with_the_default_policy() -> None:
+    settings = {key: value for key, value in SETTINGS.items() if key != "worldcover_year"}
+    checks = _checks()
+    audit_manifest._check_settings(settings, checks)
+    assert checks.counts["invalid_settings"] == 1
+
+
+@pytest.mark.parametrize(
+    "value, rejected",
+    [
+        (0.0, False),
+        (1.0, False),
+        (1 + 5e-7, False),
+        (1 + 1e-6, False),
+        (1 + 5e-6, True),
+        (-1e-9, True),
+        (1.5, True),
+        (float("nan"), True),
+        (None, True),
+    ],
+)
+def test_fraction_bounds_accept_the_closed_unit_interval(value, rejected) -> None:
+    checks = _checks()
+    audit_rows._check_fractions(
+        {"polygon_id": "p", "dominant_fraction": value, "observed_fraction": 0.5}, checks
+    )
+    assert bool(checks.counts["invalid_fraction:dominant_fraction"]) is rejected
+    assert "invalid_fraction:observed_fraction" not in checks.counts
+
+
+@pytest.mark.parametrize(
+    "value, finite",
+    [
+        (0, True),
+        (1.5, True),
+        (float("inf"), False),
+        (float("nan"), False),
+        (None, False),
+        ("1", False),
+    ],
+)
+def test_finite_accepts_only_real_finite_numbers(value, finite) -> None:
+    assert audit_rows._finite(value) is finite
+
+
+@pytest.mark.parametrize(
+    "area, cap, code",
+    [
+        (1.0, None, None),
+        (1e12, None, None),
+        (0.0, None, "invalid_area"),
+        (-1.0, None, "invalid_area"),
+        (float("nan"), None, "invalid_area"),
+        (1e10, 1e10, None),
+        (1e10 * (1 + 5e-7), 1e10, None),
+        (1e10 * (1 + 1e-6), 1e10, None),
+        (1e10 * (1 + 5e-6), 1e10, "area_above_cap"),
+    ],
+)
+def test_polygon_area_must_be_positive_and_within_the_cap(area, cap, code) -> None:
+    checks = _checks()
+    audit_rows._check_area(
+        {"polygon_id": "p", "polygon_area_m2": area}, {"max_polygon_area_m2": cap}, checks
+    )
+    assert set(checks.counts) == ({code} if code else set())
+
+
+@pytest.mark.parametrize(
+    "offset, flagged",
+    [(0.0, False), (-5e-13, False), (-1e-12, False), (-5e-12, True), (-0.01, True), (0.1, False)],
+)
+def test_dominance_below_threshold_uses_a_tiny_tolerance(offset, flagged) -> None:
+    checks = _checks()
+    threshold = 0.8
+    audit_rows._check_dominance_threshold(
+        threshold + offset, {"dominance_threshold": threshold}, "p", checks
+    )
+    assert bool(checks.counts["below_threshold"]) is flagged
+
+
+@pytest.mark.parametrize(
+    "dominant, flagged",
+    [(0.5, False), (0.5 + 5e-7, False), (0.5 + 1e-6, False), (0.5 + 5e-6, True)],
+)
+def test_dominant_fraction_may_exceed_observed_only_by_a_micro_tolerance(dominant, flagged) -> None:
+    checks = _checks()
+    audit_rows._check_dominance_observation(dominant, 0.5, "p", checks)
+    assert bool(checks.counts["dominant_exceeds_observed"]) is flagged
+
+
+@pytest.mark.parametrize(
+    "lat, lon, flagged",
+    [
+        (90, 180, False),
+        (-90, -180, False),
+        (90.5, 0, True),
+        (0, 180.5, True),
+        (-90.5, 0, True),
+        (0, -180.5, True),
+        (float("nan"), 0, True),
+    ],
+)
+def test_coordinates_are_checked_inclusively_at_the_limits(lat, lon, flagged) -> None:
+    checks = _checks()
+    row = {
+        "polygon_id": "p",
+        "lat": lat,
+        "lon": lon,
+        "h3_cell": "x",
+        "split": "train",
+        "centroid_wkt": f"POINT ({lon} {lat})",
+    }
+    audit_rows._check_position(row, dict(SETTINGS), checks)
+    assert bool("invalid_coordinates" in checks.counts) is flagged
+
+
+@pytest.mark.parametrize(
+    "lon_text, valid",
+    [
+        ("10.0", True),
+        ("10.00000005", True),
+        ("10.00000006", False),
+        ("9.99999995", True),
+        ("9.99999994", False),
+        ("ten", False),
+        ("1.2.3", False),
+    ],
+)
+def test_centroid_wkt_tolerates_only_the_seven_decimal_rounding(lon_text, valid) -> None:
+    checks = _checks()
+    row = {
+        "polygon_id": "p",
+        "lon": 10.0,
+        "lat": 45.0,
+        "centroid_wkt": f"POINT ({lon_text} 45.0)",
+    }
+    audit_rows._check_centroid(row, checks)
+    assert ("centroid_wkt_mismatch" not in checks.counts) is valid
+
+
+@pytest.mark.parametrize(
+    "text, expected_code",
+    [
+        (" ".join(["w"] * 9), "unusable_text"),
+        (" ".join(["w"] * 10), None),
+        ("w  x " * 5, "unnormalized_text"),
+        (12, "invalid_text"),
+    ],
+)
+def test_text_length_and_normalization_are_checked(text, expected_code) -> None:
+    checks = _checks()
+    row = {"polygon_id": "p", "text": text, "text_words": len(str(text).split())}
+    audit_rows._check_text(row, {"min_words": 10}, checks)
+    assert set(checks.counts) == ({expected_code} if expected_code else set())
+
+
+def test_text_word_count_must_match_the_stored_count() -> None:
+    checks = _checks()
+    row = {"polygon_id": "p", "text": " ".join(["w"] * 10), "text_words": 9}
+    audit_rows._check_text(row, {"min_words": 10}, checks)
+    assert set(checks.counts) == {"text_word_count_mismatch"}
+
+
+def test_share_is_rounded_to_six_places_against_the_scanned_row_count() -> None:
+    checks = _checks()
+    checks.report.rows = 3
+    audit_sql._check_shares([{"examples": 1, "share": round(1 / 3, 6)}], checks)
+    assert not checks.counts
+    audit_sql._check_shares([{"examples": 1, "share": 0.33333}], checks)
+    assert checks.counts == Counter({"manifest_share_mismatch": 1})
+
+
+def test_share_is_zero_for_an_empty_release() -> None:
+    checks = _checks()
+    audit_sql._check_shares([{"examples": 0, "share": 0}], checks)
+    assert not checks.counts
+    audit_sql._check_shares([{"examples": 0, "share": 0.5}], checks)
+    assert checks.counts == Counter({"manifest_share_mismatch": 1})
+
+
+def test_class_labels_must_match_the_nomenclature() -> None:
+    checks = _checks()
+    audit_sql._check_class_labels(
+        {"class_distribution": [{"code": 10, "label": CLASS_LABELS[10]}]}, checks
+    )
+    assert not checks.counts
+    audit_sql._check_class_labels(
+        {"class_distribution": [{"code": 10, "label": "Not a class"}]}, checks
+    )
+    assert checks.counts == Counter({"manifest_class_label_mismatch": 1})
+
+
+def test_dominant_quantiles_are_compared_after_rounding_to_six_places() -> None:
+    checks = _checks()
+    row = (1, 1, 0, 0, 1, 1, [0.1234564, 0.9, 0.99])
+    manifest = {"dominant_fraction": {"p50": 0.123456, "p90": 0.9, "p99": 0.99}}
+    audit_sql._check_dominant_quantiles(row, manifest, checks)
+    assert not checks.counts
+    manifest["dominant_fraction"]["p50"] = 0.12346
+    audit_sql._check_dominant_quantiles(row, manifest, checks)
+    assert checks.counts == Counter({"manifest_quantile_mismatch": 1})
+
+
+def test_an_empty_release_has_no_dominant_quantiles() -> None:
+    checks = _checks()
+    audit_sql._check_dominant_quantiles(
+        (0, 0, None, None, None, None, None), {"dominant_fraction": {}}, checks
+    )
+    assert not checks.counts
+    audit_sql._check_dominant_quantiles(
+        (0, 0, None, None, None, None, None), {"dominant_fraction": {"p50": 0.5}}, checks
+    )
+    assert checks.counts == Counter({"manifest_quantile_mismatch": 1})
+
+
+def test_geographic_coverage_must_match_the_aggregates_exactly() -> None:
+    checks = _checks()
+    row = (4, 2, 1.0, 2.0, 3.0, 4.0, None)
+    manifest = {
+        "geographic_coverage": {
+            "h3_cells": 4,
+            "regions": 2,
+            "bbox": {"min_lon": 1.0, "min_lat": 2.0, "max_lon": 3.0, "max_lat": 4.0},
+        }
+    }
+    audit_sql._check_geographic_coverage(row, manifest, checks)
+    assert not checks.counts
+    manifest["geographic_coverage"]["regions"] = 3
+    audit_sql._check_geographic_coverage(row, manifest, checks)
+    assert checks.counts == Counter({"manifest_geographic_coverage_mismatch": 1})
+
+
+REVISION = "b" * 40
+CODE_GROUP = {"repository": SETTINGS["code_repository"], "revision": REVISION}
+ANALYSIS_COUNTERS = (
+    "duplicate_polygon_text_label_groups",
+    "duplicate_records_removed",
+    "duplicate_record_groups_crossing_splits",
+    "duplicate_records_removed_from_cross_split_groups",
+    "retained_identical_text_label_groups",
+    "retained_identical_text_label_rows",
+    "retained_identical_text_label_cross_split_groups",
+    "retained_identical_text_label_cross_split_rows",
+    "identical_text_cross_split_groups",
+    "identical_text_cross_split_rows",
+)
+DIGITS = tuple(str(words) for words in range(1, 10))
+
+
+def _completion_manifest() -> dict:
+    """A complete v2 ledger manifest that the completion checks accept as written."""
+    ledger = copy.deepcopy(complete_ledger())
+    ledger["schema_version"] = 2
+    ledger["assembly_code_revision"] = REVISION
+    ledger["code_provenance"] = [{**CODE_GROUP, "regions": ["place"]}]
+    return {
+        "settings": copy.deepcopy(SETTINGS),
+        "processing": ledger,
+        "deduplication": {},
+        "rejections": {},
+        "counts": {"examples": {"total": 3}},
+    }
+
+
+def _at(*path, value):
+    """Return a mutation that sets one nested key of a manifest."""
+
+    def mutate(manifest: dict) -> None:
+        target = manifest
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+
+    return mutate
+
+
+def _then(*mutations):
+    def mutate(manifest: dict) -> None:
+        for mutation in mutations:
+            mutation(manifest)
+
+    return mutate
+
+
+def _rehashed(mutation):
+    """Apply a context edit and recompute the digest so only that edit is judged."""
+
+    def mutate(manifest: dict) -> None:
+        mutation(manifest)
+        ledger = manifest["processing"]
+        context = json.dumps(ledger["context"], sort_keys=True, separators=(",", ":"))
+        ledger["build_context_sha256"] = hashlib.sha256(context.encode()).hexdigest()
+
+    return mutate
+
+
+def _analysis(drops: int = 0, **counters):
+    """A duplicate-text analysis whose record total matches the deduplication drops."""
+    analysis = dict.fromkeys(ANALYSIS_COUNTERS, 0)
+    analysis["duplicate_records_removed_by_text_words"] = dict.fromkeys((*DIGITS, "10+"), 0)
+    analysis.update(counters)
+    return _then(
+        _at("deduplication", value={"duplicate_polygon_text_label_records": drops}),
+        _at("deduplication_analysis", value=analysis),
+    )
+
+
+def _code(*groups):
+    return _at("processing", "code_provenance", value=list(groups))
+
+
+def _ledger_problems(manifest: dict) -> list[str]:
+    checks = _checks()
+    audit_manifest._check_completion(manifest, True, checks)
+    return checks.samples["invalid_processing_ledger"]
+
+
+def test_complete_ledger_with_analysis_passes_the_completion_checks() -> None:
+    assert _ledger_problems(_completion_manifest()) == []
+    manifest = _completion_manifest()
+    _analysis()(manifest)
+    assert _ledger_problems(manifest) == []
+
+
+def test_a_context_revision_equal_to_the_assembly_revision_is_accepted() -> None:
+    manifest = _completion_manifest()
+    _rehashed(_at("processing", "context", "code_revision", value=REVISION))(manifest)
+    assert _ledger_problems(manifest) == []
+
+
+LEDGER_MESSAGES = [
+    # Inventories and pending regions.
+    (_at("processing", "expected_regions", value="place"), "expected inventory must be a list"),
+    (_at("processing", "expected_regions", value=[""]), "invalid region name"),
+    (_at("processing", "expected_regions", value=[1]), "invalid region name"),
+    (
+        _then(
+            _at("processing", "expected_regions", value=[]),
+            _at("processing", "region_counts", "expected", value=0),
+        ),
+        "empty expected source inventory",
+    ),
+    (_at("processing", "expected_regions", value=["place", "place"]), "duplicate expected regions"),
+    (_at("processing", "region_counts", "expected", value=2), "wrong expected count"),
+    (_at("processing", "selected_regions", value=None), "selected inventory must be a list"),
+    (
+        _then(
+            _at("processing", "expected_regions", value=[]),
+            _at("processing", "selected_regions", value=[]),
+            _at("processing", "processed_regions", value=[]),
+            _at("processing", "region_counts", "expected", value=0),
+            _at("processing", "region_counts", "selected", value=0),
+            _at("processing", "region_counts", "processed", value=0),
+        ),
+        "empty expected source inventory",
+    ),
+    (
+        _then(
+            _at("processing", "selected_regions", value=["place", "other"]),
+            _at("processing", "region_counts", "selected", value=2),
+        ),
+        "full source inventories differ",
+    ),
+    (_at("processing", "missing_regions", value=["x"]), "nonempty missing_regions"),
+    (
+        _at("processing", "unprocessed_selected_regions", value=["x"]),
+        "nonempty unprocessed_selected_regions",
+    ),
+    (_at("processing", "region_counts", "missing", value=1), "nonzero missing count"),
+    (
+        _at("processing", "region_counts", "unprocessed_selected", value=1),
+        "nonzero unprocessed_selected count",
+    ),
+    (_at("processing", "scope", value="subset"), "subset scope cannot be published as complete"),
+    (_at("processing", "complete", value=False), "complete is not true"),
+    (_at("processing", "selected_complete", value=False), "selected_complete is not true"),
+    # Context digest and settings.
+    (_at("processing", "build_context_sha256", value="0" * 64), "build context hash mismatch"),
+    (_at("processing", "schema_version", value=3), "unsupported processing ledger schema"),
+    (_at("settings", "min_words", value=5), "build context settings mismatch"),
+    # Code provenance.
+    (_at("processing", "assembly_code_revision", value="abc"), "invalid assembly code revision"),
+    (
+        _rehashed(_at("processing", "context", "code_revision", value="abc")),
+        "invalid context code revision",
+    ),
+    (
+        _rehashed(_at("processing", "context", "code_revision", value="c" * 40)),
+        "assembly code revision differs from the ledger context",
+    ),
+    (_code(), "missing region code provenance"),
+    (_code("place"), "invalid code provenance group"),
+    (_code({**CODE_GROUP, "repository": "", "regions": ["place"]}), "invalid code repository"),
+    (
+        _code({**CODE_GROUP, "repository": "https://example.com/x", "regions": ["place"]}),
+        "code repository differs from the ledger context",
+    ),
+    (
+        _code({**CODE_GROUP, "revision": "abc", "regions": ["place"]}),
+        "invalid region code revision",
+    ),
+    (_code({**CODE_GROUP, "regions": []}), "empty code provenance region group"),
+    (_code({**CODE_GROUP, "regions": [""]}), "invalid code provenance region"),
+    (
+        _code({**CODE_GROUP, "regions": ["place", "place"]}),
+        "duplicate code provenance region",
+    ),
+    (
+        _code({**CODE_GROUP, "regions": ["place"]}, {**CODE_GROUP, "regions": ["place"]}),
+        "duplicate code provenance region",
+    ),
+    (
+        _code({**CODE_GROUP, "regions": ["other"]}),
+        "code provenance does not match processed regions",
+    ),
+    # Region receipts and their counters.
+    (_at("processing", "regions", 0, "stem", value="other"), "region receipt inventory mismatch"),
+    (
+        _at("processing", "regions", 0, "polygons_seen", value=-1),
+        "invalid region counter polygons_seen",
+    ),
+    (
+        _at("processing", "regions", 0, "polygons_seen", value=True),
+        "invalid region counter polygons_seen",
+    ),
+    (
+        _at("processing", "context", "note", value=float("nan")),
+        "Out of range float values are not JSON compliant: nan",
+    ),
+    (_at("processing", "regions", 0, "rejections", value=[]), "invalid rejections mapping"),
+    (_at("processing", "regions", 0, "rejections", value={"x": -1}), "invalid rejections counter"),
+    (
+        _at("processing", "regions", 0, "text_rejections", value=[]),
+        "invalid text_rejections mapping",
+    ),
+    (
+        _at("processing", "regions", 0, "text_rejections", value={"x": -1}),
+        "invalid text_rejections counter",
+    ),
+    (
+        _at("processing", "regions", 0, "polygons_seen", value=4),
+        "spatial region accounting mismatch",
+    ),
+    (
+        _at("processing", "regions", 0, "polygons_with_examples", value=2),
+        "text region accounting mismatch",
+    ),
+    (_at("processing", "regions", 0, "examples", value=2), "insufficient region examples"),
+    (
+        _at("processing", "totals", "polygons_seen", value=4),
+        "aggregate region count mismatch: polygons_seen",
+    ),
+    (
+        _at("processing", "totals", "rejections", value={"x": 1}),
+        "aggregate rejections mismatch",
+    ),
+    (
+        _at("processing", "totals", "text_rejections", value={"y": 1}),
+        "aggregate text_rejections mismatch",
+    ),
+    (_at("rejections", value={"x": 1}), "manifest rejection counters mismatch"),
+    (
+        _at("processing", "reconciliation", value={"valid": False}),
+        "ledger reconciliation not valid",
+    ),
+    (_at("deduplication", value={"x": -1}), "invalid deduplication counters"),
+    (_at("deduplication", value={"x": 1}), "pre/post-dedup example counts mismatch"),
+    # Duplicate-text analysis.
+    (_analysis(duplicate_polygon_text_label_groups=-1), "invalid duplicate-text analysis counters"),
+    (
+        _analysis(duplicate_records_removed_by_text_words=[]),
+        "invalid duplicate-record length counters",
+    ),
+    (
+        _then(
+            _analysis(),
+            _at(
+                "deduplication_analysis",
+                "duplicate_records_removed_by_text_words",
+                value={key: 0 for key in DIGITS},
+            ),
+        ),
+        "invalid duplicate-record length counters",
+    ),
+    (
+        _analysis(
+            duplicate_records_removed_by_text_words={**dict.fromkeys(DIGITS, 0), "10+": 0, "1": 1}
+        ),
+        "duplicate-record length counters do not reconcile",
+    ),
+    (
+        _then(
+            _at("counts", "examples", "total", value=2),
+            _analysis(drops=1),
+        ),
+        "duplicate-record analysis does not match deduplication total",
+    ),
+    (
+        _analysis(duplicate_record_groups_crossing_splits=1),
+        "duplicate-record split counters are inconsistent",
+    ),
+    (
+        _analysis(duplicate_records_removed_from_cross_split_groups=1),
+        "duplicate-record split counters are inconsistent",
+    ),
+]
+
+
+@pytest.mark.parametrize("mutation, message", LEDGER_MESSAGES)
+def test_each_ledger_rejection_names_its_specific_reason(mutation, message) -> None:
+    manifest = _completion_manifest()
+    mutation(manifest)
+    assert _ledger_problems(manifest) == [message]
+
+
+@contextlib.contextmanager
+def _release_connection(*rows):
+    """An in-memory DuckDB release view with the columns the aggregate checks read."""
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "CREATE TABLE release (split VARCHAR, polygon_id VARCHAR, document_id VARCHAR, "
+            "worldcover_code INTEGER, language VARCHAR, h3_cell VARCHAR, region VARCHAR, "
+            "lon DOUBLE, lat DOUBLE, dominant_fraction DOUBLE)"
+        )
+        for row in rows:
+            connection.execute("INSERT INTO release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        yield connection
+    finally:
+        connection.close()
+
+
+def _train_row(index: int = 0) -> tuple:
+    return ("train", f"p{index}", f"d{index}", 10, None, f"cell{index}", "region", 1.0, 45.0, 1.0)
+
+
+def _manifest_counts(counts: dict) -> dict:
+    return {"counts": {key: counts for key in ("examples", "polygons", "documents")}}
+
+
+def test_splits_without_rows_are_counted_as_zero_in_the_manifest_check() -> None:
+    with _release_connection(_train_row()) as connection:
+        checks = _checks()
+        checks.report.rows = 1
+        audit_sql._check_manifest(
+            connection,
+            _manifest_counts({"train": 1, "validation": 0, "test": 0, "total": 1}),
+            checks,
+        )
+        assert "manifest_count_mismatch:examples" not in checks.counts
+        assert "empty_dataset" not in checks.counts
+
+        wrong = _checks()
+        wrong.report.rows = 1
+        audit_sql._check_manifest(
+            connection,
+            _manifest_counts({"train": 2, "validation": 0, "test": 0, "total": 2}),
+            wrong,
+        )
+        assert wrong.counts["manifest_count_mismatch:examples"] == 1
+
+
+def test_an_empty_release_is_reported_as_empty() -> None:
+    checks = _checks()
+    with _release_connection() as connection:
+        audit_sql._check_manifest(connection, {"counts": {}}, checks)
+    assert "empty_dataset" in checks.counts
+
+
+def test_duplicate_distribution_entries_are_a_manifest_mismatch() -> None:
+    entry = {"code": 10, "label": "Tree cover", "examples": 1, "share": 1.0}
+    with _release_connection(_train_row()) as connection:
+        duplicated = _checks()
+        duplicated.report.rows = 1
+        audit_sql._check_distributions(
+            connection, {"class_distribution": [entry, dict(entry)]}, duplicated
+        )
+        assert "manifest_mismatch:class_distribution" in duplicated.counts
+
+        single = _checks()
+        single.report.rows = 1
+        audit_sql._check_distributions(connection, {"class_distribution": [entry]}, single)
+        assert "manifest_mismatch:class_distribution" not in single.counts
+
+
+@pytest.mark.parametrize(
+    "change, split, code",
+    [
+        ({"split": "bogus"}, "bogus", "invalid_split"),
+        ({"text": "w  " + " ".join(["word"] * 19)}, "train", "unnormalized_text"),
+        ({"polygon_area_m2": 1e10 * (1 + 1e-5)}, "train", "area_above_cap"),
+        ({"split": "validation"}, "validation", "h3_assignment_mismatch"),
+    ],
+)
+def test_row_checks_name_each_reason_code(change, split, code) -> None:
+    checks = _checks()
+    row = {**rows()["train"], **change}
+    audit_rows._check_row(row, split, SETTINGS, checks)
+    assert code in checks.counts
+
+
+@pytest.mark.parametrize(
+    "lat_text, valid",
+    [
+        ("45.0", True),
+        ("45.00000005", True),
+        ("45.00000006", False),
+        ("44.99999994", False),
+        ("x.5", False),
+    ],
+)
+def test_centroid_latitude_uses_the_same_seven_decimal_tolerance(lat_text, valid) -> None:
+    checks = _checks()
+    row = {"polygon_id": "p", "lon": 10.0, "lat": 45.0, "centroid_wkt": f"POINT (10.0 {lat_text})"}
+    audit_rows._check_centroid(row, checks)
+    assert ("centroid_wkt_mismatch" not in checks.counts) is valid
+
+
+@contextlib.contextmanager
+def _global_connection(release_rows, hash_rows):
+    """DuckDB release and hash views for the global identity and text checks."""
+    connection = duckdb.connect()
+    try:
+        connection.execute(
+            "CREATE TABLE release (split VARCHAR, polygon_id VARCHAR, document_id VARCHAR, "
+            "h3_cell VARCHAR, osm_type VARCHAR, osm_id BIGINT, worldcover_code INTEGER, "
+            "lat DOUBLE, lon DOUBLE, polygon_area_m2 DOUBLE)"
+        )
+        connection.execute(
+            "CREATE TABLE hashes (text_hash BLOB, worldcover_code INTEGER, "
+            "split VARCHAR, polygon_id VARCHAR)"
+        )
+        for row in release_rows:
+            connection.execute("INSERT INTO release VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        for row in hash_rows:
+            connection.execute("INSERT INTO hashes VALUES (?, ?, ?, ?)", row)
+        yield connection
+    finally:
+        connection.close()
+
+
+def _object_row(polygon_id: str, osm_id: int) -> tuple:
+    return ("train", polygon_id, f"d-{polygon_id}", "cell", "way", osm_id, 10, 45.0, 1.0, 1.0)
+
+
+def test_one_osm_object_under_two_polygon_ids_is_an_identity_conflict() -> None:
+    checks = _checks()
+    with _global_connection([_object_row("p1", 1), _object_row("p2", 1)], []) as connection:
+        audit_sql._check_global(connection, checks, strict_text_leakage=False)
+    assert "object_identity_conflict" in {problem.code for problem in checks.report.problems}
+
+
+def test_distinct_osm_objects_are_not_an_identity_conflict() -> None:
+    checks = _checks()
+    with _global_connection([_object_row("p1", 1), _object_row("p2", 2)], []) as connection:
+        audit_sql._check_global(connection, checks, strict_text_leakage=False)
+    assert "object_identity_conflict" not in {problem.code for problem in checks.report.problems}
+
+
+def test_retained_text_analysis_must_match_the_release_it_describes() -> None:
+    text = bytes(32)
+    keys = (
+        "retained_identical_text_label_groups",
+        "retained_identical_text_label_rows",
+        "retained_identical_text_label_cross_split_groups",
+        "retained_identical_text_label_cross_split_rows",
+        "identical_text_cross_split_groups",
+        "identical_text_cross_split_rows",
+    )
+    hash_rows = [
+        (text, 10, "train", "p1"),
+        (text, 10, "validation", "p2"),
+        (text, 20, "train", "p3"),
+    ]
+    with _global_connection([], hash_rows) as connection:
+        actual = audit_sql._retained_text_diagnostics(connection)
+        analysis = {key: actual[key] for key in keys}
+        checks = _checks()
+        audit_sql._check_text_diagnostics(connection, {"deduplication_analysis": analysis}, checks)
+        assert not checks.counts
+        analysis[keys[1]] += 1
+        audit_sql._check_text_diagnostics(connection, {"deduplication_analysis": analysis}, checks)
+        assert checks.counts == Counter({"deduplication_analysis_mismatch:retained_text": 1})
+
+
+def test_language_distribution_is_matched_on_its_language_key() -> None:
+    manifest = {
+        "class_distribution": [{"code": 10, "label": "Tree cover", "examples": 1, "share": 1.0}],
+        "language_distribution": [{"language": "en", "examples": 1, "share": 1.0}],
+    }
+    with _release_connection(
+        ("train", "p0", "d0", 10, "en", "cell0", "region", 1.0, 45.0, 1.0)
+    ) as connection:
+        checks = _checks()
+        checks.report.rows = 1
+        audit_sql._check_distributions(connection, manifest, checks)
+        assert not checks.counts
+
+        renamed = _checks()
+        renamed.report.rows = 1
+        manifest["language_distribution"] = [{"language": "fr", "examples": 1, "share": 1.0}]
+        audit_sql._check_distributions(connection, manifest, renamed)
+        assert renamed.counts == Counter({"manifest_mismatch:language_distribution": 1})
+
+
+def test_share_defaults_to_zero_examples_when_an_entry_has_none() -> None:
+    checks = _checks()
+    checks.report.rows = 3
+    audit_sql._check_shares([{"share": 0.0}], checks)
+    assert not checks.counts
+    audit_sql._check_shares([{"share": 0.5}], checks)
+    assert checks.counts == Counter({"manifest_share_mismatch": 1})
+
+
+def test_problems_are_frozen_and_reports_and_problems_keep_no_instance_dict() -> None:
+    problem = AuditProblem("code", 1)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        problem.count = 2  # type: ignore[misc]
+    assert not hasattr(problem, "__dict__")
+    assert not hasattr(AuditReport(), "__dict__")
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("dataset_version", "9.9.9"),
+        ("code_repository", "https://example.com/other"),
+        ("deduplication_policy", "other-policy"),
+    ],
+)
+def test_release_only_settings_are_not_compared_with_the_ledger(key, value) -> None:
+    manifest = _completion_manifest()
+    manifest["settings"][key] = value
+    assert _ledger_problems(manifest) == []
+
+
+def test_other_settings_must_match_the_ledger_context() -> None:
+    manifest = _completion_manifest()
+    manifest["settings"]["split_seed"] = 1
+    assert _ledger_problems(manifest) == ["build context settings mismatch"]
+
+
+def _scan_rows(tmp_path, *split_rows):
+    """Scan one train shard with scan_rows; return the checks, hash rows and hash path."""
+    path = tmp_path / "train.parquet"
+    pq.write_table(pa.Table.from_pylist(list(split_rows), schema=SCHEMA), path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    checks = _checks()
+    hashes = audit_rows.scan_rows([path], SETTINGS, scratch, checks)
+    return checks, pq.read_table(hashes).to_pylist(), hashes
+
+
+def test_scan_counts_every_row_once(tmp_path) -> None:
+    base = rows()["train"]
+    checks, _, _ = _scan_rows(tmp_path, base, {**base, "polygon_id": "p-second"})
+    assert checks.report.rows == 2
+
+
+def test_rows_without_text_are_counted_but_not_fingerprinted(tmp_path) -> None:
+    base = rows()["train"]
+    null_text = {**base, "polygon_id": "p-null", "text": None, "text_words": 0}
+    checks, fingerprints, _ = _scan_rows(tmp_path, base, null_text)
+    assert checks.report.rows == 2
+    assert checks.counts["invalid_text"] == 1
+    assert [fingerprint["polygon_id"] for fingerprint in fingerprints] == [base["polygon_id"]]
+
+
+def test_fingerprint_is_the_sha256_of_the_whitespace_normalized_text(tmp_path) -> None:
+    base = rows()["train"]
+    _, fingerprints, hashes = _scan_rows(
+        tmp_path, {**base, "text": "alpha\tbeta \n gamma", "text_words": 3}
+    )
+    assert hashes.name == "hashes.parquet"
+    assert fingerprints == [
+        {
+            "text_hash": bytes.fromhex(
+                "64989ccbf3efa9c84e2afe7cee9bc5828bf0fcb91e44f8c1e591638a2c2e90e3"
+            ),
+            "worldcover_code": 10,
+            "split": "train",
+            "polygon_id": base["polygon_id"],
+        }
+    ]
+
+
+def test_inspect_accepts_a_shard_with_the_release_schema(build) -> None:
+    checks = _checks()
+    audit_rows._inspect_file(build / "train.parquet", checks)
+    assert checks.counts == Counter()
+
+
+def test_inspect_flags_a_shard_whose_schema_differs(tmp_path) -> None:
+    path = tmp_path / "train.parquet"
+    pq.write_table(pa.table({"polygon_id": ["p0"]}), path)
+    checks = _checks()
+    audit_rows._inspect_file(path, checks)
+    assert checks.counts == Counter({"schema_mismatch": 1})
+    assert checks.samples == {"schema_mismatch": ["train.parquet"]}
+
+
+def test_inspect_reports_an_unreadable_shard(tmp_path) -> None:
+    checks = _checks()
+    audit_rows._inspect_file(tmp_path / "train.parquet", checks)
+    assert checks.counts == Counter({"missing_or_invalid_parquet": 1})
+    samples = checks.samples["missing_or_invalid_parquet"]
+    assert [sample.split(": ", 1)[0] for sample in samples] == ["train.parquet"]
+
+
+def test_load_manifest_returns_a_well_formed_manifest(build) -> None:
+    checks = _checks()
+    manifest = audit_manifest._load_manifest(build, checks)
+    assert manifest is not None
+    assert manifest["settings"] == SETTINGS
+    assert checks.counts == Counter()
+
+
+@pytest.mark.parametrize("payload", [[], "manifest", {"settings": {}}])
+def test_load_manifest_rejects_non_objects_and_incomplete_shapes(build, payload) -> None:
+    (build / "manifest.json").write_text(json.dumps(payload))
+    checks = _checks()
+    assert audit_manifest._load_manifest(build, checks) is None
+    assert checks.counts == Counter({"missing_or_invalid_manifest": 1})
+    assert not checks.samples
+
+
+def test_load_manifest_reports_the_json_error_for_unparseable_text(build) -> None:
+    (build / "manifest.json").write_text("{not json")
+    checks = _checks()
+    assert audit_manifest._load_manifest(build, checks) is None
+    assert checks.counts == Counter({"missing_or_invalid_manifest": 1})
+    assert checks.samples["missing_or_invalid_manifest"] == [
+        "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+    ]
+
+
+def test_a_list_in_place_of_the_length_counters_is_rejected_by_its_type_guard() -> None:
+    # The list's keys match the expected length names, so only the isinstance guard
+    # rejects it. Without the guard, the next check reads .values() and raises
+    # AttributeError, which surfaces as a different message.
+    manifest = _completion_manifest()
+    _analysis(duplicate_records_removed_by_text_words=[*DIGITS, "10+"])(manifest)
+    assert _ledger_problems(manifest) == ["invalid duplicate-record length counters"]
