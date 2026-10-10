@@ -116,14 +116,17 @@ weaknesses are in [`docs/technical-debt.md`](docs/technical-debt.md).
 ## Development
 
 ```bash
-uv run ruff check . && uv run ruff format --check .
-uv run ty check src/
-uv run lint-imports
 uv run pytest
-uv run pytest --cov --cov-report=json -q && uv run python scripts/crap.py src scripts tests
-uv run mutmut run
-uv run mkdocs build --strict
+scripts/check.sh
+scripts/check.sh mutation
 ```
+
+`uv run pytest` is a quick test run without coverage. `scripts/check.sh` runs
+the quality gates in the order CI runs them: lint, format, types, architecture,
+tests (with coverage), crap and docs. Pass a gate name to run one gate, for
+example `scripts/check.sh types`. `scripts/check.sh mutation` runs the slow
+mutation gate, which CI runs in its own job. The gate commands are defined only
+in `scripts/check.sh`.
 
 CI runs the same quality gates and the Docker smoke test.
 
