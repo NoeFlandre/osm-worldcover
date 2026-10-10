@@ -80,26 +80,27 @@ source = ["src/osm_worldcover", "scripts", "tests"]
 branch = true
 
 [tool.mutmut]
-# Mutation testing runs over src/osm_worldcover and scripts, minus the
-# do_not_mutate entries below. Most of those are adapters (audit, coverage_map,
-# hub, publish, source, writer). The CLI and the card template in domain/card.py
-# are excluded too; card behaviour is asserted in tests/unit/test_card.py.
+# Mutation testing runs over src/osm_worldcover and scripts, minus the do_not_mutate
+# entries below. In the audit package, audit/card.py is excluded (see its entry).
+# The other audit modules are mutated except for `# pragma: no mutate` markers:
+# a line marker on each line that opens, reads or writes a file (rows.py, manifest.py),
+# and a block marker on rows.scan_rows and sql.check_aggregates, whose bodies only
+# open a file or DuckDB session and delegate, with no decisions of their own.
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
-    "*/adapters/audit/__init__.py",
-    "*/adapters/audit/run.py",
-    "*/adapters/audit/sql.py",
+    # audit/card.py is excluded pending a review of its release-gate branches, which are
+    # not only wording: _check_card (the configs and license comparisons), the substring
+    # tests in _check_card_provenance and _check_card_map_text, the PNG signature check in
+    # _check_card_map_file, the singular/plural branch in _card_code_group_present, and the
+    # `if revision and` guard in _check_card_assembly_revision. Its mutation score is not measured.
     "*/adapters/audit/card.py",
-    "*/adapters/audit/manifest.py",
-    "*/adapters/audit/rows.py",
-    "*/adapters/audit/schema.py",
     "*/adapters/coverage_map.py",
     "*/adapters/hub.py",
     "*/adapters/publish.py",
     "*/adapters/source.py",
     "*/adapters/writer.py",
     "*/cli.py",
-    # card.py is a prose template. Its mutants rewrite headings, URLs and join
+    # domain/card.py is a prose template. Its mutants rewrite headings, URLs and join
     # separators, which changes the wording of a README and nothing else; the
     # card's actual behaviour is asserted in tests/unit/test_card.py.
     "*/domain/card.py",

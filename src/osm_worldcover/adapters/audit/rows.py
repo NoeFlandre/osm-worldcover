@@ -14,7 +14,8 @@ from .report import _Checks
 from .schema import _HASH_SCHEMA, _NULLABLE, _PROVENANCE, _SCHEMA, _SPLITS
 
 
-def scan_rows(paths, settings, scratch, checks):
+# Genuine I/O: writes the hash Parquet file and streams each release shard.
+def scan_rows(paths, settings, scratch, checks):  # pragma: no mutate block
     hashes = scratch / "hashes.parquet"
     with pq.ParquetWriter(hashes, _HASH_SCHEMA, compression="zstd") as writer:
         for path in paths:
@@ -31,7 +32,7 @@ def _inspect_files(build_dir: Path, checks: _Checks) -> list[Path]:
 
 def _inspect_file(path: Path, checks: _Checks) -> None:
     try:
-        parquet = pq.ParquetFile(path)
+        parquet = pq.ParquetFile(path)  # pragma: no mutate
         schema = {f.name: str(f.type) for f in parquet.schema_arrow}
         if schema != _SCHEMA:
             checks.add("schema_mismatch", path.name)
@@ -41,7 +42,8 @@ def _inspect_file(path: Path, checks: _Checks) -> None:
 
 def _scan_file(path, settings, checks, writer) -> None:
     columns = sorted(set(_SCHEMA) - _NULLABLE)
-    for batch in pq.ParquetFile(path).iter_batches(batch_size=2048, columns=columns):
+    reader = pq.ParquetFile(path)  # pragma: no mutate
+    for batch in reader.iter_batches(batch_size=2048, columns=columns):  # pragma: no mutate
         fingerprints = []
         for row in batch.to_pylist():
             checks.report.rows += 1
@@ -56,7 +58,8 @@ def _scan_file(path, settings, checks, writer) -> None:
                         "polygon_id": row["polygon_id"],
                     }
                 )
-        writer.write_table(pa.Table.from_pylist(fingerprints, schema=_HASH_SCHEMA))
+        table = pa.Table.from_pylist(fingerprints, schema=_HASH_SCHEMA)
+        writer.write_table(table)  # pragma: no mutate
 
 
 def _check_row(row, split, settings, checks) -> None:
