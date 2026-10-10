@@ -1,5 +1,6 @@
 """Exact-value tests for the description and website source normalizers."""
 
+import dataclasses
 import math
 from pathlib import Path
 
@@ -433,3 +434,30 @@ def test_documents_carry_explicit_null_columns(tmp_path) -> None:
     _assert_null_columns(described, ["lead_text", "article_length_words"])
     _assert_null_columns(website, ["lead_text", "article_length_words", "license"])
     assert set(described["license"]) == {"ODbL"}
+
+
+def test_normalized_regions_are_immutable_value_objects() -> None:
+    region = sp.NormalizedRegion(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        region.polygons = pd.DataFrame()  # type: ignore[misc]
+
+
+def test_contact_website_language_is_read_from_its_own_column(tmp_path) -> None:
+    columns = {name: [value] for name, value in _website_row(contact_website_language="fr").items()}
+    _write(tmp_path / "polygons" / "s.parquet", pa.table(columns))
+
+    documents = _records(sp.load_website_region(tmp_path, "s").documents)
+
+    contact = [document for document in documents if document["project"] == "contact_website"]
+    assert [document["language"] for document in contact] == ["fr"]
+
+
+def test_public_surface_is_pinned() -> None:
+    assert sp.__all__ == [
+        "DOCUMENT_COLUMNS",
+        "LINK_COLUMNS",
+        "POLYGON_COLUMNS",
+        "NormalizedRegion",
+        "load_description_region",
+        "load_website_region",
+    ]
