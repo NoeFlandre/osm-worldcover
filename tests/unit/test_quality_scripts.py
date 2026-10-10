@@ -315,8 +315,8 @@ def test_mutation_records_keep_all_mutmut_outcomes_distinct() -> None:
     assert summary["confirmed_kill_score"] == pytest.approx(1 / 11)
 
 
-def test_per_file_scores_partition_the_global_summary() -> None:
-    records = [
+def _partitioned_records():
+    return [
         {"path": "src/b.py", "status": "killed"},
         {"path": "src/a.py", "status": "killed"},
         {"path": "src/a.py", "status": "survived"},
@@ -324,14 +324,23 @@ def test_per_file_scores_partition_the_global_summary() -> None:
         {"path": "src/b.py", "status": "killed"},
     ]
 
+
+def test_per_file_scores_partition_the_global_summary() -> None:
+    records = _partitioned_records()
+
     per_file = mutation_score._per_file_summaries(records)
 
     assert list(per_file) == ["src/a.py", "src/b.py"]
+    assert sum(score["total"] for score in per_file.values()) == len(records)
+
+
+def test_per_file_scores_count_each_file_separately() -> None:
+    per_file = mutation_score._per_file_summaries(_partitioned_records())
+
     assert per_file["src/a.py"]["confirmed_kill_score"] == pytest.approx(0.5)
     assert per_file["src/b.py"]["killed"] == 2
     assert per_file["src/b.py"]["timeout"] == 1
     assert per_file["src/b.py"]["confirmed_kill_score"] == pytest.approx(2 / 3)
-    assert sum(score["total"] for score in per_file.values()) == len(records)
 
 
 def test_mutation_report_writes_per_file_scores(tmp_path, monkeypatch) -> None:
