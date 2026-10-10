@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from collections import Counter
 from dataclasses import asdict, fields, replace
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -14,6 +15,7 @@ from osm_worldcover import accounting
 from osm_worldcover.accounting import (
     BuildContext,
     atomic_json,
+    code_revision,
     file_sha256,
     outcome_from_record,
     outcome_record,
@@ -87,7 +89,7 @@ def test_paths_cache_policy_and_selection_do_not_change_shard_context(config, tm
 
 @pytest.mark.parametrize("revision", [None, "main", "v1", "a" * 39])
 def test_context_requires_an_immutable_commit(config, revision):
-    with pytest.raises(ValueError, match="pinned source revision"):
+    with pytest.raises(ValueError, match=r"^completion receipts require a pinned source revision$"):
         BuildContext.from_config(replace(config, source_revision=revision))
 
 
@@ -263,7 +265,9 @@ def test_processing_ledger_groups_exact_region_code_revisions(context, outcome):
 
 
 def test_processing_ledger_requires_code_pin_for_every_processed_region(context, outcome):
-    with pytest.raises(ValueError, match="match processed regions exactly"):
+    with pytest.raises(
+        ValueError, match=r"^code revision inventory must match processed regions exactly$"
+    ):
         processing_ledger(
             ["alpha"],
             ["alpha"],
@@ -284,7 +288,9 @@ def test_legacy_context_keeps_schema_one_ledger(context, outcome):
 
 
 def test_processing_ledger_rejects_invalid_assembly_revision(context, outcome):
-    with pytest.raises(ValueError, match="assembly code revision"):
+    with pytest.raises(
+        ValueError, match=r"^assembly code revision must be a full 40-character commit$"
+    ):
         processing_ledger(
             ["alpha"],
             ["alpha"],
@@ -298,7 +304,9 @@ def test_version_two_ledger_requires_assembly_revision(context, outcome):
     document = context.as_dict()
     document["code_revision"] = None
     legacy_context = BuildContext.from_document(document)
-    with pytest.raises(ValueError, match="require an assembly code revision"):
+    with pytest.raises(
+        ValueError, match=r"^schema 2 processing ledgers require an assembly code revision$"
+    ):
         processing_ledger(
             ["alpha"],
             ["alpha"],
@@ -461,12 +469,12 @@ def test_context_accepts_an_uppercase_commit_hash(config):
 
 @pytest.mark.parametrize("change", [{"receipt_version": 2}, {"pipeline_schema_version": 2}])
 def test_a_recorded_context_must_match_both_current_versions(context, change):
-    with pytest.raises(ValueError, match="unsupported receipt context version"):
+    with pytest.raises(ValueError, match=r"^unsupported receipt context version$"):
         BuildContext.from_document({**context.as_dict(), **change})
 
 
 def test_a_recorded_context_must_be_an_object():
-    with pytest.raises(TypeError, match="build context must be an object"):
+    with pytest.raises(TypeError, match=r"^build context must be an object$"):
         BuildContext.from_document(["not", "an", "object"])
 
 
@@ -480,13 +488,13 @@ def fake_git(monkeypatch, returncode=0, error=None):
             raise error
         return subprocess.CompletedProcess(argv, returncode, stdout=" abc\n")
 
-    monkeypatch.setattr(accounting.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     return calls
 
 
 def test_git_output_is_one_bounded_captured_command(tmp_path, monkeypatch):
     calls = fake_git(monkeypatch)
-    assert accounting._git_output(tmp_path, "status", "--porcelain") == "abc"
+    assert code_revision._git_output(tmp_path, "status", "--porcelain") == "abc"
     assert calls == [
         (
             ["git", "-C", str(tmp_path), "status", "--porcelain"],
@@ -498,13 +506,13 @@ def test_git_output_is_one_bounded_captured_command(tmp_path, monkeypatch):
 @pytest.mark.parametrize("returncode", [1, 128])
 def test_a_failing_git_command_has_no_output(tmp_path, monkeypatch, returncode):
     fake_git(monkeypatch, returncode=returncode)
-    assert accounting._git_output(tmp_path, "rev-parse") is None
+    assert code_revision._git_output(tmp_path, "rev-parse") is None
 
 
 @pytest.mark.parametrize("error", [OSError("no git"), subprocess.TimeoutExpired("git", 2)])
 def test_an_unavailable_or_stuck_git_has_no_output(tmp_path, monkeypatch, error):
     fake_git(monkeypatch, error=error)
-    assert accounting._git_output(tmp_path, "rev-parse") is None
+    assert code_revision._git_output(tmp_path, "rev-parse") is None
 
 
 def test_file_sha256_reads_files_larger_than_one_block(tmp_path):
@@ -529,7 +537,7 @@ def test_atomic_json_stages_a_hidden_file_beside_its_target(tmp_path, monkeypatc
         calls.append(kwargs)
         return mkstemp(**kwargs)
 
-    monkeypatch.setattr(accounting.tempfile, "mkstemp", spy)
+    monkeypatch.setattr(tempfile, "mkstemp", spy)
     atomic_json(tmp_path / "out.json", {})
     assert calls == [{"prefix": ".out.json.", "dir": tmp_path}]
 
@@ -555,7 +563,9 @@ def test_ledger_refuses_blank_region_names(context, outcome, expected, selected,
 
 
 def test_ledger_names_the_unselected_processed_regions(context, outcome):
-    with pytest.raises(ValueError, match="processed regions are outside the selected source"):
+    with pytest.raises(
+        ValueError, match=r"^processed regions are outside the selected source inventory$"
+    ):
         processing_ledger(["alpha", "beta"], ["beta"], [outcome], context)
 
 
@@ -598,7 +608,9 @@ def test_the_assembly_commit_defaults_to_the_one_recorded_in_the_context(pinned_
 
 
 def test_region_revisions_must_be_full_commits(context, outcome):
-    with pytest.raises(ValueError, match="region code revisions must be full 40-character commits"):
+    with pytest.raises(
+        ValueError, match=r"^region code revisions must be full 40-character commits$"
+    ):
         processing_ledger(
             ["alpha"],
             ["alpha"],
@@ -607,3 +619,172 @@ def test_region_revisions_must_be_full_commits(context, outcome):
             region_code_revisions={"alpha": "nope"},
             assembly_code_revision="c" * 40,
         )
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+BASE_LEDGER_FIELDS = {
+    "schema_version",
+    "build_context_sha256",
+    "context",
+    "scope",
+    "complete",
+    "full_source_complete",
+    "selected_complete",
+    "expected_regions",
+    "selected_regions",
+    "processed_regions",
+    "missing_regions",
+    "unprocessed_selected_regions",
+    "region_counts",
+    "totals",
+    "regions",
+    "reconciliation",
+}
+
+
+@pytest.fixture
+def fresh_code_revision():
+    """Forget the process-wide code revision so each test observes its own git."""
+    code_revision._current_code_revision.cache_clear()
+    yield
+    code_revision._current_code_revision.cache_clear()
+
+
+def fake_repository(monkeypatch, *, status="", head="b" * 40):
+    """Answer the two git queries that decide the code revision and record them."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        answers = {"status": status, "rev-parse": head}
+        return subprocess.CompletedProcess(argv, 0, stdout=answers[argv[3]] + "\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return calls
+
+
+def test_public_names_are_stable():
+    assert sorted(accounting.__all__) == [
+        "BuildContext",
+        "atomic_json",
+        "file_sha256",
+        "outcome_from_record",
+        "outcome_record",
+        "processing_ledger",
+        "validate_outcome",
+    ]
+
+
+def test_schema_versions_are_stable():
+    assert accounting.RECEIPT_VERSION == 1
+    assert accounting.PROCESSING_LEDGER_VERSION == 2
+    assert accounting.PIPELINE_SCHEMA_VERSION == 3
+
+
+def test_count_fields_are_stable():
+    assert accounting.COUNT_FIELDS == (
+        "polygons_seen",
+        "polygons_invalid",
+        "polygons_accepted",
+        "polygons_with_examples",
+        "source_links",
+        "source_documents",
+        "examples",
+    )
+
+
+def test_clean_checkout_records_head_queried_at_the_repository_root(
+    config, monkeypatch, fresh_code_revision
+):
+    calls = fake_repository(monkeypatch)
+    context = BuildContext.from_config(config)
+    assert context.document["code_revision"] == "b" * 40
+    assert calls == [
+        ["git", "-C", str(REPOSITORY_ROOT), "status", "--porcelain", "--untracked-files=no"],
+        ["git", "-C", str(REPOSITORY_ROOT), "rev-parse", "--verify", "HEAD"],
+    ]
+
+
+@pytest.mark.parametrize("status", ["M  src/osm_worldcover/build.py", " M README.md"])
+def test_modified_tracked_files_record_no_code_revision(
+    config, monkeypatch, fresh_code_revision, status
+):
+    fake_repository(monkeypatch, status=status)
+    assert BuildContext.from_config(config).document["code_revision"] is None
+
+
+@pytest.mark.parametrize("head", ["abc123", "g" * 40])
+def test_head_that_is_not_a_full_commit_records_no_code_revision(
+    config, monkeypatch, fresh_code_revision, head
+):
+    fake_repository(monkeypatch, head=head)
+    assert BuildContext.from_config(config).document["code_revision"] is None
+
+
+def test_unavailable_git_records_no_code_revision(config, monkeypatch, fresh_code_revision):
+    def run(argv, **kwargs):
+        raise OSError("no git")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert BuildContext.from_config(config).document["code_revision"] is None
+
+
+def test_code_revision_is_looked_up_once_per_process(config, monkeypatch, fresh_code_revision):
+    calls = fake_repository(monkeypatch)
+    BuildContext.from_config(config)
+    BuildContext.from_config(config)
+    assert len(calls) == 2
+
+
+def test_ledger_top_level_fields_are_pinned(pinned_context, outcome):
+    ledger = processing_ledger(
+        ["alpha", "beta"],
+        ["alpha", "beta"],
+        [outcome, replace(outcome, stem="beta")],
+        pinned_context,
+    )
+    assert set(ledger) == BASE_LEDGER_FIELDS | {"code_provenance", "assembly_code_revision"}
+    assert ledger["schema_version"] == 2
+
+
+def test_outcome_record_missing_a_field_is_refused_with_its_reason(outcome):
+    record = outcome_record(outcome)
+    del record["source_links"]
+    with pytest.raises(
+        ValueError, match=r"^region receipt does not have the current outcome schema$"
+    ):
+        outcome_from_record(record)
+
+
+class _EndOfFileStream:
+    """Return the data once, then end of file; fail loudly if read again."""
+
+    def __init__(self, data: bytes) -> None:
+        self._chunks = [data, b""]
+
+    def __enter__(self) -> "_EndOfFileStream":
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._chunks:
+            raise AssertionError("read past end of file")
+        return self._chunks.pop(0)
+
+
+class _SingleStreamSource:
+    """Stand in for a path whose only open() returns one prepared stream."""
+
+    def __init__(self, stream: _EndOfFileStream) -> None:
+        self._stream = stream
+
+    def open(self, mode: str) -> _EndOfFileStream:
+        return self._stream
+
+
+def test_file_sha256_stops_at_the_first_end_of_file():
+    data = b"shard bytes"
+    source = _SingleStreamSource(_EndOfFileStream(data))
+    assert file_sha256(source) == hashlib.sha256(data).hexdigest()
