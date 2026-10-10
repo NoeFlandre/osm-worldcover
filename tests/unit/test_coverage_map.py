@@ -123,6 +123,25 @@ def test_conflicting_labels_are_rejected(tmp_path: Path) -> None:
         centroids_from_build(build)
 
 
+def test_a_build_directory_with_a_quote_in_its_name_is_read(tmp_path: Path) -> None:
+    build = _write_build(
+        tmp_path / "o'brien" / "build",
+        {
+            "train": [
+                {
+                    "polygon_id": "p",
+                    "lat": 1,
+                    "lon": 2,
+                    "worldcover_code": 10,
+                    "worldcover_label": "Tree cover",
+                }
+            ]
+        },
+    )
+
+    assert centroids_from_build(build)["polygon_id"].tolist() == ["p"]
+
+
 def test_code_label_mismatch_is_rejected(tmp_path: Path) -> None:
     build = _write_build(
         tmp_path / "build",

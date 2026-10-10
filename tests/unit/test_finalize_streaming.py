@@ -323,6 +323,30 @@ def test_deduplication_uses_the_work_directory_for_duckdb_spill(shards, tmp_path
     assert spill_dir == str(work / "duckdb-spill")
 
 
+def test_deduplication_runs_under_its_memory_budget_and_two_threads(
+    shards, tmp_path, reported_setting
+) -> None:
+    shard(shards / "a.parquet")
+    enriched = tmp_path / "work" / "enriched"
+    enriched.mkdir(parents=True)
+    assert _enrich_shards(shards, enriched, Config()) == 1
+
+    connection, _, _ = _deduplicate(enriched)
+    try:
+        settings = {
+            name: connection.execute(f"SELECT current_setting('{name}')").fetchone()[0]
+            for name in ("memory_limit", "threads", "preserve_insertion_order")
+        }
+    finally:
+        connection.close()
+
+    assert settings == {
+        "memory_limit": reported_setting("memory_limit", "2GB"),
+        "threads": 2,
+        "preserve_insertion_order": False,
+    }
+
+
 def test_the_result_validates(shards, tmp_path) -> None:
     shard(shards / "a.parquet", n=5)
     assert finalize_shards(shards, Config(), tmp_path / "work", tmp_path / "work" / "out").report.ok
