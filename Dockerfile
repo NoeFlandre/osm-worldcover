@@ -43,7 +43,7 @@ FROM base AS runtime
 # The installed packages load the GEOS shared library at run time. Only the
 # library is installed here; the headers and the toolchain stay in the builder.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgeos-c1v5 \
+    && apt-get install -y --no-install-recommends libexpat1 libgeos-c1v5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Run as an unprivileged user. Code under /app stays root-owned and read-only.
