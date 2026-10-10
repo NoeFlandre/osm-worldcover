@@ -73,35 +73,26 @@ def test_blocks_collects_every_requested_root(tmp_path) -> None:
     ]
 
 
-def test_blocks_include_nested_classes_local_classes_and_async_functions(tmp_path) -> None:
-    blocks = _nested_blocks(tmp_path)
-    qualified_names = [block["qualified_name"] for block in blocks]
+def test_nested_callables_keep_their_order_complexity_and_type(tmp_path) -> None:
+    """Nested classes, local classes and async functions are each measured once.
 
-    assert qualified_names == [
-        "Outer.Inner.compute",
-        "Outer.outer_method",
-        "Outer.outer_method.inner",
-        "factory",
-        "factory.Local.compute",
-        "factory.Local.Deep.measure",
-        "factory.nested_async",
+    Complexity excludes nested bodies, so ``outer_method`` scores 1 even though
+    its inner function branches.
+    """
+    blocks = _nested_blocks(tmp_path)
+
+    assert [
+        (block["qualified_name"], (block["complexity"], block["type"])) for block in blocks
+    ] == [
+        ("Outer.Inner.compute", (2, "method")),
+        ("Outer.outer_method", (1, "method")),
+        ("Outer.outer_method.inner", (2, "function")),
+        ("factory", (1, "function")),
+        ("factory.Local.compute", (2, "method")),
+        ("factory.Local.Deep.measure", (2, "method")),
+        ("factory.nested_async", (2, "function")),
     ]
     assert len({(block["path"], block["lineno"]) for block in blocks}) == len(blocks)
-
-
-def test_callable_complexity_and_type_exclude_nested_bodies(tmp_path) -> None:
-    blocks = _nested_blocks(tmp_path)
-    actual = {block["qualified_name"]: (block["complexity"], block["type"]) for block in blocks}
-
-    assert actual == {
-        "Outer.Inner.compute": (2, "method"),
-        "Outer.outer_method": (1, "method"),
-        "Outer.outer_method.inner": (2, "function"),
-        "factory": (1, "function"),
-        "factory.Local.compute": (2, "method"),
-        "factory.Local.Deep.measure": (2, "method"),
-        "factory.nested_async": (2, "function"),
-    }
 
 
 def test_crap_gate_rejects_an_empty_measured_inventory(monkeypatch, tmp_path, capsys) -> None:
