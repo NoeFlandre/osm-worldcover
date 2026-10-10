@@ -1037,7 +1037,7 @@ def test_empty_rerun_recovers_an_interrupted_promotion_before_counting_rows(
         for name in release.CORE_FILES:
             (stage / name).write_bytes(f"uncommitted:{name}".encode())
         new = release.stage_inventory(stage)
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit, match="simulated process interruption"):
             release.commit_release(target, stage, new)
     monkeypatch.setattr(release, "_rename_directory", original)
 

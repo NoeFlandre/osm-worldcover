@@ -118,7 +118,8 @@ def _promote_release(target, promotion_errors):
             (stage / "manifest.json").write_text('{"generation": "new"}')
             new = release.stage_inventory(stage)
             assert target.is_dir()
-            assert release._inventory_if_present(target) is not None
+            current = release._inventory_if_present(target)
+            assert {entry.name for entry in current.files} == set(release.CORE_FILES)
             release.commit_release(target, stage, new)
     except BaseException as error:
         promotion_errors.append(error)
@@ -303,7 +304,7 @@ def test_unrecorded_auxiliary_file_does_not_match_a_new_transaction_target(tmp_p
     target = tmp_path / "v1.0.0"
     _release(target, "new")
     expected = release.core_inventory(target)
-    assert expected is not None
+    assert {entry.name for entry in expected.files} == set(release.CORE_FILES)
 
     (target / "audit.json").write_text("unexpected during recovery")
 
@@ -748,7 +749,10 @@ def test_interrupted_journal_install_without_old_release_aborts_candidate_twice(
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "stopped after journal installation"),
     )
-    with release.release_lock(target), pytest.raises(SimulatedCrash):
+    with (
+        release.release_lock(target),
+        pytest.raises(SimulatedCrash, match="stopped after journal installation"),
+    ):
         release.commit_release(target, stage, release.stage_inventory(stage))
 
     monkeypatch.setattr(release, "fsync_directory", original)
@@ -767,7 +771,10 @@ def test_first_build_abort_after_stage_removal_finishes_after_restart(tmp_path, 
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after journal installation"),
     )
-    with release.release_lock(target), pytest.raises(SimulatedCrash):
+    with (
+        release.release_lock(target),
+        pytest.raises(SimulatedCrash, match="process stopped after journal installation"),
+    ):
         release.commit_release(target, stage, new)
 
     monkeypatch.setattr(
@@ -775,7 +782,7 @@ def test_first_build_abort_after_stage_removal_finishes_after_restart(tmp_path, 
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after stage removal"),
     )
-    with pytest.raises(SimulatedCrash):
+    with pytest.raises(SimulatedCrash, match="process stopped after stage removal"):
         release.recover_release(target)
 
     _assert_interrupted_first_build_kept_journal(target, stage)
@@ -795,7 +802,10 @@ def test_recovery_replaces_a_stale_owned_journal_temporary(tmp_path, monkeypatch
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after journal installation"),
     )
-    with release.release_lock(target), pytest.raises(SimulatedCrash):
+    with (
+        release.release_lock(target),
+        pytest.raises(SimulatedCrash, match="process stopped after journal installation"),
+    ):
         release.commit_release(target, stage, new)
 
     transaction_id = stage.name.rsplit("-", 1)[-1]
@@ -826,7 +836,7 @@ def test_each_promotion_directory_fsync_recovers_to_one_complete_inventory(
         try:
             release.commit_release(target, stage, new)
         except OSError as error:
-            assert f"promotion directory fsync {failed_boundary}" in str(error)
+            assert str(error) == f"injected promotion directory fsync {failed_boundary}"
 
     monkeypatch.setattr(release, "fsync_directory", original)
     _recover_twice(target)
@@ -853,7 +863,10 @@ def test_crash_at_each_promotion_rename_recovers_twice_to_a_complete_release(
             raise SimulatedCrash("process stopped after directory rename")
 
     monkeypatch.setattr(release, "_rename_directory", crash)
-    with release.release_lock(target), pytest.raises(SimulatedCrash):
+    with (
+        release.release_lock(target),
+        pytest.raises(SimulatedCrash, match="process stopped after directory rename"),
+    ):
         release.commit_release(target, stage, new)
 
     monkeypatch.setattr(release, "_rename_directory", original)
@@ -974,7 +987,10 @@ def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after journal installation"),
     )
-    with release.release_lock(target), pytest.raises(SimulatedCrash):
+    with (
+        release.release_lock(target),
+        pytest.raises(SimulatedCrash, match="process stopped after journal installation"),
+    ):
         release.commit_release(target, stage, new)
     monkeypatch.setattr(release, "fsync_directory", original_fsync_directory)
 
@@ -988,7 +1004,7 @@ def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_
         original_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(release.shutil, "rmtree", stop_during_stage_cleanup)
-    with pytest.raises(SimulatedCrash):
+    with pytest.raises(SimulatedCrash, match="process stopped during stage cleanup"):
         release.recover_release(target)
 
     _assert_partial_stage_cleanup_kept_journal(target, stage, old)
@@ -1011,7 +1027,10 @@ def test_recovery_rejects_a_hash_mismatch_without_deleting_candidates(tmp_path, 
             raise SimulatedCrash("process stopped after backup rename")
 
     monkeypatch.setattr(release, "_rename_directory", crash_after_backup)
-    with release.release_lock(target), pytest.raises(SimulatedCrash):
+    with (
+        release.release_lock(target),
+        pytest.raises(SimulatedCrash, match="process stopped after backup rename"),
+    ):
         release.commit_release(target, stage, new)
     monkeypatch.setattr(release, "_rename_directory", original)
 

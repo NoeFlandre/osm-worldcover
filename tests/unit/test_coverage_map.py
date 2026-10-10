@@ -264,7 +264,7 @@ class TestLandOutline:
             raise KeyError("bug")
 
         monkeypatch.setattr(coverage_map.gpd, "read_file", explode)
-        with pytest.raises(KeyError):
+        with pytest.raises(KeyError, match="bug"):
             coverage_map._load_land()
 
     def test_an_empty_outline_is_refused(self, monkeypatch) -> None:

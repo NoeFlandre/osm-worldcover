@@ -1,10 +1,12 @@
 """Manifest assembly."""
 
 import json
+import re
 
 import pytest
 
 from osm_worldcover.domain.manifest import DatasetCounts, GeographicCoverage, build
+from osm_worldcover.domain.nomenclature import UnknownLandCoverCodeError
 
 
 @pytest.fixture
@@ -75,8 +77,9 @@ def test_manifest_is_deterministic(counts) -> None:
 
 def test_an_unknown_class_code_is_refused(counts) -> None:
     counts.class_distribution = {999: 1}
-    with pytest.raises(KeyError):
+    with pytest.raises(UnknownLandCoverCodeError) as raised:
         build(counts, settings={})
+    assert raised.value.args == (999,)
 
 
 def test_empty_dataset_reports_zero_without_dividing_by_zero(counts) -> None:
@@ -190,7 +193,7 @@ def test_an_unspecified_language_is_null_not_the_word_none(counts) -> None:
     languages = build(counts, settings={})["language_distribution"]
     unspecified = next(entry for entry in languages if entry["language"] is None)
     assert unspecified["examples"] == 90
-    assert "None" not in {str(entry["language"]) for entry in languages if entry["language"]}
+    assert {entry["language"] for entry in languages if entry["language"]} == {"en"}
 
 
 def test_an_unspecified_language_still_sorts_by_count(counts) -> None:
@@ -227,10 +230,16 @@ def test_shares_are_zero_when_there_are_no_examples(counts) -> None:
     assert manifest["language_distribution"][0]["share"] == 0.0
 
 
-@pytest.mark.parametrize("bbox", [(1.0, 2.0, 3.0), (1.0, 2.0, 3.0, 4.0, 5.0)])
-def test_a_bbox_must_have_exactly_four_edges(counts, bbox) -> None:
+@pytest.mark.parametrize(
+    ("bbox", "message"),
+    [
+        ((1.0, 2.0, 3.0), "zip() argument 2 is shorter than argument 1"),
+        ((1.0, 2.0, 3.0, 4.0, 5.0), "zip() argument 2 is longer than argument 1"),
+    ],
+)
+def test_a_bbox_must_have_exactly_four_edges(counts, bbox, message) -> None:
     counts.coverage = GeographicCoverage(h3_cells=1, bbox=bbox, regions=1)  # ty: ignore[invalid-argument-type]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(message)):
         build(counts, settings={})
 
 

@@ -1,5 +1,7 @@
 """Dominant-class decision over per-class intersected areas."""
 
+import re
+
 import pytest
 
 from osm_worldcover.domain.dominance import (
@@ -89,14 +91,17 @@ def test_default_threshold_is_the_specified_eighty_percent() -> None:
 
 @pytest.mark.parametrize("bad", [-0.1, 0.0, 1.1])
 def test_threshold_must_be_in_the_unit_interval(bad: float) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=re.escape(f"threshold must be in (0, 1], got {bad!r}")):
         decide({10: 10.0}, polygon_area=100.0, threshold=bad)
 
 
 def test_coverage_exceeding_the_polygon_is_a_loud_error() -> None:
     """A pixel belongs to exactly one class, so areas summing past the polygon
     is an upstream bug (double-counted coverage) and must not be clamped away."""
-    with pytest.raises(OverlappingCoverageError):
+    with pytest.raises(
+        OverlappingCoverageError,
+        match=re.escape("intersected areas sum to 120.0, exceeding polygon area 100.0"),
+    ):
         decide({10: 60.0, 50: 60.0}, polygon_area=100.0, threshold=0.8)
 
 
@@ -106,7 +111,10 @@ def test_small_float_overshoot_is_tolerated_not_raised() -> None:
 
 
 def test_class_fractions_also_guards_overlapping_coverage() -> None:
-    with pytest.raises(OverlappingCoverageError):
+    with pytest.raises(
+        OverlappingCoverageError,
+        match=re.escape("intersected areas sum to 120.0, exceeding polygon area 100.0"),
+    ):
         class_fractions({10: 60.0, 50: 60.0}, polygon_area=100.0)
 
 
@@ -146,7 +154,10 @@ class TestClassFractionsBoundaries:
 
     def test_coverage_just_past_the_tolerance_raises(self) -> None:
         total = 100.0 * (1.0 + COVERAGE_TOLERANCE) * 1.0001
-        with pytest.raises(OverlappingCoverageError):
+        with pytest.raises(
+            OverlappingCoverageError,
+            match=re.escape(f"intersected areas sum to {total!r}, exceeding polygon area 100.0"),
+        ):
             class_fractions({10: total}, polygon_area=100.0)
 
 
