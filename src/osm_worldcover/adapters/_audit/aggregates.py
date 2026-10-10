@@ -1,7 +1,6 @@
 from typing import Final
 
-import duckdb
-
+from osm_worldcover.adapters._duckdb import session
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
 from osm_worldcover.domain.text_diagnostics import group_counts_sql, retained_text_counts
 
@@ -13,18 +12,11 @@ _AUDIT_MEMORY_LIMIT: Final = "256MB"
 
 
 def check_aggregates(paths, hashes, scratch, manifest, checks, strict_text_leakage):
-    connection = duckdb.connect()
-    try:
-        connection.execute(f"SET memory_limit = '{_AUDIT_MEMORY_LIMIT}'")
-        connection.execute("SET threads = 2")
-        connection.execute("SET preserve_insertion_order = false")
-        connection.execute("SET temp_directory = ?", [str(scratch / "spill")])
+    with session(_AUDIT_MEMORY_LIMIT, scratch / "spill") as connection:
         connection.read_parquet([str(path) for path in paths]).create_view("release")
         connection.read_parquet(str(hashes)).create_view("hashes")
         _check_global(connection, checks, strict_text_leakage)
         _check_manifest(connection, manifest, checks)
-    finally:
-        connection.close()
 
 
 def _sql_problem(connection, checks, code, query, warning=False) -> None:

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Final
 import pandas as pd
 import pyarrow.parquet as pq
 
+from osm_worldcover.adapters._duckdb import open_session
 from osm_worldcover.adapters.sql import sql_literal
 from osm_worldcover.adapters.writer import write_batches, write_manifest
 from osm_worldcover.config import Config
@@ -321,15 +322,9 @@ def _deduplicate(enriched: Path) -> tuple[DuckDBPyConnection, dict[str, int], di
     Every ordering is fully specified, so no survivor depends on the order
     files happened to be read in.
     """
-    import duckdb
-
     source = sql_literal(str(enriched / "*.parquet"))
-    connection = duckdb.connect()
+    connection = open_session(_DEDUP_MEMORY_LIMIT, enriched.parent / "duckdb-spill")
     try:
-        connection.execute(f"SET memory_limit = '{_DEDUP_MEMORY_LIMIT}'")
-        connection.execute("SET threads = 2")
-        connection.execute("SET preserve_insertion_order = false")
-        connection.execute("SET temp_directory = ?", [str(enriched.parent / "duckdb-spill")])
         before = _count(connection, f"SELECT count(*) FROM read_parquet({source})")
 
         # One region per OSM object, so an object cannot wear two polygon_ids.

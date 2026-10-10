@@ -717,7 +717,13 @@ def test_release_audit_runs_its_aggregates_under_the_audit_memory_budget(
     assert settings["memory_limit"] == reported_setting("memory_limit", "256MB")
     assert settings["threads"] == 2
     assert settings["preserve_insertion_order"] is False
-    spill = Path(settings["temp_directory"])
+
+
+def test_release_audit_spills_inside_its_own_scratch_directory(build, opened_connections) -> None:
+    assert audit_build(build).ok
+
+    [recorder] = opened_connections
+    spill = Path(recorder.settings_at_close["temp_directory"])
     assert spill.name == "spill"
     assert spill.parent.name.startswith("owc-audit-")
 
