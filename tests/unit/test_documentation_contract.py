@@ -14,11 +14,9 @@ def _repository_root(test_path: Path) -> Path:
 
 ROOT = _repository_root(Path(__file__))
 WEBSITE_REVISION = "5c8e56a50b5679118a28aef057af002209f80a5e"
-WORKFLOW_DOCS = (
-    ROOT / "README.md",
-    ROOT / "docs/index.md",
-    ROOT / "docs/technical-debt.md",
-)
+CANONICAL_WORKFLOW_DOC = ROOT / "README.md"
+LINKING_DOCS = (ROOT / "docs/index.md", ROOT / "docs/technical-debt.md")
+README_USE_LINK = "https://github.com/NoeFlandre/osm-worldcover#use"
 REGION_COMMAND = 'uv run owc regions --source website --revision "$SOURCE_REVISION" > regions.txt'
 PARTITION_COMMAND = (
     'awk \'NF { output = "regions-" ((count++ % 2) ? "b" : "a") '
@@ -63,13 +61,20 @@ def test_documentation_root_escapes_mutmut_staging_directory() -> None:
     assert _repository_root(staged_test) == Path("/checkout")
 
 
-@pytest.mark.parametrize("path", WORKFLOW_DOCS)
-def test_split_workflow_creates_region_files_before_consuming_them(path: Path) -> None:
-    """Every documented split run must show its deterministic partition step."""
-    _assert_split_commands_are_in_order(_workflow(path))
+def test_split_workflow_creates_region_files_before_consuming_them() -> None:
+    """The canonical split run must show its deterministic partition step."""
+    _assert_split_commands_are_in_order(_workflow(CANONICAL_WORKFLOW_DOC))
 
 
-def test_technical_debt_workflow_pins_every_build_and_assemble_command() -> None:
-    """Technical-debt examples must remain reproducible at the pinned website head."""
-    workflow = _workflow(ROOT / "docs/technical-debt.md")
+def test_canonical_split_workflow_pins_every_build_and_assemble_command() -> None:
+    """The canonical split run must remain reproducible at the pinned website head."""
+    workflow = _workflow(CANONICAL_WORKFLOW_DOC)
     _assert_build_commands_are_pinned(_pinned_build_commands(workflow))
+
+
+@pytest.mark.parametrize("path", LINKING_DOCS)
+def test_other_docs_link_to_the_canonical_workflow_instead_of_copying_it(path: Path) -> None:
+    """Only the README holds the split run; other pages link to its Use section."""
+    text = path.read_text()
+    assert README_USE_LINK in text
+    assert "regions-a.txt" not in text
