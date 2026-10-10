@@ -1668,3 +1668,12 @@ def test_load_manifest_reports_the_json_error_for_unparseable_text(build) -> Non
     assert checks.samples["missing_or_invalid_manifest"] == [
         "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
     ]
+
+
+def test_a_list_in_place_of_the_length_counters_is_rejected_by_its_type_guard() -> None:
+    # The list's keys match the expected length names, so only the isinstance guard
+    # rejects it. Without the guard, the next check reads .values() and raises
+    # AttributeError, which surfaces as a different message.
+    manifest = _completion_manifest()
+    _analysis(duplicate_records_removed_by_text_words=[*DIGITS, "10+"])(manifest)
+    assert _ledger_problems(manifest) == ["invalid duplicate-record length counters"]

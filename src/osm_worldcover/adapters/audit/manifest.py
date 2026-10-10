@@ -14,7 +14,8 @@ from .schema import _PROVENANCE
 
 def _load_manifest(build_dir: Path, checks: _Checks) -> dict[str, Any] | None:
     try:
-        manifest = json.loads((build_dir / "manifest.json").read_text())  # pragma: no mutate
+        text = (build_dir / "manifest.json").read_text()  # pragma: no mutate
+        manifest = json.loads(text)
     except (OSError, ValueError) as error:
         checks.add("missing_or_invalid_manifest", error)
         return None

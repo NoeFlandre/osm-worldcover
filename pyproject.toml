@@ -81,14 +81,18 @@ branch = true
 
 [tool.mutmut]
 # Mutation testing runs over src/osm_worldcover and scripts, minus the do_not_mutate
-# entries below. The audit modules are mutated in full, with two kinds of exception:
-# a `# pragma: no mutate` marker on the single line that opens or writes a file
-# (rows.py, manifest.py), and a `# pragma: no mutate block` marker on two functions
-# whose bodies only open a file or DuckDB session and delegate, with no decisions of
-# their own (rows.scan_rows, sql.check_aggregates).
+# entries below. In the audit package, audit/card.py is excluded (see its entry).
+# The other audit modules are mutated except for `# pragma: no mutate` markers:
+# a line marker on each line that opens, reads or writes a file (rows.py, manifest.py),
+# and a block marker on rows.scan_rows and sql.check_aggregates, whose bodies only
+# open a file or DuckDB session and delegate, with no decisions of their own.
 source_paths = ["src/osm_worldcover", "scripts"]
 do_not_mutate = [
-    # Audit card checks: string literals are the card's wording and asset names, not logic.
+    # audit/card.py is excluded pending a review of its release-gate branches, which are
+    # not only wording: _check_card (the configs and license comparisons), the substring
+    # tests in _check_card_provenance and _check_card_map_text, the PNG signature check in
+    # _check_card_map_file, the singular/plural branch in _card_code_group_present, and the
+    # `if revision and` guard in _check_card_assembly_revision. Its mutation score is not measured.
     "*/adapters/audit/card.py",
     "*/adapters/coverage_map.py",
     "*/adapters/hub.py",
