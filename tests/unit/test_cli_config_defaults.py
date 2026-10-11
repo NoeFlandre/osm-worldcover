@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 import typer.main
 
-from osm_worldcover.cli import _build_config, app
+from osm_worldcover import cli
+from osm_worldcover.cli import app
 from osm_worldcover.config import Config
 
 
@@ -39,8 +40,15 @@ def test_verify_threshold_defaults_to_the_manifest_then_config() -> None:
 
 
 def test_effective_defaults_are_unchanged() -> None:
-    config = _build_config(
-        "wikidata", Path("data/out"), Path("data/cache"), 0.8, 10_000.0, 8, None, "1.1.0"
+    config = Config.from_cli(
+        source="wikidata",
+        out_dir=Path("data/out"),
+        cache_dir=Path("data/cache"),
+        threshold=0.8,
+        max_area_km2=10_000.0,
+        cached_tiles=8,
+        source_revision=None,
+        dataset_version="1.1.0",
     )
 
     assert config == Config()
@@ -55,6 +63,29 @@ def test_from_cli_converts_square_kilometres_to_square_metres() -> None:
     config = Config.from_cli(max_area_km2=2.5, threshold=0.9)
 
     assert (config.max_polygon_area_m2, config.threshold) == (2_500_000.0, 0.9)
+
+
+def test_unverified_assembly_with_no_options_uses_config_defaults(tmp_path, monkeypatch) -> None:
+    captured: dict[str, Config] = {}
+
+    def fake_finalize(shard_dir, config, work_dir, out_dir, rejections=None, processing=None):
+        captured["config"] = config
+
+    monkeypatch.setattr(cli, "finalize_shards", fake_finalize)
+    options = cli.AssembleOptions(
+        out=Config().out_dir,
+        work=tmp_path / "work",
+        source=None,
+        threshold=None,
+        revision=None,
+        dataset_version=None,
+        legacy_code_revision=None,
+        allow_unverified=True,
+    )
+
+    cli._assemble_unverified([tmp_path / "shard"], options)
+
+    assert captured["config"] == Config()
 
 
 def test_assemble_defaults_derive_from_config_and_are_unchanged() -> None:
