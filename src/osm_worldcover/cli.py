@@ -131,8 +131,15 @@ def build(
 ) -> None:
     """Build the dataset and write it to disk."""
     _enable_verbose_logging(verbose)
-    config = _build_config(
-        source, out, cache, threshold, max_area_km2, cached_tiles, revision, dataset_version
+    config = Config.from_cli(
+        source=source,
+        out_dir=out,
+        cache_dir=cache,
+        threshold=threshold,
+        max_area_km2=max_area_km2,
+        cached_tiles=cached_tiles,
+        source_revision=revision,
+        dataset_version=dataset_version,
     )
     regions = list(region or []) + _read_regions(regions_file)
     logger.info(
@@ -262,16 +269,12 @@ def _assemble_unverified(shard_dirs: list[Path], options: AssembleOptions) -> St
         "are unproven. This output is not publishable.",
         err=True,
     )
-    config = Config(
-        source=options.source if options.source is not None else DEFAULT_SOURCE,
+    config = Config().with_overrides(
+        source=options.source,
         out_dir=options.out,
-        threshold=options.threshold if options.threshold is not None else DEFAULT_THRESHOLD,
+        threshold=options.threshold,
         source_revision=options.revision,
-        dataset_version=(
-            options.dataset_version
-            if options.dataset_version is not None
-            else DEFAULT_DATASET_VERSION
-        ),
+        dataset_version=options.dataset_version,
     )
     combined = _gather(shard_dirs, options.work)
     return finalize_shards(
@@ -318,29 +321,6 @@ def _assemble_verified(shard_dirs: list[Path], options: AssembleOptions) -> Stre
         options.out,
         inputs.rejections,
         processing=inputs.processing,
-    )
-
-
-def _build_config(
-    source: str,
-    out: Path,
-    cache: Path,
-    threshold: float,
-    max_area_km2: float,
-    cached_tiles: int,
-    revision: str | None,
-    dataset_version: str,
-) -> Config:
-    """Gather the CLI's options into one settings object."""
-    return Config.from_cli(
-        source=source,
-        out_dir=out,
-        cache_dir=cache,
-        threshold=threshold,
-        max_area_km2=max_area_km2,
-        cached_tiles=cached_tiles,
-        source_revision=revision,
-        dataset_version=dataset_version,
     )
 
 
