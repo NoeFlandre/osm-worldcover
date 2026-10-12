@@ -362,7 +362,7 @@ def _raster_report(selected: list[dict[str, Any]], mutants: list[dict[str, Any]]
     """Build the stable report for changed raster mutations."""
     counts = Counter(item["function"] for item in selected)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_paths": list(RASTER_SOURCES),
         "changed_functions": list(RASTER_FUNCTIONS),
         "mutants_total": len(selected),
