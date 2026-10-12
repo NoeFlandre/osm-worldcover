@@ -3,8 +3,9 @@ import os
 
 import pytest
 
-import osm_worldcover.release_commit as release
+import osm_worldcover.release as release
 from osm_worldcover.config import Config
+from osm_worldcover.release import durability as durability_module
 
 
 @pytest.mark.parametrize("version", ["", "..", ".hidden", "../escape", "a/b", "v 1", "x\\y"])
@@ -28,7 +29,7 @@ def test_flush_uses_full_sync_when_the_platform_has_it(tmp_path, monkeypatch):
 
     descriptor = os.open(path, os.O_RDONLY)
     try:
-        release._flush_to_media(descriptor)
+        durability_module._flush_to_media(descriptor)
     finally:
         os.close(descriptor)
 
@@ -49,7 +50,7 @@ def test_flush_falls_back_to_fsync_when_full_sync_is_refused(tmp_path, monkeypat
 
     descriptor = os.open(path, os.O_RDONLY)
     try:
-        release._flush_to_media(descriptor)
+        durability_module._flush_to_media(descriptor)
     finally:
         os.close(descriptor)
 

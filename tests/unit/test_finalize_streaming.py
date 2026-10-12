@@ -25,6 +25,30 @@ from osm_worldcover.finalize import (
     _write_splits,
     finalize_shards,
 )
+from osm_worldcover.release import commit as commit_module
+from osm_worldcover.release import durability as durability_module
+from osm_worldcover.release import inventory as inventory_module
+from osm_worldcover.release import journal as journal_module
+from osm_worldcover.release import locks as locks_module
+from osm_worldcover.release import paths as paths_module
+from osm_worldcover.release import recovery as recovery_module
+
+RELEASE_MODULES = (
+    commit_module,
+    durability_module,
+    inventory_module,
+    journal_module,
+    locks_module,
+    paths_module,
+    recovery_module,
+)
+
+
+def _patch_release_name(monkeypatch, name, replacement):
+    """Patch a release name in every release module that binds it."""
+    for module in RELEASE_MODULES:
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, replacement)
 
 
 def written(result) -> pd.DataFrame:
@@ -35,10 +59,8 @@ def written(result) -> pd.DataFrame:
 
 @pytest.fixture(autouse=True)
 def fast_release_fsyncs(monkeypatch):
-    import osm_worldcover.release_commit as release
-
-    monkeypatch.setattr(release, "fsync_file", lambda _path: None)
-    monkeypatch.setattr(release, "fsync_directory", lambda _path: None)
+    _patch_release_name(monkeypatch, "fsync_file", lambda _path: None)
+    _patch_release_name(monkeypatch, "fsync_directory", lambda _path: None)
 
 
 TEXT = " ".join(["word"] * 30)
@@ -128,7 +150,7 @@ def _assert_empty_result(result):
 
 
 def _assert_release_recovered_and_clean(target, before, out):
-    import osm_worldcover.release_commit as release
+    import osm_worldcover.release as release
 
     assert release.inventory_release(target) == before
     assert not list(out.glob(f".{target.name}.stage-*"))
@@ -148,7 +170,7 @@ def _assert_old_release_unchanged_and_unstaged(target, before, out):
 
 
 def _recover_twice_and_assert_snapshot(target, before):
-    import osm_worldcover.release_commit as release
+    import osm_worldcover.release as release
 
     release.recover_release(target)
     release.recover_release(target)
@@ -1017,21 +1039,21 @@ def test_finalize_shards_accepts_a_symlinked_output_directory(shards, tmp_path):
 def test_empty_rerun_recovers_an_interrupted_promotion_before_counting_rows(
     shards, tmp_path, monkeypatch
 ) -> None:
-    import osm_worldcover.release_commit as release
+    import osm_worldcover.release as release
 
     shard(shards / "first.parquet", n=3)
     out = tmp_path / "out"
     target = out / f"v{Config().dataset_version}"
     finalize_shards(shards, Config(), tmp_path / "work", out)
     before = release.inventory_release(target)
-    original = release._rename_directory
+    original = paths_module._rename_directory
 
     def stop_after_backup(source, destination):
         original(source, destination)
         if source == target:
             raise SystemExit("simulated process interruption")
 
-    monkeypatch.setattr(release, "_rename_directory", stop_after_backup)
+    _patch_release_name(monkeypatch, "_rename_directory", stop_after_backup)
     with release.release_lock(target):
         stage = release.create_stage(target)
         for name in release.CORE_FILES:
@@ -1039,7 +1061,7 @@ def test_empty_rerun_recovers_an_interrupted_promotion_before_counting_rows(
         new = release.stage_inventory(stage)
         with pytest.raises(SystemExit, match="simulated process interruption"):
             release.commit_release(target, stage, new)
-    monkeypatch.setattr(release, "_rename_directory", original)
+    _patch_release_name(monkeypatch, "_rename_directory", original)
 
     _clear_shards(shards)
     result = finalize_shards(shards, Config(), tmp_path / "work", out)
@@ -1094,7 +1116,7 @@ def test_failed_split_write_never_changes_the_previous_release(
     with pytest.raises(OSError, match="injected split write interruption"):
         finalize_shards(shards, Config(), tmp_path / "work", out)
 
-    import osm_worldcover.release_commit as release
+    import osm_worldcover.release as release
 
     release.recover_release(target)
     release.recover_release(target)
@@ -1123,7 +1145,7 @@ def test_failed_manifest_write_never_changes_the_previous_release(
     with pytest.raises(OSError, match="injected manifest write interruption"):
         finalize_shards(shards, Config(), tmp_path / "work", out)
 
-    import osm_worldcover.release_commit as release
+    import osm_worldcover.release as release
 
     release.recover_release(target)
     release.recover_release(target)

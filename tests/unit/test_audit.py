@@ -25,7 +25,7 @@ from osm_worldcover.adapters.audit.sql import check_aggregates
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
 from osm_worldcover.domain.splits import assign_cell
-from osm_worldcover.release_commit import release_lock
+from osm_worldcover.release import release_lock
 
 SPLITS = ("train", "validation", "test")
 SETTINGS = {

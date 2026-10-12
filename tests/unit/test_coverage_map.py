@@ -17,7 +17,7 @@ from osm_worldcover.adapters.coverage_map import (
     write_coverage_map,
 )
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
-from osm_worldcover.release_commit import release_lock
+from osm_worldcover.release import release_lock
 
 _COLUMNS = [
     "polygon_id",

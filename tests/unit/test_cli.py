@@ -20,7 +20,7 @@ from osm_worldcover.config import Config
 from osm_worldcover.domain.validation import Check, ValidationReport, Violation
 from osm_worldcover.finalize import StreamedBuild
 from osm_worldcover.pipeline import RegionOutcome
-from osm_worldcover.release_commit import release_lock
+from osm_worldcover.release import release_lock
 
 runner = CliRunner()
 
