@@ -192,13 +192,20 @@ def test_crap_gate_reports_a_clean_single_score(monkeypatch, tmp_path, capsys) -
 
 def _mutation_records(statuses):
     records = []
+    module = (
+        Path(mutation_score.RASTER_SOURCES[0])
+        .with_suffix("")
+        .as_posix()
+        .removeprefix("src/")
+        .replace("/", ".")
+    )
     for index, status in enumerate(statuses, start=1):
         function = "_add_raster"
-        mangled = f"osm_worldcover.adapters.worldcover.x_{function}"
+        mangled = f"{module}.x_{function}"
         records.append(
             {
                 "name": f"{mangled}__mutmut_{index}",
-                "path": mutation_score.RASTER_SOURCE,
+                "path": mutation_score.RASTER_SOURCES[0],
                 "function": function,
                 "class": None,
                 "mangled_function": mangled,
@@ -219,10 +226,15 @@ def _mutmut_export(records):
 
 
 def _valid_mutation_baseline(git_sha):
+    module = (
+        Path(mutation_score.RASTER_SOURCES[0])
+        .with_suffix("")
+        .as_posix()
+        .removeprefix("src/")
+        .replace("/", ".")
+    )
     return {
-        "tests_by_mangled_function_name": {
-            "osm_worldcover.adapters.worldcover.x__add_raster": ["test_raster_chunking"]
-        },
+        "tests_by_mangled_function_name": {f"{module}.x__add_raster": ["test_raster_chunking"]},
         "duration_by_test": {},
         "stats_time": 1.0,
         "function_hashes": {},
@@ -339,7 +351,7 @@ def test_mutation_report_writes_per_file_scores(tmp_path, monkeypatch) -> None:
 
     assert mutation_score.main() == 0
     report = json.loads((tmp_path / "mutants" / "mutation-score.json").read_text(encoding="utf-8"))
-    raster = report["per_file"][mutation_score.RASTER_SOURCE]
+    raster = report["per_file"][mutation_score.RASTER_SOURCES[0]]
 
     assert raster["total"] == report["summary"]["total"] == 10
     assert raster["confirmed_kill_score"] == pytest.approx(0.8)
@@ -513,6 +525,8 @@ def test_raster_report_records_tests_and_diff_for_nonkilled_mutants(tmp_path, mo
 
     report = mutation_score._raster_evidence(records, baseline)
 
+    assert report["schema_version"] == 2
+    assert report["source_paths"] == list(mutation_score.RASTER_SOURCES)
     assert (
         report["mutants_total"],
         report["outcomes"],

@@ -14,7 +14,7 @@ def test_clipping_keeps_only_areal_pieces_for_exactextract():
         ]
     )
 
-    chunks = list(worldcover._bounded_pixel_chunks(touching, 8, 4))
+    chunks = list(worldcover.geometry._bounded_pixel_chunks(touching, 8, 4))
 
     assert chunks
     assert {chunk.geom_type for chunk in chunks} <= {"Polygon", "MultiPolygon"}

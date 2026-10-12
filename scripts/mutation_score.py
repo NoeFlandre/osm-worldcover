@@ -27,7 +27,10 @@ BASELINE = MUTANTS / "mutmut-stats.json"
 STATS = MUTANTS / "mutmut-cicd-stats.json"
 SCORE_REPORT = MUTANTS / "mutation-score.json"
 RASTER_REPORT = MUTANTS / "worldcover-raster-mutants.json"
-RASTER_SOURCE = "src/osm_worldcover/adapters/worldcover.py"
+RASTER_SOURCES = (
+    "src/osm_worldcover/adapters/worldcover/extract.py",
+    "src/osm_worldcover/adapters/worldcover/geometry.py",
+)
 RASTER_FUNCTIONS = (
     "_add_raster",
     "_partition_feature_batch",
@@ -324,7 +327,7 @@ def _raster_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         record
         for record in records
-        if record["path"] == RASTER_SOURCE and record["function"] in RASTER_FUNCTIONS
+        if record["path"] in RASTER_SOURCES and record["function"] in RASTER_FUNCTIONS
     ]
 
 
@@ -359,8 +362,8 @@ def _raster_report(selected: list[dict[str, Any]], mutants: list[dict[str, Any]]
     """Build the stable report for changed raster mutations."""
     counts = Counter(item["function"] for item in selected)
     return {
-        "schema_version": 1,
-        "source_path": RASTER_SOURCE,
+        "schema_version": 2,
+        "source_paths": list(RASTER_SOURCES),
         "changed_functions": list(RASTER_FUNCTIONS),
         "mutants_total": len(selected),
         "mutants_by_function": {name: counts[name] for name in RASTER_FUNCTIONS},
