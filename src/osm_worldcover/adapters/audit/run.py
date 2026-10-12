@@ -3,7 +3,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from osm_worldcover.release_commit import release_read_lock
+from osm_worldcover.release import release_read_lock
 
 from .card import _check_card
 from .manifest import _check_completion, _check_settings, _load_manifest

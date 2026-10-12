@@ -13,7 +13,7 @@ from osm_worldcover.adapters.writer import (
     write_batches,
     write_manifest,
 )
-from osm_worldcover.release_commit import release_lock
+from osm_worldcover.release import release_lock
 
 
 def reader(n: int = 3, max_chunksize: int = 2) -> pa.RecordBatchReader:

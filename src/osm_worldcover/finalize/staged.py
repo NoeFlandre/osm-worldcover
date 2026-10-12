@@ -9,7 +9,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
-from osm_worldcover.release_commit import ReleaseCommitError
+from osm_worldcover.release import ReleaseCommitError
 
 
 def _validate_staged_manifest(

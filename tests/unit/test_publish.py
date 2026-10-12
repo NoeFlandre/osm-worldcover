@@ -27,7 +27,7 @@ from osm_worldcover.adapters.publish import (
 from osm_worldcover.config import Config
 from osm_worldcover.domain.splits import assign_cell
 from osm_worldcover.pipeline import RegionOutcome
-from osm_worldcover.release_commit import release_lock
+from osm_worldcover.release import release_lock
 
 CONFIG = Config(source="description", source_revision="a" * 40, min_words=10)
 SETTINGS = CONFIG.as_manifest_settings()

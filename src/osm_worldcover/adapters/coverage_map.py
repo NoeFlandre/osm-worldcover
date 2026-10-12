@@ -11,7 +11,7 @@ from pyogrio.errors import DataSourceError
 from osm_worldcover.adapters.sql import sql_literal
 from osm_worldcover.domain.manifest import SPLIT_ORDER
 from osm_worldcover.domain.nomenclature import CLASS_LABELS
-from osm_worldcover.release_commit import release_read_lock, release_write_lock
+from osm_worldcover.release import release_read_lock, release_write_lock
 
 __all__ = [
     "CLASS_COLORS",

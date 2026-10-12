@@ -8,16 +8,40 @@ from types import SimpleNamespace
 
 import pytest
 
-import osm_worldcover.release_commit as release
+import osm_worldcover.release as release
 from osm_worldcover.adapters import writer as writer_adapter
+from osm_worldcover.release import commit as commit_module
+from osm_worldcover.release import durability as durability_module
+from osm_worldcover.release import inventory as inventory_module
+from osm_worldcover.release import journal as journal_module
+from osm_worldcover.release import locks as locks_module
+from osm_worldcover.release import paths as paths_module
+from osm_worldcover.release import recovery as recovery_module
+
+RELEASE_MODULES = (
+    commit_module,
+    durability_module,
+    inventory_module,
+    journal_module,
+    locks_module,
+    paths_module,
+    recovery_module,
+)
+
+
+def _patch_release_name(monkeypatch, name, replacement):
+    """Patch a release name in every release module that binds it."""
+    for module in RELEASE_MODULES:
+        if hasattr(module, name):
+            monkeypatch.setattr(module, name, replacement)
 
 
 @pytest.fixture(autouse=True)
 def fast_successful_fsyncs(monkeypatch, request):
     if "real_release_fsync" in request.fixturenames:
         return
-    monkeypatch.setattr(release, "fsync_file", lambda _path: None)
-    monkeypatch.setattr(release, "fsync_directory", lambda _path: None)
+    _patch_release_name(monkeypatch, "fsync_file", lambda _path: None)
+    _patch_release_name(monkeypatch, "fsync_directory", lambda _path: None)
 
 
 @pytest.fixture
@@ -30,7 +54,7 @@ class SimulatedCrash(BaseException):
 
 
 def _crash_at_parent_sync(target, boundary, message):
-    original = release.fsync_directory
+    original = durability_module.fsync_directory
     calls = 0
 
     def interrupt(path):
@@ -45,7 +69,7 @@ def _crash_at_parent_sync(target, boundary, message):
 
 
 def _fail_once_at_parent_sync(target, boundary):
-    original = release.fsync_directory
+    original = durability_module.fsync_directory
     calls = 0
 
     def fail_once(path):
@@ -95,7 +119,7 @@ def _recover_twice(target):
 
 
 def _pause_after_backup(target, promotion_gap, continue_promotion, rename_calls):
-    original_rename = release._rename_directory
+    original_rename = paths_module._rename_directory
 
     def pause(source, destination):
         source = Path(source)
@@ -118,7 +142,7 @@ def _promote_release(target, promotion_errors):
             (stage / "manifest.json").write_text('{"generation": "new"}')
             new = release.stage_inventory(stage)
             assert target.is_dir()
-            current = release._inventory_if_present(target)
+            current = inventory_module._inventory_if_present(target)
             assert {entry.name for entry in current.files} == set(release.CORE_FILES)
             release.commit_release(target, stage, new)
     except BaseException as error:
@@ -308,21 +332,21 @@ def test_unrecorded_auxiliary_file_does_not_match_a_new_transaction_target(tmp_p
 
     (target / "audit.json").write_text("unexpected during recovery")
 
-    assert not release._target_matches_new(target, expected)
+    assert not inventory_module._target_matches_new(target, expected)
 
 
 def test_failed_promotion_restores_arbitrary_auxiliary_files(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     old = _release(target, "old", sidecars=("audit.json",))
     stage, new = _prepared_stage(target, "new")
-    original = release._rename_directory
+    original = paths_module._rename_directory
 
     def fail_new(source, destination):
         if source == stage:
             raise OSError("injected stage promotion failure")
         original(source, destination)
 
-    monkeypatch.setattr(release, "_rename_directory", fail_new)
+    _patch_release_name(monkeypatch, "_rename_directory", fail_new)
     with release.release_lock(target), pytest.raises(OSError, match="stage promotion"):
         release.commit_release(target, stage, new)
 
@@ -347,7 +371,7 @@ def test_release_lock_creation_respects_umask_for_shared_readers(tmp_path):
 def test_exclusive_lock_syncs_its_parent_before_entering_writer(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     events = []
-    monkeypatch.setattr(release, "fsync_directory", lambda path: events.append(Path(path)))
+    _patch_release_name(monkeypatch, "fsync_directory", lambda path: events.append(Path(path)))
 
     with release.release_lock(target):
         events.append("writer")
@@ -363,7 +387,7 @@ def test_exclusive_lock_does_not_enter_writer_when_parent_sync_fails(tmp_path, m
         assert path == target.parent
         raise OSError("injected lock parent fsync")
 
-    monkeypatch.setattr(release, "fsync_directory", fail_parent_sync)
+    _patch_release_name(monkeypatch, "fsync_directory", fail_parent_sync)
     with pytest.raises(OSError, match="lock parent fsync"), release.release_lock(target):
         entered_writer = True
 
@@ -517,8 +541,8 @@ def test_direct_read_manifest_waits_for_release_promotion(tmp_path, monkeypatch)
     reader_errors = []
     reader_values = []
     rename_calls = []
-    monkeypatch.setattr(
-        release,
+    _patch_release_name(
+        monkeypatch,
         "_rename_directory",
         _pause_after_backup(target, promotion_gap, continue_promotion, rename_calls),
     )
@@ -572,7 +596,7 @@ def test_create_stage_requires_the_exclusive_target_lock(tmp_path):
 
 def test_release_lock_reports_unsupported_platform_without_breaking_import(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
-    monkeypatch.setattr(release, "fcntl", None)
+    _patch_release_name(monkeypatch, "fcntl", None)
 
     with (
         pytest.raises(release.ReleaseCommitError, match="macOS or Linux"),
@@ -584,8 +608,8 @@ def test_release_lock_reports_unsupported_platform_without_breaking_import(tmp_p
 
 
 def test_release_lock_fails_closed_when_fcntl_cannot_import(tmp_path, monkeypatch):
-    module_name = "release_commit_without_fcntl"
-    spec = importlib.util.spec_from_file_location(module_name, release.__file__)
+    module_name = "release_locks_without_fcntl"
+    spec = importlib.util.spec_from_file_location(module_name, locks_module.__file__)
     assert spec is not None and spec.loader is not None
     isolated_release = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = isolated_release
@@ -635,7 +659,7 @@ def test_commit_flushes_the_stage_before_installing_the_journal(tmp_path, monkey
         calls.append((stage_path, parent))
         original(stage_path, parent)
 
-    monkeypatch.setattr(release, "sync_stage", observe_sync)
+    _patch_release_name(monkeypatch, "sync_stage", observe_sync)
 
     with release.release_lock(target):
         release.commit_release(target, stage, new)
@@ -651,14 +675,14 @@ def test_each_staged_file_fsync_failure_leaves_old_release_untouched(
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, _new = _prepared_stage(target, "new")
-    original = release.fsync_file
+    original = durability_module.fsync_file
 
     def fail_selected(path):
         if path.parent == stage and path.name == failed_file:
             raise OSError(f"injected file fsync: {failed_file}")
         original(path)
 
-    monkeypatch.setattr(release, "fsync_file", fail_selected)
+    _patch_release_name(monkeypatch, "fsync_file", fail_selected)
 
     with release.release_lock(target), pytest.raises(OSError, match="injected file fsync"):
         release.sync_stage(stage, target.parent)
@@ -676,7 +700,7 @@ def test_staged_directory_fsync_failure_leaves_old_release_untouched(
     with release.release_lock(target):
         stage = release.create_stage(target)
         _release(stage, "new")
-    original = release.fsync_directory
+    original = durability_module.fsync_directory
 
     def fail_selected(path):
         if path == (stage if failed_directory == "stage" else target.parent):
@@ -684,7 +708,7 @@ def test_staged_directory_fsync_failure_leaves_old_release_untouched(
         original(path)
 
     with release.release_lock(target):
-        monkeypatch.setattr(release, "fsync_directory", fail_selected)
+        _patch_release_name(monkeypatch, "fsync_directory", fail_selected)
         with pytest.raises(OSError, match="injected directory fsync"):
             release.sync_stage(stage, target.parent)
 
@@ -696,19 +720,19 @@ def test_journal_file_fsync_failure_is_recovered_twice(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release.fsync_file
+    original = durability_module.fsync_file
 
     def fail_journal(path):
         if path.name.endswith(".transaction.json." + stage.name.rsplit("-", 1)[-1] + ".tmp"):
             raise OSError("injected journal file fsync")
         original(path)
 
-    monkeypatch.setattr(release, "fsync_file", fail_journal)
+    _patch_release_name(monkeypatch, "fsync_file", fail_journal)
 
     with release.release_lock(target), pytest.raises(OSError, match="journal file fsync"):
         release.commit_release(target, stage, new)
 
-    monkeypatch.setattr(release, "fsync_file", original)
+    _patch_release_name(monkeypatch, "fsync_file", original)
     _recover_twice(target)
 
     assert release.inventory_release(target) == old
@@ -719,19 +743,19 @@ def test_journal_install_failure_does_not_replace_the_old_release(tmp_path, monk
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release.os.replace
+    original = journal_module.os.replace
 
     def fail_journal(source, destination):
         if destination == target.parent / f".{target.name}.transaction.json":
             raise OSError("injected journal installation")
         original(source, destination)
 
-    monkeypatch.setattr(release.os, "replace", fail_journal)
+    monkeypatch.setattr(journal_module.os, "replace", fail_journal)
 
     with release.release_lock(target), pytest.raises(OSError, match="journal installation"):
         release.commit_release(target, stage, new)
 
-    monkeypatch.setattr(release.os, "replace", original)
+    monkeypatch.setattr(journal_module.os, "replace", original)
     _recover_twice(target)
 
     assert release.inventory_release(target) == old
@@ -743,9 +767,9 @@ def test_interrupted_journal_install_without_old_release_aborts_candidate_twice(
 ):
     target = tmp_path / "v1.0.0"
     stage, _new = _prepared_stage(target, "new")
-    original = release.fsync_directory
-    monkeypatch.setattr(
-        release,
+    original = durability_module.fsync_directory
+    _patch_release_name(
+        monkeypatch,
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "stopped after journal installation"),
     )
@@ -755,7 +779,7 @@ def test_interrupted_journal_install_without_old_release_aborts_candidate_twice(
     ):
         release.commit_release(target, stage, release.stage_inventory(stage))
 
-    monkeypatch.setattr(release, "fsync_directory", original)
+    _patch_release_name(monkeypatch, "fsync_directory", original)
     _recover_twice(target)
 
     assert not target.exists()
@@ -765,9 +789,9 @@ def test_interrupted_journal_install_without_old_release_aborts_candidate_twice(
 def test_first_build_abort_after_stage_removal_finishes_after_restart(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     stage, new = _prepared_stage(target, "new")
-    original_fsync_directory = release.fsync_directory
-    monkeypatch.setattr(
-        release,
+    original_fsync_directory = durability_module.fsync_directory
+    _patch_release_name(
+        monkeypatch,
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after journal installation"),
     )
@@ -777,8 +801,8 @@ def test_first_build_abort_after_stage_removal_finishes_after_restart(tmp_path, 
     ):
         release.commit_release(target, stage, new)
 
-    monkeypatch.setattr(
-        release,
+    _patch_release_name(
+        monkeypatch,
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after stage removal"),
     )
@@ -787,7 +811,7 @@ def test_first_build_abort_after_stage_removal_finishes_after_restart(tmp_path, 
 
     _assert_interrupted_first_build_kept_journal(target, stage)
 
-    monkeypatch.setattr(release, "fsync_directory", original_fsync_directory)
+    _patch_release_name(monkeypatch, "fsync_directory", original_fsync_directory)
     _recover_twice(target)
 
     _assert_release_absent_and_no_artifacts(target)
@@ -797,8 +821,8 @@ def test_recovery_replaces_a_stale_owned_journal_temporary(tmp_path, monkeypatch
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    monkeypatch.setattr(
-        release,
+    _patch_release_name(
+        monkeypatch,
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after journal installation"),
     )
@@ -811,7 +835,7 @@ def test_recovery_replaces_a_stale_owned_journal_temporary(tmp_path, monkeypatch
     transaction_id = stage.name.rsplit("-", 1)[-1]
     temporary = target.parent / f".{target.name}.transaction.json.{transaction_id}.tmp"
     temporary.write_text("incomplete journal update")
-    monkeypatch.setattr(release, "fsync_directory", lambda _path: None)
+    _patch_release_name(monkeypatch, "fsync_directory", lambda _path: None)
     _recover_twice(target)
 
     assert release.inventory_release(target) == old
@@ -826,9 +850,9 @@ def test_each_promotion_directory_fsync_recovers_to_one_complete_inventory(
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release.fsync_directory
-    monkeypatch.setattr(
-        release,
+    original = durability_module.fsync_directory
+    _patch_release_name(
+        monkeypatch,
         "fsync_directory",
         _fail_once_at_parent_sync(target, failed_boundary),
     )
@@ -838,7 +862,7 @@ def test_each_promotion_directory_fsync_recovers_to_one_complete_inventory(
         except OSError as error:
             assert str(error) == f"injected promotion directory fsync {failed_boundary}"
 
-    monkeypatch.setattr(release, "fsync_directory", original)
+    _patch_release_name(monkeypatch, "fsync_directory", original)
     _recover_twice(target)
     expected = old if failed_boundary <= 3 else new
 
@@ -852,7 +876,7 @@ def test_crash_at_each_promotion_rename_recovers_twice_to_a_complete_release(
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release._rename_directory
+    original = paths_module._rename_directory
 
     def crash(source, destination):
         original(source, destination)
@@ -862,14 +886,14 @@ def test_crash_at_each_promotion_rename_recovers_twice_to_a_complete_release(
         if did_crash:
             raise SimulatedCrash("process stopped after directory rename")
 
-    monkeypatch.setattr(release, "_rename_directory", crash)
+    _patch_release_name(monkeypatch, "_rename_directory", crash)
     with (
         release.release_lock(target),
         pytest.raises(SimulatedCrash, match="process stopped after directory rename"),
     ):
         release.commit_release(target, stage, new)
 
-    monkeypatch.setattr(release, "_rename_directory", original)
+    _patch_release_name(monkeypatch, "_rename_directory", original)
     _recover_twice(target)
     assert release.inventory_release(target) == (old if crash_after == "target-to-backup" else new)
     assert _transaction_artifacts(target) == set()
@@ -879,14 +903,14 @@ def test_failed_promotion_rolls_back_before_reraising(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release._rename_directory
+    original = paths_module._rename_directory
 
     def fail_new(source, destination):
         if source == stage:
             raise OSError("injected stage promotion failure")
         original(source, destination)
 
-    monkeypatch.setattr(release, "_rename_directory", fail_new)
+    _patch_release_name(monkeypatch, "_rename_directory", fail_new)
     with release.release_lock(target), pytest.raises(OSError, match="stage promotion"):
         release.commit_release(target, stage, new)
 
@@ -899,7 +923,7 @@ def test_failed_rollback_retains_all_recovery_inputs(tmp_path, monkeypatch):
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release._rename_directory
+    original = paths_module._rename_directory
 
     def fail_promotion_and_rollback(source, destination):
         if source == stage:
@@ -908,13 +932,13 @@ def test_failed_rollback_retains_all_recovery_inputs(tmp_path, monkeypatch):
             raise OSError("injected rollback failure")
         original(source, destination)
 
-    monkeypatch.setattr(release, "_rename_directory", fail_promotion_and_rollback)
+    _patch_release_name(monkeypatch, "_rename_directory", fail_promotion_and_rollback)
     with release.release_lock(target), pytest.raises(release.ReleaseCommitError, match="recovery"):
         release.commit_release(target, stage, new)
 
     _assert_failed_rollback_kept_inputs(target)
 
-    monkeypatch.setattr(release, "_rename_directory", original)
+    _patch_release_name(monkeypatch, "_rename_directory", original)
     _recover_twice(target)
 
     _assert_release_and_no_artifacts(target, old)
@@ -924,7 +948,7 @@ def test_cleanup_failure_keeps_the_committed_release_and_journal_for_retry(tmp_p
     target = tmp_path / "v1.0.0"
     _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release.shutil.rmtree
+    original = recovery_module.shutil.rmtree
     attempts = 0
 
     def fail_backup_once(path, *args, **kwargs):
@@ -935,13 +959,13 @@ def test_cleanup_failure_keeps_the_committed_release_and_journal_for_retry(tmp_p
                 raise OSError("injected backup cleanup failure")
         original(path, *args, **kwargs)
 
-    monkeypatch.setattr(release.shutil, "rmtree", fail_backup_once)
+    monkeypatch.setattr(recovery_module.shutil, "rmtree", fail_backup_once)
     with release.release_lock(target), pytest.raises(release.ReleaseCommitError, match="recovery"):
         release.commit_release(target, stage, new)
 
     _assert_cleanup_failure_kept_journal(target, new)
 
-    monkeypatch.setattr(release.shutil, "rmtree", original)
+    monkeypatch.setattr(recovery_module.shutil, "rmtree", original)
     _recover_twice(target)
 
     _assert_release_and_no_artifacts(target, new)
@@ -951,7 +975,7 @@ def test_recovery_finishes_partial_backup_cleanup_by_hashing_remaining_files(tmp
     target = tmp_path / "v1.0.0"
     old = _release(target, "old", sidecars=("README.md",))
     stage, new = _prepared_stage(target, "new")
-    original = release.shutil.rmtree
+    original = recovery_module.shutil.rmtree
     attempts = 0
 
     def partially_remove_backup(path, *args, **kwargs):
@@ -964,14 +988,14 @@ def test_recovery_finishes_partial_backup_cleanup_by_hashing_remaining_files(tmp
                 raise OSError("injected interruption during backup cleanup")
         original(path, *args, **kwargs)
 
-    monkeypatch.setattr(release.shutil, "rmtree", partially_remove_backup)
+    monkeypatch.setattr(recovery_module.shutil, "rmtree", partially_remove_backup)
     with release.release_lock(target), pytest.raises(release.ReleaseCommitError, match="recovery"):
         release.commit_release(target, stage, new)
 
     backup = next(target.parent.glob(f".{target.name}.backup-*"))
     _assert_partial_backup_cleanup_kept_journal(target, old, new, backup)
 
-    monkeypatch.setattr(release.shutil, "rmtree", original)
+    monkeypatch.setattr(recovery_module.shutil, "rmtree", original)
     _recover_twice(target)
 
     _assert_release_and_no_artifacts(target, new)
@@ -981,9 +1005,9 @@ def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original_fsync_directory = release.fsync_directory
-    monkeypatch.setattr(
-        release,
+    original_fsync_directory = durability_module.fsync_directory
+    _patch_release_name(
+        monkeypatch,
         "fsync_directory",
         _crash_at_parent_sync(target, 2, "process stopped after journal installation"),
     )
@@ -992,9 +1016,9 @@ def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_
         pytest.raises(SimulatedCrash, match="process stopped after journal installation"),
     ):
         release.commit_release(target, stage, new)
-    monkeypatch.setattr(release, "fsync_directory", original_fsync_directory)
+    _patch_release_name(monkeypatch, "fsync_directory", original_fsync_directory)
 
-    original_rmtree = release.shutil.rmtree
+    original_rmtree = recovery_module.shutil.rmtree
 
     def stop_during_stage_cleanup(path, *args, **kwargs):
         path = Path(path)
@@ -1003,13 +1027,13 @@ def test_recovery_finishes_partial_stage_cleanup_by_hashing_remaining_files(tmp_
             raise SimulatedCrash("process stopped during stage cleanup")
         original_rmtree(path, *args, **kwargs)
 
-    monkeypatch.setattr(release.shutil, "rmtree", stop_during_stage_cleanup)
+    monkeypatch.setattr(recovery_module.shutil, "rmtree", stop_during_stage_cleanup)
     with pytest.raises(SimulatedCrash, match="process stopped during stage cleanup"):
         release.recover_release(target)
 
     _assert_partial_stage_cleanup_kept_journal(target, stage, old)
 
-    monkeypatch.setattr(release.shutil, "rmtree", original_rmtree)
+    monkeypatch.setattr(recovery_module.shutil, "rmtree", original_rmtree)
     _recover_twice(target)
 
     _assert_release_and_no_artifacts(target, old)
@@ -1019,20 +1043,20 @@ def test_recovery_rejects_a_hash_mismatch_without_deleting_candidates(tmp_path, 
     target = tmp_path / "v1.0.0"
     old = _release(target, "old")
     stage, new = _prepared_stage(target, "new")
-    original = release._rename_directory
+    original = paths_module._rename_directory
 
     def crash_after_backup(source, destination):
         original(source, destination)
         if source == target:
             raise SimulatedCrash("process stopped after backup rename")
 
-    monkeypatch.setattr(release, "_rename_directory", crash_after_backup)
+    _patch_release_name(monkeypatch, "_rename_directory", crash_after_backup)
     with (
         release.release_lock(target),
         pytest.raises(SimulatedCrash, match="process stopped after backup rename"),
     ):
         release.commit_release(target, stage, new)
-    monkeypatch.setattr(release, "_rename_directory", original)
+    _patch_release_name(monkeypatch, "_rename_directory", original)
 
     backup = next(target.parent.glob(f".{target.name}.backup-*"))
     (backup / "train.parquet").write_bytes(b"tampered")
@@ -1101,7 +1125,7 @@ def test_shared_lock_cannot_be_reentered_as_exclusive(tmp_path):
 )
 def test_fingerprint_names_reject_path_tricks_and_control_characters(name):
     with pytest.raises(ValueError, match="invalid inventory filename"):
-        release._validate_fingerprint_name(name)
+        inventory_module._validate_fingerprint_name(name)
 
 
 def test_old_backup_must_match_the_recorded_old_release(tmp_path):
@@ -1112,7 +1136,7 @@ def test_old_backup_must_match_the_recorded_old_release(tmp_path):
 
     for journal in (no_old_release, missing_backup):
         with pytest.raises(release.ReleaseCommitError, match="backup does not match"):
-            release._validate_old_backup_candidates(backup, stage, False, journal)
+            recovery_module._validate_old_backup_candidates(backup, stage, False, journal)
 
 
 def test_orphan_journal_temp_must_be_a_regular_file(tmp_path):
@@ -1123,9 +1147,9 @@ def test_orphan_journal_temp_must_be_a_regular_file(tmp_path):
 
     for path in (directory, link):
         with pytest.raises(release.ReleaseCommitError, match="not a regular file"):
-            release._remove_orphan_journal_temp(path, tmp_path)
+            recovery_module._remove_orphan_journal_temp(path, tmp_path)
 
     regular = tmp_path / "regular-temp"
     regular.write_text("orphan")
-    release._remove_orphan_journal_temp(regular, tmp_path)
+    recovery_module._remove_orphan_journal_temp(regular, tmp_path)
     assert not regular.exists()

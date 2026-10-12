@@ -42,7 +42,7 @@ from osm_worldcover.domain.validation import (
     ValidationReport,
     validate,
 )
-from osm_worldcover.release_commit import (
+from osm_worldcover.release import (
     commit_release,
     core_inventory,
     create_stage,

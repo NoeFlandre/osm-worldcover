@@ -18,7 +18,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from osm_worldcover.release_commit import release_read_lock
+from osm_worldcover.release import release_read_lock
 
 __all__ = [
     "MANIFEST_NAME",

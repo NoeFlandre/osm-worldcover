@@ -20,7 +20,7 @@ from osm_worldcover.adapters.coverage_map import MAP_FILENAME, write_coverage_ma
 from osm_worldcover.domain.card import render
 from osm_worldcover.domain.manifest import SPLIT_ORDER
 from osm_worldcover.domain.revision import is_full_revision
-from osm_worldcover.release_commit import release_read_lock, release_write_lock
+from osm_worldcover.release import release_read_lock, release_write_lock
 
 __all__ = ["PublicationError", "files_to_publish", "publish_dataset"]
 

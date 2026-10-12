@@ -27,10 +27,10 @@ from osm_worldcover.config import (
 )
 from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
 from osm_worldcover.finalize import StreamedBuild, finalize_shards
-from osm_worldcover.release_commit import (
+from osm_worldcover.release import (
     migrate_release_lock as _migrate_release_lock,
 )
-from osm_worldcover.release_commit import (
+from osm_worldcover.release import (
     release_read_lock,
     scratch_lock,
 )
