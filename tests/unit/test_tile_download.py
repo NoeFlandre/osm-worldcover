@@ -22,7 +22,7 @@ TILE = Tile(48, 6)
 
 
 def test_an_absent_tile_is_downloaded(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(wc.urllib.request, "urlopen", FakeUrlopen(b"tif"))
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", FakeUrlopen(b"tif"))
     path = WorldCoverTiles(tmp_path).ensure(TILE)
     assert path.exists()
     assert path.read_bytes() == b"tif"
@@ -30,14 +30,14 @@ def test_an_absent_tile_is_downloaded(tmp_path, monkeypatch) -> None:
 
 def test_the_download_is_made_with_a_timeout(tmp_path, monkeypatch) -> None:
     fake = FakeUrlopen()
-    monkeypatch.setattr(wc.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", fake)
     tiles = WorldCoverTiles(tmp_path)
     tiles.ensure(TILE)
-    assert fake.calls == [(tiles.url_for(TILE), wc.DOWNLOAD_TIMEOUT_SECONDS)]
+    assert fake.calls == [(tiles.url_for(TILE), wc.tiles.DOWNLOAD_TIMEOUT_SECONDS)]
 
 
 def test_a_stalled_download_times_out_and_leaves_no_partial_file(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(wc, "DOWNLOAD_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(wc.tiles, "DOWNLOAD_TIMEOUT_SECONDS", 0.2)
     # The kernel completes the connection from the backlog, but nothing ever
     # answers it, so the response read stalls until the timeout fires.
     with socket.create_server(("127.0.0.1", 0)) as server:
@@ -50,13 +50,13 @@ def test_a_stalled_download_times_out_and_leaves_no_partial_file(tmp_path, monke
 
 def test_a_cached_tile_is_not_downloaded_again(tmp_path, monkeypatch) -> None:
     tiles = WorldCoverTiles(tmp_path)
-    monkeypatch.setattr(wc.urllib.request, "urlopen", FakeUrlopen())
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", FakeUrlopen())
     tiles.ensure(TILE)
 
     def explode(*_args, **_kwargs):
         raise AssertionError("should not download a cached tile")
 
-    monkeypatch.setattr(wc.urllib.request, "urlopen", explode)
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", explode)
     assert tiles.ensure(TILE).exists()
 
 
@@ -65,18 +65,18 @@ def test_an_empty_cached_file_is_treated_as_absent(tmp_path, monkeypatch) -> Non
     tiles = WorldCoverTiles(tmp_path)
     tiles.path_for(TILE).parent.mkdir(parents=True, exist_ok=True)
     tiles.path_for(TILE).write_bytes(b"")
-    monkeypatch.setattr(wc.urllib.request, "urlopen", FakeUrlopen(b"real"))
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", FakeUrlopen(b"real"))
     assert tiles.ensure(TILE).read_bytes() == b"real"
 
 
 def test_an_unpublished_tile_raises(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(wc.urllib.request, "urlopen", FakeUrlopen(status=404))
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", FakeUrlopen(status=404))
     with pytest.raises(TileNotPublishedError):
         WorldCoverTiles(tmp_path).ensure(TILE)
 
 
 def test_other_http_errors_are_not_swallowed(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(wc.urllib.request, "urlopen", FakeUrlopen(status=500))
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", FakeUrlopen(status=500))
     with pytest.raises(urllib.error.HTTPError):
         WorldCoverTiles(tmp_path).ensure(TILE)
 
@@ -84,7 +84,7 @@ def test_other_http_errors_are_not_swallowed(tmp_path, monkeypatch) -> None:
 def test_a_failed_download_leaves_no_partial_file(tmp_path, monkeypatch) -> None:
     not_found = urllib.error.HTTPError("url", 404, "Not Found", Message(), None)
     monkeypatch.setattr(
-        wc.urllib.request,
+        wc.tiles.urllib.request,
         "urlopen",
         FakeUrlopen(b"half", error_after_body=not_found),
     )
@@ -108,7 +108,7 @@ def test_a_non_http_failure_mid_download_leaves_no_partial_file(
     tmp_path, monkeypatch, error
 ) -> None:
     monkeypatch.setattr(
-        wc.urllib.request,
+        wc.tiles.urllib.request,
         "urlopen",
         FakeUrlopen(b"half", error_after_body=error),
     )
@@ -119,7 +119,7 @@ def test_a_non_http_failure_mid_download_leaves_no_partial_file(
 
 def test_a_connection_failure_leaves_no_partial_file(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        wc.urllib.request,
+        wc.tiles.urllib.request,
         "urlopen",
         FakeUrlopen(error=urllib.error.URLError("refused")),
     )
@@ -130,7 +130,7 @@ def test_a_connection_failure_leaves_no_partial_file(tmp_path, monkeypatch) -> N
 
 def test_a_body_shorter_than_its_declared_length_is_rejected(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        wc.urllib.request,
+        wc.tiles.urllib.request,
         "urlopen",
         FakeUrlopen(b"tif", content_length=10),
     )
@@ -141,7 +141,7 @@ def test_a_body_shorter_than_its_declared_length_is_rejected(tmp_path, monkeypat
 
 def test_discard_releases_a_tile_for_eviction(tmp_path, monkeypatch) -> None:
     """Discard releases rather than deletes; see test_tile_cache for eviction."""
-    monkeypatch.setattr(wc.urllib.request, "urlopen", FakeUrlopen())
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", FakeUrlopen())
     tiles = WorldCoverTiles(tmp_path, max_cached_tiles=0)
     tiles.ensure(TILE)
     tiles.discard(TILE)

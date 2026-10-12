@@ -2,6 +2,7 @@
 
 import json
 import urllib.error
+from collections import defaultdict
 from pathlib import Path
 
 import geopandas as gpd
@@ -33,7 +34,7 @@ class ExactExtractRecorder:
     """Capture the real adapter call and outputs for raster contract checks."""
 
     def __init__(self) -> None:
-        self.original = worldcover.exact_extract
+        self.original = worldcover.extract.exact_extract
         self.calls = []
         self.values = []
 
@@ -63,10 +64,12 @@ def _recorded_pixel_bounds(recorder: ExactExtractRecorder) -> list[tuple[int, in
     for raster, features, _, _ in recorder.calls:
         with rasterio.open(raster) as dataset:
             for geometry in features.geometry:
-                pixel_geometry = worldcover._pixel_geometry(geometry, dataset.transform)
+                pixel_geometry = worldcover.geometry._pixel_geometry(geometry, dataset.transform)
                 bounds.append(
                     (
-                        worldcover._pixel_bbox_cells(pixel_geometry, dataset.width, dataset.height),
+                        worldcover.geometry._pixel_bbox_cells(
+                            pixel_geometry, dataset.width, dataset.height
+                        ),
                         shapely.get_num_coordinates(pixel_geometry),
                     )
                 )
@@ -141,7 +144,7 @@ class TestClassCoverage:
         polygon with full confidence; leaving the gap lets dominance refuse it.
         """
         recorder = ExactExtractRecorder()
-        monkeypatch.setattr(worldcover, "exact_extract", recorder)
+        monkeypatch.setattr(worldcover.extract, "exact_extract", recorder)
         coverage = class_coverage([with_nodata], square)[0]
 
         _assert_nodata_values_are_unmasked(recorder)
@@ -189,23 +192,23 @@ class TestClassCoverage:
             ],
             crs="EPSG:4326",
         )
-        monkeypatch.setattr(worldcover, "_MAX_FEATURES_PER_BATCH", 2)
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_AREA_M2", 8.0)
-        monkeypatch.setattr(worldcover, "_ACCUMULATION_CELL_CHUNK", 2)
-        original_extract = worldcover.exact_extract
+        monkeypatch.setattr(worldcover.geometry, "_MAX_FEATURES_PER_BATCH", 2)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_AREA_M2", 8.0)
+        monkeypatch.setattr(worldcover.extract, "_ACCUMULATION_CELL_CHUNK", 2)
+        original_extract = worldcover.extract.exact_extract
         batch_sizes = []
 
         def recording_extract(raster, features, operations, **kwargs):
             batch_sizes.append((len(features), kwargs["max_cells_in_memory"]))
             return original_extract(raster, features, operations, **kwargs)
 
-        monkeypatch.setattr(worldcover, "exact_extract", recording_extract)
+        monkeypatch.setattr(worldcover.extract, "exact_extract", recording_extract)
 
         coverage = class_coverage([half_and_half], frame)
 
         assert batch_sizes == [
-            (1, worldcover._MAX_CELLS_IN_MEMORY),
-            (2, worldcover._MAX_CELLS_IN_MEMORY),
+            (1, worldcover.extract._MAX_CELLS_IN_MEMORY),
+            (2, worldcover.extract._MAX_CELLS_IN_MEMORY),
         ]
         assert coverage == [
             {10: pytest.approx(1.0)},
@@ -217,7 +220,7 @@ class TestClassCoverage:
         cell_ids = np.array([9, 2, 6, 1], dtype=np.int64)
         candidates = np.array([1, 6, 8, 9], dtype=np.int64)
 
-        present, positions = worldcover._find_candidates(cell_ids, candidates)
+        present, positions = worldcover.extract._find_candidates(cell_ids, candidates)
 
         assert present.tolist() == [True, True, False, True]
         assert cell_ids[positions[present]].tolist() == candidates[present].tolist()
@@ -249,10 +252,10 @@ class TestClassCoverage:
         recorder = ExactExtractRecorder()
 
         with monkeypatch.context() as bounded:
-            bounded.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
-            bounded.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", 12)
-            bounded.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 1)
-            bounded.setattr(worldcover, "exact_extract", recorder)
+            bounded.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
+            bounded.setattr(worldcover.geometry, "_MAX_GEOMETRY_COORDINATES", 12)
+            bounded.setattr(worldcover.extract, "_BOUNDARY_CELLS_PER_CHUNK", 1)
+            bounded.setattr(worldcover.extract, "exact_extract", recorder)
             actual = class_coverage([half_and_half], frame)[0]
 
         actual_label = decide(actual, polygon_area=1.0, threshold=0.8)
@@ -297,10 +300,10 @@ class TestClassCoverage:
         recorder = ExactExtractRecorder()
 
         with monkeypatch.context() as bounded:
-            bounded.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
-            bounded.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", 12)
-            bounded.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 1)
-            bounded.setattr(worldcover, "exact_extract", recorder)
+            bounded.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 9)
+            bounded.setattr(worldcover.geometry, "_MAX_GEOMETRY_COORDINATES", 12)
+            bounded.setattr(worldcover.extract, "_BOUNDARY_CELLS_PER_CHUNK", 1)
+            bounded.setattr(worldcover.extract, "exact_extract", recorder)
             actual = class_coverage([left, right], frame)[0]
 
         actual_label = decide(actual, polygon_area=1.0, threshold=0.45)
@@ -400,7 +403,7 @@ class TestSplitAxisSelection:
         ],
     )
     def test_midpoint_is_an_interior_integer_boundary(self, minimum, maximum, expected) -> None:
-        assert worldcover._pixel_aligned_midpoint(minimum, maximum) == expected
+        assert worldcover.geometry._pixel_aligned_midpoint(minimum, maximum) == expected
 
     @pytest.mark.parametrize(
         ("x_span", "y_span", "x_mid", "y_mid", "expected"),
@@ -418,7 +421,7 @@ class TestSplitAxisSelection:
     def test_axis_prefers_integer_splits_then_the_longest_span(
         self, x_span, y_span, x_mid, y_mid, expected
     ) -> None:
-        assert worldcover._choose_split_axis(x_span, y_span, x_mid, y_mid) is expected
+        assert worldcover.geometry._choose_split_axis(x_span, y_span, x_mid, y_mid) is expected
 
 
 class TestSplitOnce:
@@ -441,7 +444,7 @@ class TestSplitOnce:
     def test_geometry_is_cut_on_pixel_lines_or_the_plain_midpoint(
         self, geometry, first, second
     ) -> None:
-        pieces = worldcover._split_pixel_geometry_once(geometry)
+        pieces = worldcover.geometry._split_pixel_geometry_once(geometry)
         assert _bounds(pieces) == [first, second]
         assert sum(p.area for p in pieces) == pytest.approx(geometry.area)
 
@@ -463,7 +466,7 @@ class TestSplitOnce:
         geometry = shapely.box(0, 0, 2, 1)
         first = geometry if isinstance(first, str) else first
         second = geometry if isinstance(second, str) else second
-        assert worldcover._split_is_stalled(geometry, first, second) is expected
+        assert worldcover.geometry._split_is_stalled(geometry, first, second) is expected
 
 
 class TestBoundedChunks:
@@ -484,7 +487,7 @@ class TestBoundedChunks:
     def test_envelope_cells_are_clamped_to_the_raster(
         self, geometry, width, height, expected
     ) -> None:
-        assert worldcover._pixel_bbox_cells(geometry, width, height) == expected
+        assert worldcover.geometry._pixel_bbox_cells(geometry, width, height) == expected
 
     @pytest.mark.parametrize(
         ("cells", "coordinates", "bounded"),
@@ -493,60 +496,67 @@ class TestBoundedChunks:
     def test_geometry_is_bounded_inclusive_of_both_limits(
         self, monkeypatch, cells, coordinates, bounded
     ) -> None:
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", cells)
-        monkeypatch.setattr(worldcover, "_MAX_GEOMETRY_COORDINATES", coordinates)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", cells)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_GEOMETRY_COORDINATES", coordinates)
         square = shapely.box(0, 0, 2, 2)  # 9 envelope cells, 5 coordinates
-        assert bool(worldcover._geometry_is_bounded(square, 10, 10)) is bounded
-        assert bool(worldcover._needs_spatial_chunks(square, 10, 10)) is (not bounded)
+        assert bool(worldcover.geometry._geometry_is_bounded(square, 10, 10)) is bounded
+        assert bool(worldcover.geometry._needs_spatial_chunks(square, 10, 10)) is (not bounded)
 
     def test_chunks_split_on_pixel_lines_and_clip_to_the_raster(self, monkeypatch) -> None:
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 15)
-        chunks = list(worldcover._bounded_pixel_chunks(shapely.box(0, 0, 8, 2), 10, 10))
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 15)
+        chunks = list(worldcover.geometry._bounded_pixel_chunks(shapely.box(0, 0, 8, 2), 10, 10))
         assert _bounds(chunks) == [(0, 0, 4, 2), (4, 0, 6, 2), (6, 0, 8, 2)]
-        clipped = list(worldcover._bounded_pixel_chunks(shapely.box(-5, 0, 3, 2), 10, 10))
+        clipped = list(worldcover.geometry._bounded_pixel_chunks(shapely.box(-5, 0, 3, 2), 10, 10))
         assert _bounds(clipped) == [(0, 0, 3, 2)]
-        assert list(worldcover._bounded_pixel_chunks(shapely.box(20, 20, 21, 21), 10, 10)) == []
+        assert (
+            list(worldcover.geometry._bounded_pixel_chunks(shapely.box(20, 20, 21, 21), 10, 10))
+            == []
+        )
 
     def test_a_bounded_geometry_is_returned_whole(self) -> None:
         geometry = shapely.box(0, 0, 3, 3)
-        (chunk,) = worldcover._split_pixel_geometry(geometry, 10, 10, depth=0)
+        (chunk,) = worldcover.geometry._split_pixel_geometry(geometry, 10, 10, depth=0)
         assert chunk.equals(geometry)
 
     def test_splitting_stops_at_the_depth_limit(self, monkeypatch) -> None:
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 15)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 15)
         geometry = shapely.box(0, 0, 8, 2)
-        monkeypatch.setattr(worldcover, "_MAX_GEOMETRY_SPLIT_DEPTH", 2)
-        assert len(list(worldcover._bounded_pixel_chunks(geometry, 10, 10))) == 3
-        monkeypatch.setattr(worldcover, "_MAX_GEOMETRY_SPLIT_DEPTH", 1)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_GEOMETRY_SPLIT_DEPTH", 2)
+        assert len(list(worldcover.geometry._bounded_pixel_chunks(geometry, 10, 10))) == 3
+        monkeypatch.setattr(worldcover.geometry, "_MAX_GEOMETRY_SPLIT_DEPTH", 1)
         message = "^could not bound a WorldCover geometry after 1 spatial splits$"
         with pytest.raises(ValueError, match=message):
-            list(worldcover._bounded_pixel_chunks(geometry, 10, 10))
+            list(worldcover.geometry._bounded_pixel_chunks(geometry, 10, 10))
         with pytest.raises(ValueError, match=message):
-            list(worldcover._split_pixel_geometry(geometry, 10, 10, depth=1))
-        monkeypatch.setattr(worldcover, "_MAX_GEOMETRY_SPLIT_DEPTH", 4)
-        assert len(list(worldcover._split_pixel_geometry(geometry, 10, 10, depth=2))) == 3
-        monkeypatch.setattr(worldcover, "_MAX_GEOMETRY_SPLIT_DEPTH", 3)
+            list(worldcover.geometry._split_pixel_geometry(geometry, 10, 10, depth=1))
+        monkeypatch.setattr(worldcover.geometry, "_MAX_GEOMETRY_SPLIT_DEPTH", 4)
+        assert len(list(worldcover.geometry._split_pixel_geometry(geometry, 10, 10, depth=2))) == 3
+        monkeypatch.setattr(worldcover.geometry, "_MAX_GEOMETRY_SPLIT_DEPTH", 3)
         with pytest.raises(ValueError, match="after 3 spatial splits"):
-            list(worldcover._split_pixel_geometry(geometry, 10, 10, depth=2))
+            list(worldcover.geometry._split_pixel_geometry(geometry, 10, 10, depth=2))
 
     @pytest.mark.parametrize("pieces", [("empty", "empty"), ("same", "same")])
     def test_a_stalled_split_is_an_error_not_an_endless_recursion(
         self, monkeypatch, pieces
     ) -> None:
         geometry = shapely.box(0, 0, 8, 2)
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 1)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 1)
         stalled = tuple(geometry if p == "same" else shapely.Polygon() for p in pieces)
-        monkeypatch.setattr(worldcover, "_split_pixel_geometry_once", lambda _g: stalled)
+        monkeypatch.setattr(worldcover.geometry, "_split_pixel_geometry_once", lambda _g: stalled)
         with pytest.raises(
             ValueError, match=r"^WorldCover geometry split did not reduce its spatial extent$"
         ):
-            list(worldcover._split_pixel_geometry(geometry, 10, 10, depth=0))
+            list(worldcover.geometry._split_pixel_geometry(geometry, 10, 10, depth=0))
 
     def test_empty_halves_are_skipped(self) -> None:
         piece = shapely.box(0, 0, 1, 1)
-        kept = list(worldcover._nonempty_pixel_children(shapely.Polygon(), piece, 10, 10, 1))
+        kept = list(
+            worldcover.geometry._nonempty_pixel_children(shapely.Polygon(), piece, 10, 10, 1)
+        )
         assert _bounds(kept) == [(0, 0, 1, 1)]
-        kept = list(worldcover._nonempty_pixel_children(piece, shapely.Polygon(), 10, 10, 1))
+        kept = list(
+            worldcover.geometry._nonempty_pixel_children(piece, shapely.Polygon(), 10, 10, 1)
+        )
         assert _bounds(kept) == [(0, 0, 1, 1)]
 
 
@@ -568,7 +578,7 @@ class TestFeatureBatching:
         ],
     )
     def test_limits_are_inclusive(self, args, kwargs, expected) -> None:
-        assert worldcover._batch_exceeds_limits(*args, **kwargs) is expected
+        assert worldcover.geometry._batch_exceeds_limits(*args, **kwargs) is expected
 
     @pytest.mark.parametrize(
         ("setting", "areas", "cells", "expected"),
@@ -594,13 +604,15 @@ class TestFeatureBatching:
             "_MAX_BATCH_PIXEL_BBOX_CELLS": 10,
         }
         if setting:
-            monkeypatch.setattr(worldcover, setting, limits[setting])
-        got = list(worldcover._yield_feature_batches(np.array(areas), np.array(cells)))
+            monkeypatch.setattr(worldcover.geometry, setting, limits[setting])
+        got = list(worldcover.geometry._yield_feature_batches(np.array(areas), np.array(cells)))
         assert got == expected
 
     def test_area_and_cell_arrays_must_align(self) -> None:
         with pytest.raises(ValueError, match="zip"):
-            list(worldcover._yield_feature_batches(np.zeros(2), np.zeros(3, dtype=np.int64)))
+            list(
+                worldcover.geometry._yield_feature_batches(np.zeros(2), np.zeros(3, dtype=np.int64))
+            )
 
     @staticmethod
     def _frame(**columns) -> gpd.GeoDataFrame:
@@ -608,15 +620,17 @@ class TestFeatureBatching:
         return gpd.GeoDataFrame(columns, geometry=geoms, crs="EPSG:4326")
 
     def test_areas_are_read_from_the_frame_as_floats(self) -> None:
-        areas = worldcover._feature_areas(self._frame(area_m2=[3, 4]))
+        areas = worldcover.geometry._feature_areas(self._frame(area_m2=[3, 4]))
         assert (areas.tolist(), areas.dtype) == ([3.0, 4.0], np.float64)
 
     def test_the_area_column_is_borrowed_not_duplicated(self) -> None:
         frame = self._frame(area_m2=[3.0, 4.0])
-        assert np.shares_memory(worldcover._feature_areas(frame), frame["area_m2"].to_numpy())
+        assert np.shares_memory(
+            worldcover.geometry._feature_areas(frame), frame["area_m2"].to_numpy()
+        )
 
     def test_areas_default_to_zero_without_the_column(self) -> None:
-        areas = worldcover._feature_areas(self._frame())
+        areas = worldcover.geometry._feature_areas(self._frame())
         assert (areas.tolist(), areas.dtype) == ([0.0, 0.0], np.float64)
 
     @pytest.mark.parametrize("missing", ["transform", "width", "height", "all"])
@@ -624,48 +638,51 @@ class TestFeatureBatching:
         args = {"transform": rasterio.Affine(1, 0, 0, 0, -1, 10), "width": 10, "height": 10}
         for key in args if missing == "all" else [missing]:
             args[key] = None
-        cells = worldcover._feature_pixel_cells(self._frame(), **args)
+        cells = worldcover.geometry._feature_pixel_cells(self._frame(), **args)
         assert (cells.tolist(), cells.dtype) == ([0, 0], np.int64)
 
     def test_pixel_cells_bound_each_features_raster_envelope(self) -> None:
         transform = rasterio.Affine(1, 0, 0, 0, -1, 10)
-        cells = worldcover._feature_pixel_cells(self._frame(), transform, 10, 10)
+        cells = worldcover.geometry._feature_pixel_cells(self._frame(), transform, 10, 10)
         assert (cells.tolist(), cells.dtype) == ([9, 9], np.int64)
 
     def test_feature_batches_split_on_raster_envelope_cells(self, monkeypatch) -> None:
         geoms = [shapely.box(0.5, 0.5, 1.5, 1.5), shapely.box(5, 5, 6, 6)]
         frame = gpd.GeoDataFrame(geometry=geoms, crs="EPSG:4326")
         transform = rasterio.Affine(1, 0, 0, 0, -1, 10)
-        assert list(worldcover._feature_batches(frame)) == [(0, 2)]
-        assert list(worldcover._feature_batches(frame, transform, 10, 10)) == [(0, 2)]
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 17)
-        assert list(worldcover._feature_batches(frame, transform, 10, 10)) == [(0, 1), (1, 2)]
+        assert list(worldcover.geometry._feature_batches(frame)) == [(0, 2)]
+        assert list(worldcover.geometry._feature_batches(frame, transform, 10, 10)) == [(0, 2)]
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 17)
+        assert list(worldcover.geometry._feature_batches(frame, transform, 10, 10)) == [
+            (0, 1),
+            (1, 2),
+        ]
 
 
 class TestGeometryTransforms:
     def test_pixel_and_map_coordinates_round_trip_through_a_sheared_transform(self) -> None:
         transform = rasterio.Affine(0.5, 0.125, 10.0, 0.25, -0.5, 20.0)
-        pixel = worldcover._pixel_geometry(shapely.Point(11.0, 18.0), transform)
+        pixel = worldcover.geometry._pixel_geometry(shapely.Point(11.0, 18.0), transform)
         assert transform * (pixel.x, pixel.y) == pytest.approx((11.0, 18.0))
-        back = worldcover._map_geometry(pixel, transform)
+        back = worldcover.geometry._map_geometry(pixel, transform)
         assert (back.x, back.y) == pytest.approx((11.0, 18.0))
-        mapped = worldcover._map_geometry(shapely.Point(2.0, 3.0), transform)
+        mapped = worldcover.geometry._map_geometry(shapely.Point(2.0, 3.0), transform)
         assert (mapped.x, mapped.y) == pytest.approx((10.0 + 1.0 + 0.375, 20.0 + 0.5 - 1.5))
 
 
 class TestCandidateLookup:
     def test_sorted_ids_are_searched_in_place(self) -> None:
-        present, positions = worldcover._find_candidates(
+        present, positions = worldcover.extract._find_candidates(
             np.array([1, 3, 5], dtype=np.int64), np.array([0, 3, 5, 6], dtype=np.int64)
         )
         assert present.tolist() == [False, True, True, False]
         assert positions[present].tolist() == [1, 2]
 
     def test_unsorted_ids_are_matched_chunk_by_chunk(self, monkeypatch) -> None:
-        monkeypatch.setattr(worldcover, "_ACCUMULATION_CELL_CHUNK", 2)
+        monkeypatch.setattr(worldcover.extract, "_ACCUMULATION_CELL_CHUNK", 2)
         cell_ids = np.array([9, 2, 6, 1, 7, 99, 4], dtype=np.int64)
         candidates = np.array([1, 2, 3, 4, 7, 8, 9, 30], dtype=np.int64)
-        present, positions = worldcover._find_candidates(cell_ids, candidates)
+        present, positions = worldcover.extract._find_candidates(cell_ids, candidates)
         assert present.tolist() == [True, True, False, True, True, False, True, False]
         assert positions[present].tolist() == [3, 1, 6, 4, 0]
         assert present.dtype == np.bool_
@@ -673,7 +690,7 @@ class TestCandidateLookup:
 
     @pytest.mark.parametrize(("cell_ids", "candidates"), [([], [1, 2]), ([1, 2], []), ([], [])])
     def test_empty_inputs_find_nothing(self, cell_ids, candidates) -> None:
-        present, positions = worldcover._find_candidates(
+        present, positions = worldcover.extract._find_candidates(
             np.array(cell_ids, dtype=np.int64), np.array(candidates, dtype=np.int64)
         )
         assert present.tolist() == [False] * len(candidates)
@@ -702,9 +719,9 @@ class TestCandidateLookup:
         self, monkeypatch, values, expected
     ) -> None:
         array = np.array(values, dtype=np.int64)
-        assert worldcover._is_sorted(array) is expected  # one slice
-        monkeypatch.setattr(worldcover, "_ACCUMULATION_CELL_CHUNK", 2)
-        assert worldcover._is_sorted(array) is expected  # several slices
+        assert worldcover.extract._is_sorted(array) is expected  # one slice
+        monkeypatch.setattr(worldcover.extract, "_ACCUMULATION_CELL_CHUNK", 2)
+        assert worldcover.extract._is_sorted(array) is expected  # several slices
 
     @pytest.mark.parametrize(
         ("previous", "chunk", "expected"),
@@ -721,42 +738,42 @@ class TestCandidateLookup:
     def test_chunk_order_is_checked_against_its_predecessor(
         self, previous, chunk, expected
     ) -> None:
-        assert bool(worldcover._chunk_follows(previous, np.array(chunk))) is expected
+        assert bool(worldcover.extract._chunk_follows(previous, np.array(chunk))) is expected
 
 
 class TestClassAccumulation:
     def test_per_class_areas_are_scaled_and_added_to_existing_totals(self) -> None:
-        totals = worldcover.defaultdict(float, {10: 1.0})
+        totals = defaultdict(float, {10: 1.0})
         values = np.array([10, 10, 50, np.nan, 60, 70, 80])
         coverage = np.array([0.5, 0.25, 1.0, 1.0, np.nan, 0.0, -1.0])
-        worldcover._add_class_coverage(totals, values, coverage, 2.0)
+        worldcover.extract._add_class_coverage(totals, values, coverage, 2.0)
         assert dict(totals) == {10: pytest.approx(2.5), 50: pytest.approx(2.0)}
 
     def test_infinite_values_or_coverage_never_become_a_class_share(self) -> None:
-        totals = worldcover.defaultdict(float)
+        totals = defaultdict(float)
         values = np.array([np.inf, 10.0, 20.0])
         coverage = np.array([1.0, np.inf, 0.5])
-        worldcover._add_class_coverage(totals, values, coverage, 1.0)
+        worldcover.extract._add_class_coverage(totals, values, coverage, 1.0)
         assert dict(totals) == {20: 0.5}
 
     def test_a_zero_scale_adds_nothing(self) -> None:
-        totals = worldcover.defaultdict(float)
-        worldcover._add_class_coverage(totals, np.array([10.0]), np.array([1.0]), 0.0)
+        totals = defaultdict(float)
+        worldcover.extract._add_class_coverage(totals, np.array([10.0]), np.array([1.0]), 0.0)
         assert dict(totals) == {}
 
     def test_stable_cells_skip_excluded_invalid_and_empty_cells_across_slices(
         self, monkeypatch
     ) -> None:
-        monkeypatch.setattr(worldcover, "_ACCUMULATION_CELL_CHUNK", 3)
+        monkeypatch.setattr(worldcover.extract, "_ACCUMULATION_CELL_CHUNK", 3)
         classes = np.array([10, 10, 50, 50, np.nan, 50, 10, 10], dtype=float)
         fractions = np.array([0.5, 0.0, 0.25, 1.0, 1.0, np.nan, 0.5, 0.25])
         excluded = np.array([False, False, False, True, False, False, False, True])
-        totals = worldcover.defaultdict(float)
-        worldcover._accumulate_stable_cells(totals, classes, fractions, excluded, 2.0)
+        totals = defaultdict(float)
+        worldcover.extract._accumulate_stable_cells(totals, classes, fractions, excluded, 2.0)
         assert dict(totals) == {10: pytest.approx(2.0), 50: pytest.approx(0.5)}
 
     def test_candidate_classes_follow_their_matched_positions(self) -> None:
-        got = worldcover._matched_candidate_classes(
+        got = worldcover.extract._matched_candidate_classes(
             np.arange(4),
             np.array([7.0, 8.0]),
             np.array([True, False, True, False]),
@@ -773,7 +790,7 @@ class TestClassAccumulation:
         path = write_raster(tmp_path / "ids.tif", values, origin=(0, 3))
         classes = np.full(4, np.nan)
         with rasterio.open(path) as dataset:
-            worldcover._read_missing_classes(
+            worldcover.extract._read_missing_classes(
                 dataset,
                 np.array([1, 2, 1]),
                 np.array([2, 3, 1]),
@@ -785,8 +802,8 @@ class TestClassAccumulation:
 
     @pytest.mark.parametrize("area", [0.0, -1.0, float("nan"), float("inf")])
     def test_a_polygon_without_a_usable_area_contributes_nothing(self, area) -> None:
-        totals = worldcover.defaultdict(float)
-        worldcover._accumulate_corrected(
+        totals = defaultdict(float)
+        worldcover.extract._accumulate_corrected(
             totals, [], [], [], shapely.box(0, 0, 1, 1), None, 1.0, area
         )
         assert dict(totals) == {}
@@ -794,7 +811,7 @@ class TestClassAccumulation:
 
 def _halo_cells(geometry, width, height) -> set[int]:
     """Independent oracle: cells whose square meets the buffered boundary."""
-    halo = shapely.buffer(geometry.boundary, worldcover._BOUNDARY_HALO_PIXELS)
+    halo = shapely.buffer(geometry.boundary, worldcover.extract._BOUNDARY_HALO_PIXELS)
     return {
         row * width + col
         for row in range(height)
@@ -817,10 +834,10 @@ class TestBoundaryCells:
     def test_rasterized_ids_match_the_cells_the_halo_touches(
         self, monkeypatch, chunk, geometry, width, height
     ) -> None:
-        monkeypatch.setattr(worldcover, "_BOUNDARY_ROW_CHUNK", chunk)
-        boundary = shapely.buffer(geometry.boundary, worldcover._BOUNDARY_HALO_PIXELS)
+        monkeypatch.setattr(worldcover.extract, "_BOUNDARY_ROW_CHUNK", chunk)
+        boundary = shapely.buffer(geometry.boundary, worldcover.extract._BOUNDARY_HALO_PIXELS)
         min_x, min_y, max_x, max_y = geometry.bounds
-        ids = worldcover._rasterized_boundary_ids(
+        ids = worldcover.extract._rasterized_boundary_ids(
             boundary,
             max(0, int(np.floor(min_x)) - 1),
             min(width, int(np.ceil(max_x)) + 1),
@@ -834,13 +851,15 @@ class TestBoundaryCells:
 
     def test_no_strip_hits_means_no_ids(self) -> None:
         boundary = shapely.buffer(shapely.box(20, 20, 21, 21).boundary, 0.01)
-        ids = worldcover._rasterized_boundary_ids(boundary, 0, 5, 0, 5, 5, 5)
+        ids = worldcover.extract._rasterized_boundary_ids(boundary, 0, 5, 0, 5, 5, 5)
         assert ids.tolist() == []
         assert ids.dtype == np.int64
 
     def test_chunks_carry_exact_geos_areas_for_each_cell(self, monkeypatch) -> None:
-        monkeypatch.setattr(worldcover, "_BOUNDARY_CELLS_PER_CHUNK", 3)
-        chunks = list(worldcover._boundary_cell_chunks(shapely.box(1.5, 1.5, 3.5, 3.5), 7, 5))
+        monkeypatch.setattr(worldcover.extract, "_BOUNDARY_CELLS_PER_CHUNK", 3)
+        chunks = list(
+            worldcover.extract._boundary_cell_chunks(shapely.box(1.5, 1.5, 3.5, 3.5), 7, 5)
+        )
         assert [len(c[0]) for c in chunks] == [3, 3, 2]
         by_id = {}
         for ids, rows, columns, corrected in chunks:
@@ -868,11 +887,11 @@ class TestBoundaryCells:
         ],
     )
     def test_geometry_outside_the_raster_yields_no_chunks(self, geometry) -> None:
-        assert list(worldcover._boundary_cell_chunks(geometry, 5, 4)) == []
+        assert list(worldcover.extract._boundary_cell_chunks(geometry, 5, 4)) == []
 
     def test_geometry_touching_the_last_row_and_column_is_kept(self) -> None:
         geometry = shapely.box(3.5, 2.5, 4.5, 3.5)
-        chunks = list(worldcover._boundary_cell_chunks(geometry, 5, 4))
+        chunks = list(worldcover.extract._boundary_cell_chunks(geometry, 5, 4))
         ids = np.concatenate([c[0] for c in chunks])
         assert ids.tolist() == sorted(_halo_cells(geometry, 5, 4))
 
@@ -899,7 +918,7 @@ class TestTileCache:
 
     def test_download_lands_atomically_in_the_cache(self, tmp_path, monkeypatch) -> None:
         fake = FakeUrlopen(b"tile")
-        monkeypatch.setattr(worldcover.urllib.request, "urlopen", fake)
+        monkeypatch.setattr(worldcover.tiles.urllib.request, "urlopen", fake)
         tiles = WorldCoverTiles(tmp_path / "nested" / "cache")
         tile = Tile(48, 6)
 
@@ -910,20 +929,20 @@ class TestTileCache:
             b"tile",
             {tile.name},
         )
-        assert fake.calls == [(tiles.url_for(tile), worldcover.DOWNLOAD_TIMEOUT_SECONDS)]
+        assert fake.calls == [(tiles.url_for(tile), worldcover.tiles.DOWNLOAD_TIMEOUT_SECONDS)]
         assert [p.name for p in path.parent.iterdir()] == [path.name]
 
     @pytest.mark.parametrize("cached", [b"cached", b"1"])
     def test_a_cached_tile_is_not_downloaded_again(self, tmp_path, monkeypatch, cached) -> None:
         fake = FakeUrlopen()
-        monkeypatch.setattr(worldcover.urllib.request, "urlopen", fake)
+        monkeypatch.setattr(worldcover.tiles.urllib.request, "urlopen", fake)
         tiles = WorldCoverTiles(tmp_path)
         tiles.path_for(Tile(48, 6)).write_bytes(cached)
         assert (tiles.ensure(Tile(48, 6)).read_bytes(), fake.calls) == (cached, [])
 
     def test_an_empty_cached_tile_is_downloaded_again(self, tmp_path, monkeypatch) -> None:
         fake = FakeUrlopen(b"tile")
-        monkeypatch.setattr(worldcover.urllib.request, "urlopen", fake)
+        monkeypatch.setattr(worldcover.tiles.urllib.request, "urlopen", fake)
         tiles = WorldCoverTiles(tmp_path)
         tiles.path_for(Tile(48, 6)).write_bytes(b"")
         assert tiles.ensure(Tile(48, 6)).read_bytes() == b"tile"
@@ -932,7 +951,7 @@ class TestTileCache:
     def test_an_absent_tile_is_reported_as_unpublished_and_leaves_no_partial_file(
         self, tmp_path, monkeypatch
     ) -> None:
-        monkeypatch.setattr(worldcover.urllib.request, "urlopen", FakeUrlopen(status=404))
+        monkeypatch.setattr(worldcover.tiles.urllib.request, "urlopen", FakeUrlopen(status=404))
         tiles = WorldCoverTiles(tmp_path)
         with pytest.raises(TileNotPublishedError, match=r"^N48E006 is not published$") as caught:
             tiles.ensure(Tile(48, 6))
@@ -941,7 +960,7 @@ class TestTileCache:
 
     @pytest.mark.parametrize("status", [403, 500])
     def test_other_http_errors_propagate_and_clean_up(self, tmp_path, monkeypatch, status) -> None:
-        monkeypatch.setattr(worldcover.urllib.request, "urlopen", FakeUrlopen(status=status))
+        monkeypatch.setattr(worldcover.tiles.urllib.request, "urlopen", FakeUrlopen(status=status))
         with pytest.raises(urllib.error.HTTPError) as caught:
             WorldCoverTiles(tmp_path).ensure(Tile(48, 6))
         assert caught.value.code == status
@@ -949,7 +968,7 @@ class TestTileCache:
         assert list(tmp_path.iterdir()) == []
 
     def test_an_ensured_tile_survives_the_release_of_others(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(worldcover.urllib.request, "urlopen", FakeUrlopen())
+        monkeypatch.setattr(worldcover.tiles.urllib.request, "urlopen", FakeUrlopen())
         tiles = WorldCoverTiles(tmp_path, max_cached_tiles=1)
         first, second = Tile(1, 1), Tile(2, 2)
         first_path = tiles.ensure(first)
@@ -1009,7 +1028,7 @@ class ReadCounter:
 
 
 def _boundary_ids(geometry, width, height) -> np.ndarray:
-    chunks = list(worldcover._boundary_cell_chunks(geometry, width, height))
+    chunks = list(worldcover.extract._boundary_cell_chunks(geometry, width, height))
     return np.concatenate([c[0] for c in chunks]) if chunks else np.array([], dtype=np.int64)
 
 
@@ -1022,8 +1041,8 @@ class TestBoundaryCorrection:
 
     def test_boundary_cells_returned_by_exactextract_are_not_reread(self, uniform) -> None:
         geometry = shapely.box(1.5, 1.5, 4.5, 4.5)
-        totals = worldcover.defaultdict(float)
-        excluded = worldcover._accumulate_boundary_cells(
+        totals = defaultdict(float)
+        excluded = worldcover.extract._accumulate_boundary_cells(
             totals, np.arange(36), np.full(36, 10.0), geometry, uniform, 1.0
         )
         assert uniform.reads == 0
@@ -1033,8 +1052,8 @@ class TestBoundaryCorrection:
     def test_only_missing_cells_that_hold_polygon_area_are_read(self, uniform) -> None:
         # Cells outside the polygon touch its halo but contribute nothing to read.
         geometry = shapely.box(1, 1, 4, 4)
-        totals = worldcover.defaultdict(float)
-        excluded = worldcover._accumulate_boundary_cells(
+        totals = defaultdict(float)
+        excluded = worldcover.extract._accumulate_boundary_cells(
             totals, np.array([], dtype=np.int64), np.array([]), geometry, uniform, 0.5
         )
         assert uniform.reads == 1
@@ -1044,8 +1063,8 @@ class TestBoundaryCorrection:
     def test_a_missing_cell_takes_its_class_from_the_raster(self, uniform) -> None:
         geometry = shapely.box(1.5, 1.5, 4.5, 4.5)
         ids = np.delete(np.arange(36), 1 * 6 + 1)  # drop the 0.25 corner cell
-        totals = worldcover.defaultdict(float)
-        worldcover._accumulate_boundary_cells(
+        totals = defaultdict(float)
+        worldcover.extract._accumulate_boundary_cells(
             totals, ids, np.full(35, 99.0), geometry, uniform, 1.0
         )
         assert uniform.reads == 1
@@ -1059,7 +1078,9 @@ class TestBoundaryCorrection:
         with rasterio.open(path) as dataset:
             counted = ReadCounter(dataset)
             classes = np.full(len(rows), np.nan)
-            worldcover._read_missing_classes(counted, rows, columns, classes, np.arange(len(rows)))
+            worldcover.extract._read_missing_classes(
+                counted, rows, columns, classes, np.arange(len(rows))
+            )
         assert counted.reads == 2
         assert classes.tolist() == values[rows, columns].astype(float).tolist()
 
@@ -1067,9 +1088,9 @@ class TestBoundaryCorrection:
         path = write_raster(tmp_path / "big.tif", np.full((20, 20), 10, dtype="uint8"), (0, 20))
         interior = np.array([r * 20 + c for r in range(1, 19) for c in range(1, 19)])
         fraction = np.float32(0.1)
-        totals = worldcover.defaultdict(float)
+        totals = defaultdict(float)
         with rasterio.open(path) as dataset:
-            worldcover._accumulate_corrected(
+            worldcover.extract._accumulate_corrected(
                 totals,
                 interior,
                 np.full(len(interior), fraction, dtype=np.float32),
@@ -1089,13 +1110,13 @@ class TestBoundaryCorrection:
         classes = np.full(2, np.nan)
         for rows, columns, positions in [([0, 1], [0, 1], [0]), ([0], [0, 1], [0, 1])]:
             with pytest.raises(ValueError, match="same length"):
-                worldcover._read_missing_classes(
+                worldcover.extract._read_missing_classes(
                     AllMasked(), np.array(rows), np.array(columns), classes, np.array(positions)
                 )
 
     def test_extraction_results_must_match_the_features(self, half_and_half, monkeypatch) -> None:
         empty = {"cell_id": [], "coverage": [], "values": []}
-        monkeypatch.setattr(worldcover, "exact_extract", lambda *_a, **_k: empty)
+        monkeypatch.setattr(worldcover.extract, "exact_extract", lambda *_a, **_k: empty)
         with pytest.raises(ValueError, match="zip"):
             class_coverage([half_and_half], one(shapely.box(0, 0, 2, 2)))
 
@@ -1117,7 +1138,7 @@ class TestBoundaryCorrection:
     def test_distant_parts_are_all_found_when_strips_in_between_are_empty(
         self, monkeypatch
     ) -> None:
-        monkeypatch.setattr(worldcover, "_BOUNDARY_ROW_CHUNK", 2)
+        monkeypatch.setattr(worldcover.extract, "_BOUNDARY_ROW_CHUNK", 2)
         geometry = shapely.MultiPolygon(
             [shapely.box(1.5, 1.5, 3.5, 2.5), shapely.box(1.5, 12.5, 3.5, 13.5)]
         )
@@ -1126,15 +1147,15 @@ class TestBoundaryCorrection:
     def test_rasterization_is_strip_wise_and_sized_by_the_strip_not_its_offset(
         self, monkeypatch
     ) -> None:
-        monkeypatch.setattr(worldcover, "_BOUNDARY_ROW_CHUNK", 4)
+        monkeypatch.setattr(worldcover.extract, "_BOUNDARY_ROW_CHUNK", 4)
         shapes = []
-        real = worldcover.rasterize
+        real = worldcover.extract.rasterize
 
         def spy(*args, **kwargs):
             shapes.append(kwargs["out_shape"])
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(worldcover, "rasterize", spy)
+        monkeypatch.setattr(worldcover.extract, "rasterize", spy)
         geometry = shapely.box(60.5, 60.5, 63.5, 75.5)
         ids = _boundary_ids(geometry, 100, 100)
         assert ids.tolist() == sorted(_halo_cells(geometry, 100, 100))
@@ -1152,8 +1173,8 @@ class TestBoundaryCorrection:
             crs="EPSG:4326",
         )
         recorder = ExactExtractRecorder()
-        monkeypatch.setattr(worldcover, "exact_extract", recorder)
-        monkeypatch.setattr(worldcover, "_MAX_BATCH_PIXEL_BBOX_CELLS", 12)
+        monkeypatch.setattr(worldcover.extract, "exact_extract", recorder)
+        monkeypatch.setattr(worldcover.geometry, "_MAX_BATCH_PIXEL_BBOX_CELLS", 12)
 
         coverage = class_coverage([half_and_half], frame)
 

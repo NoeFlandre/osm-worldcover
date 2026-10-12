@@ -198,7 +198,7 @@ def _mutation_records(statuses):
         records.append(
             {
                 "name": f"{mangled}__mutmut_{index}",
-                "path": mutation_score.RASTER_SOURCE,
+                "path": mutation_score.RASTER_SOURCES[0],
                 "function": function,
                 "class": None,
                 "mangled_function": mangled,
@@ -339,7 +339,7 @@ def test_mutation_report_writes_per_file_scores(tmp_path, monkeypatch) -> None:
 
     assert mutation_score.main() == 0
     report = json.loads((tmp_path / "mutants" / "mutation-score.json").read_text(encoding="utf-8"))
-    raster = report["per_file"][mutation_score.RASTER_SOURCE]
+    raster = report["per_file"][mutation_score.RASTER_SOURCES[0]]
 
     assert raster["total"] == report["summary"]["total"] == 10
     assert raster["confirmed_kill_score"] == pytest.approx(0.8)
