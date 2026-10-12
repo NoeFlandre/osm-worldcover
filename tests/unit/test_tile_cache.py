@@ -11,7 +11,7 @@ from osm_worldcover.domain.tiling import Tile
 @pytest.fixture
 def downloads(monkeypatch) -> list[tuple[str, float | None]]:
     fake = FakeUrlopen(b"tif")
-    monkeypatch.setattr(wc.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(wc.tiles.urllib.request, "urlopen", fake)
     return fake.calls
 
 
