@@ -30,6 +30,13 @@ MANIFEST = {
 }
 
 
+def test_assemble_callback_is_available_and_registered_on_the_cli_namespace() -> None:
+    from osm_worldcover import cli_assemble
+
+    assert cli.assemble.__module__ == cli_assemble.__name__
+    assert any(command.callback is cli.assemble for command in cli.app.registered_commands)
+
+
 def split_frames(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return {
         name: frame[frame["split"] == name].reset_index(drop=True)

@@ -3,19 +3,17 @@
 import functools
 import logging
 import math
-import shutil
 import sys
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 
+from osm_worldcover import cli_assemble as _cli_assemble
 from osm_worldcover.adapters import hub
 from osm_worldcover.adapters.writer import read_manifest
-from osm_worldcover.assembly import verified_assembly
-from osm_worldcover.build import ShardStore, run_build
+from osm_worldcover.build import run_build
 from osm_worldcover.config import (
     DEFAULT_CACHE_DIR,
     DEFAULT_CACHED_TILES,
@@ -26,13 +24,12 @@ from osm_worldcover.config import (
     Config,
 )
 from osm_worldcover.domain.text import DEFAULT_MIN_WORDS
-from osm_worldcover.finalize import StreamedBuild, finalize_shards
+from osm_worldcover.finalize import StreamedBuild
 from osm_worldcover.release import (
     migrate_release_lock as _migrate_release_lock,
 )
 from osm_worldcover.release import (
     release_read_lock,
-    scratch_lock,
 )
 from osm_worldcover.sources import DEFAULT_SOURCE, recipe_for, source_names
 
@@ -50,20 +47,6 @@ def _enable_verbose_logging(verbose: bool) -> None:
     # Only this package is raised to INFO, so third-party libraries stay quiet.
     logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
     logging.getLogger("osm_worldcover").setLevel(logging.INFO)
-
-
-@dataclass(frozen=True, slots=True)
-class AssembleOptions:
-    """Settings for one assembly, named so a revision and a dataset version cannot be swapped."""
-
-    out: Path
-    work: Path
-    source: str | None
-    threshold: float | None
-    revision: str | None
-    dataset_version: str | None
-    legacy_code_revision: str | None
-    allow_unverified: bool
 
 
 def _fail[**P, R](command: Callable[P, R]) -> Callable[P, R]:
@@ -182,148 +165,6 @@ def regions(
         typer.echo(stem)
 
 
-@app.command()
-@_fail
-def assemble(
-    shard_dirs: Annotated[
-        list[Path], typer.Argument(help="Directories of region shards to combine.")
-    ],
-    out: OutOption = DEFAULT_OUT_DIR,
-    source: Annotated[
-        str | None, typer.Option(help="Require this source; otherwise use verified receipts.")
-    ] = None,
-    work: Annotated[Path, typer.Option(help="Scratch directory for assembly.")] = (
-        DEFAULT_CACHE_DIR / "assembly"
-    ),
-    threshold: Annotated[
-        float | None, typer.Option(help="Require this dominance threshold in the receipts.")
-    ] = None,
-    revision: Annotated[
-        str | None, typer.Option(help="Require this pinned source commit in the receipts.")
-    ] = None,
-    dataset_version: Annotated[
-        str | None, typer.Option(help="Require this output version in the receipts.")
-    ] = None,
-    legacy_code_revision: Annotated[
-        str | None,
-        typer.Option(
-            help="Exact commit for verified legacy receipts that predate code revision fields."
-        ),
-    ] = None,
-    allow_unverified_shards: Annotated[
-        bool,
-        typer.Option(help="Recover legacy shards without receipts; output is not publishable."),
-    ] = False,
-    verbose: VerboseOption = False,
-) -> None:
-    """Combine region shards into the published dataset.
-
-    Separate from `build` so a run split across processes -- each producing its
-    own shards -- can be assembled once, in one place. By default all settings
-    come from matching completion receipts; explicit options must agree. The
-    pinned source inventory is checked, and incomplete subsets are marked as
-    such. Legacy recovery uses wikidata/0.8/1.1.0 defaults and never proves
-    whole-source completeness.
-    """
-    _enable_verbose_logging(verbose)
-    logger.info(
-        "assemble shard_dirs=%d mode=%s out=%s",
-        len(shard_dirs),
-        "unverified" if allow_unverified_shards else "verified",
-        out,
-    )
-    try:
-        result = _assemble(
-            shard_dirs,
-            AssembleOptions(
-                out=out,
-                work=work,
-                source=source,
-                threshold=threshold,
-                revision=revision,
-                dataset_version=dataset_version,
-                legacy_code_revision=legacy_code_revision,
-                allow_unverified=allow_unverified_shards,
-            ),
-        )
-    except (OSError, ValueError) as error:
-        typer.echo(f"assembly refused: {error}", err=True)
-        raise typer.Exit(1) from error
-    if result.rows == 0:
-        typer.echo(f"no rows found in {[str(d) for d in shard_dirs]}", err=True)
-        raise typer.Exit(1)
-    _report(result)
-
-
-def _assemble(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
-    """Keep the legacy recovery route visibly separate from verified assembly."""
-    with scratch_lock(options.work):
-        if options.allow_unverified:
-            return _assemble_unverified(shard_dirs, options)
-        return _assemble_verified(shard_dirs, options)
-
-
-def _assemble_unverified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
-    typer.echo(
-        "WARNING: recovering UNVERIFIED shards; provenance and full-source completion "
-        "are unproven. This output is not publishable.",
-        err=True,
-    )
-    config = Config().with_overrides(
-        source=options.source,
-        out_dir=options.out,
-        threshold=options.threshold,
-        source_revision=options.revision,
-        dataset_version=options.dataset_version,
-    )
-    combined = _gather(shard_dirs, options.work)
-    return finalize_shards(
-        combined,
-        config,
-        options.work,
-        options.out,
-        ShardStore(combined).rejections(),
-        processing={
-            "schema_version": 1,
-            "scope": "unverified",
-            "complete": False,
-            "full_source_complete": False,
-            "selected_complete": False,
-            "verified": False,
-            "warning": "Legacy recovery: completion receipts and inventory were not verified.",
-        },
-    )
-
-
-def _assemble_verified(shard_dirs: list[Path], options: AssembleOptions) -> StreamedBuild:
-    inputs = verified_assembly(
-        shard_dirs,
-        options.out,
-        options.work,
-        {
-            "source": options.source,
-            "threshold": options.threshold,
-            "source_revision": options.revision,
-            "dataset_version": options.dataset_version,
-        },
-        legacy_code_revision=options.legacy_code_revision,
-    )
-    if not inputs.processing["full_source_complete"]:
-        typer.echo(
-            f"WARNING: incomplete source inventory: {len(inputs.processing['missing_regions'])} "
-            "regions missing; this subset is not publishable as a complete source.",
-            err=True,
-        )
-    return finalize_shards(
-        inputs.shards,
-        inputs.config,
-        options.work,
-        options.out,
-        inputs.rejections,
-        processing=inputs.processing,
-    )
-
-
 def _report(result: StreamedBuild) -> None:
     """Report a finished build, failing if a guarantee broke."""
     typer.echo(f"\nexamples: {result.rows:,}")
@@ -336,35 +177,6 @@ def _report(result: StreamedBuild) -> None:
     for violation in result.report.violations:
         typer.echo(f"  FAILED {violation.check.value}: {violation.count}", err=True)
     raise typer.Exit(1)
-
-
-def _gather(shard_dirs: list[Path], work: Path) -> Path:
-    """Link every shard into one directory, so assembly sees a single source.
-
-    Names are prefixed with the directory's position, because two workers can
-    each produce a file of the same name -- their directories are all called
-    "shards", so the leaf name cannot tell them apart. The directory is emptied
-    first so a previous assembly cannot leak into this one. Each shard's
-    rejection counters travel with it, so a split build still reports why its
-    polygons were refused.
-    """
-    if len(shard_dirs) == 1:
-        return shard_dirs[0]
-    combined = Path(work) / "shards"
-    if combined.exists():
-        shutil.rmtree(combined)
-    combined.mkdir(parents=True)
-    # The directory was just emptied, so no name can already be taken.
-    for index, directory in enumerate(shard_dirs):
-        _link_into(combined, Path(directory), f"{index:03d}")
-    return combined
-
-
-def _link_into(combined: Path, directory: Path, prefix: str) -> None:
-    """Link one worker's shards and counters into the combined view."""
-    for pattern in ("*.parquet", "*.rejections.json"):
-        for path in sorted(directory.glob(pattern)):
-            (combined / f"{prefix}__{path.name}").symlink_to(path.resolve())
 
 
 @app.command("migrate-release-lock")
@@ -541,6 +353,15 @@ def info(build_dir: BuildDirArgument) -> None:
         typer.echo(
             f"  {entry['language']:<6} {entry['examples']:>9,}  {entry['share'] * 100:5.1f}%"
         )
+
+
+AssembleOptions = _cli_assemble.AssembleOptions
+_assemble = _cli_assemble._assemble
+_assemble_unverified = _cli_assemble._assemble_unverified
+_assemble_verified = _cli_assemble._assemble_verified
+_gather = _cli_assemble._gather
+_link_into = _cli_assemble._link_into
+assemble = _cli_assemble.register(app, _fail, _enable_verbose_logging, _report, logger)
 
 
 if __name__ == "__main__":

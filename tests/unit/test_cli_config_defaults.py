@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import typer.main
 
-from osm_worldcover import cli
+from osm_worldcover import cli, cli_assemble
 from osm_worldcover.cli import app
 from osm_worldcover.config import Config
 
@@ -71,7 +71,7 @@ def test_unverified_assembly_with_no_options_uses_config_defaults(tmp_path, monk
     def fake_finalize(shard_dir, config, work_dir, out_dir, rejections=None, processing=None):
         captured["config"] = config
 
-    monkeypatch.setattr(cli, "finalize_shards", fake_finalize)
+    monkeypatch.setattr(cli_assemble, "finalize_shards", fake_finalize)
     options = cli.AssembleOptions(
         out=Config().out_dir,
         work=tmp_path / "work",
