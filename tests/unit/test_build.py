@@ -671,10 +671,14 @@ def test_a_zero_byte_shard_is_not_a_finished_one(tmp_path) -> None:
 
 
 def test_shards_are_written_atomically_with_a_plain_index(tmp_path, monkeypatch) -> None:
-    from osm_worldcover import build as module
+    from osm_worldcover import build_shards
 
     seen = []
-    monkeypatch.setattr(module.tempfile, "mkstemp", _recording(seen, module.tempfile.mkstemp))
+    monkeypatch.setattr(
+        build_shards.tempfile,
+        "mkstemp",
+        _recording(seen, build_shards.tempfile.mkstemp),
+    )
     custom = frame(2)
     custom.index = [7, 9]
 
@@ -703,7 +707,7 @@ def test_configured_regions_apply_unless_a_selection_is_passed() -> None:
 
 
 def test_outcome_stems_and_outcomes_must_line_up() -> None:
-    from osm_worldcover.build import _missing_outcome_stems
+    from osm_worldcover.build_shards import _missing_outcome_stems
 
     assert _missing_outcome_stems(["a", "b"], [None, object()]) == ["a"]
     with pytest.raises(ValueError, match=re.escape("zip() argument 2 is shorter than argument 1")):
@@ -725,3 +729,10 @@ def test_run_build_defaults_to_quiet_and_discards_tiles(tmp_path, monkeypatch) -
     module.run_build(Config(cache_dir=tmp_path, out_dir=tmp_path / "out"))
 
     assert keep == [False]
+
+
+def test_shard_store_is_available_from_its_compatibility_module() -> None:
+    from osm_worldcover import build as build_module
+    from osm_worldcover import build_shards
+
+    assert build_module.ShardStore is build_shards.ShardStore
