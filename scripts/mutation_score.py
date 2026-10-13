@@ -30,6 +30,7 @@ RASTER_REPORT = MUTANTS / "worldcover-raster-mutants.json"
 RASTER_SOURCES = (
     "src/osm_worldcover/adapters/worldcover/extract.py",
     "src/osm_worldcover/adapters/worldcover/geometry.py",
+    "src/osm_worldcover/adapters/worldcover/boundary.py",
 )
 RASTER_FUNCTIONS = (
     "_add_raster",
