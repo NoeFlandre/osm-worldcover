@@ -610,6 +610,15 @@ def test_raster_evidence_rejects_an_empty_scope() -> None:
         mutation_score._raster_evidence([], _valid_mutation_baseline("expected-commit"))
 
 
+def test_raster_mutation_scope_includes_split_boundary_module() -> None:
+    record = {
+        "path": "src/osm_worldcover/adapters/worldcover/boundary.py",
+        "function": "_accumulate_corrected",
+    }
+
+    assert mutation_score._raster_records([record]) == [record]
+
+
 def test_raster_evidence_rejects_malformed_test_names() -> None:
     record = _mutation_records(["survived"])[0]
     baseline = _valid_mutation_baseline("expected-commit")
