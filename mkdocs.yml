@@ -14,6 +14,7 @@ theme:
 nav:
   - Home: index.md
   - How it works: pipeline.md
+  - Reference label example: worldcover-reference-label-example.md
   - Dataset schema: schema.md
   - Glossary: glossary.md
   - Technical debt: technical-debt.md
