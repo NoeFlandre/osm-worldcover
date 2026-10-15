@@ -39,3 +39,5 @@ combines the shards. You can safely run it again.
 WorldCover classifies the ground in 10 m pixels. The label gives the class of
 the area that **contains** a feature. It does not give the material of the
 feature. For the known limits, see [Technical debt](technical-debt.md).
+
+See [one local reference-label example](worldcover-reference-label-example.md) for a map of the pixels and the full-polygon 80% decision.
