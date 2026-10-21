@@ -439,10 +439,11 @@ def test_equal_area_refinement_records_observed_ratio_range(tmp_path: Path) -> N
         from_origin(0, 51, 0.5237, 3),
     )
 
-    _area, _supports, _evidence, diagnostics = (
-        equal_area_class_coverage_with_tile_evidence_detailed((("fixture", raster),), triangle)
+    _area, _supports, evidence, diagnostics = equal_area_class_coverage_with_tile_evidence_detailed(
+        (("fixture", raster),), triangle
     )
 
+    assert evidence == ((10, ("fixture",)),)
     assert diagnostics is not None
     assert diagnostics.startswith("adaptive_cea_refinement;steps=0.01,0.001,0.0001;")
     assert "class=10,range=" in diagnostics

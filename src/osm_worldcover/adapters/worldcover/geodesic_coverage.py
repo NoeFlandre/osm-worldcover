@@ -137,15 +137,26 @@ def _equal_area_class_coverage_detailed(
     coarse_ratios = _support_ratios(polygon_area, class_areas)
     diagnostics = None
     if any(abs(ratio - 0.8) <= _AREA_REFINEMENT_TRIGGER for ratio in coarse_ratios.values()):
-        measurements = [(polygon_area, class_areas, coarse_ratios)]
+        measurements: list[
+            tuple[
+                float,
+                tuple[tuple[int, float], ...],
+                tuple[tuple[int, tuple[str, ...]], ...],
+                dict[int, float],
+            ]
+        ] = [(polygon_area, class_areas, class_evidence, coarse_ratios)]
         for step in _AREA_REFINEMENT_STEPS:
             refined = _measure_at_step(sources, geometry, step)
-            measurements.append((refined[0], refined[1], _support_ratios(refined[0], refined[1])))
-        class_codes = set().union(*(ratios.keys() for _area, _supports, ratios in measurements))
+            measurements.append(
+                (refined[0], refined[1], refined[2], _support_ratios(refined[0], refined[1]))
+            )
+        class_codes = set().union(
+            *(ratios.keys() for _area, _supports, _evidence, ratios in measurements)
+        )
         diagnostic_ranges = []
         for code in sorted(class_codes):
             ratios_by_step = tuple(
-                ratios.get(code, 0.0) for _area, _supports, ratios in measurements
+                ratios.get(code, 0.0) for _area, _supports, _evidence, ratios in measurements
             )
             decisions = tuple(ratio >= 0.8 for ratio in ratios_by_step)
             if any(decisions) and not all(decisions):
@@ -162,7 +173,7 @@ def _equal_area_class_coverage_detailed(
         diagnostics = "adaptive_cea_refinement;steps=0.01,0.001,0.0001;" + ";".join(
             diagnostic_ranges
         )
-        polygon_area, class_areas, class_evidence = measurements[-1]
+        polygon_area, class_areas, class_evidence, _ = measurements[-1]
     _validate_support_denominator(polygon_area, class_areas)
     return polygon_area, class_areas, class_evidence, diagnostics
 
