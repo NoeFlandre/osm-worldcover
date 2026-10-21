@@ -13,6 +13,7 @@ from osm_worldcover.adapters.worldcover import pool_attempts
 from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     AREA_MEASUREMENT,
     geodesic_class_coverage,
+    geodesic_class_coverage_with_tile_evidence,
 )
 from osm_worldcover.adapters.worldcover.pool_attempts import iter_sourcewide_coverage
 from osm_worldcover.domain.tiling import Tile
@@ -55,12 +56,14 @@ def test_sourcewide_adapter_attempts_all_raw_rows_and_records_missing_geometry(m
     fake_tiles = FakeTiles(missing={"N00E000"})
     coverage_calls: list[str] = []
 
-    def fake_geodesic_coverage(paths, geometry):
+    def fake_geodesic_coverage(tile_paths, geometry):
         coverage_calls.append(geometry.wkt)
-        assert len(paths) == 0 or all(path.name.endswith(".tif") for path in paths)
-        return 100.0, ((10, 80.0),)
+        assert len(tile_paths) == 0 or all(path.name.endswith(".tif") for _, path in tile_paths)
+        return 100.0, ((10, 80.0),), ((10, ("N00E003",)),)
 
-    monkeypatch.setattr(pool_attempts, "geodesic_class_coverage", fake_geodesic_coverage)
+    monkeypatch.setattr(
+        pool_attempts, "geodesic_class_coverage_with_tile_evidence", fake_geodesic_coverage
+    )
     raw_rows = _rows()
     results = tuple(iter_sourcewide_coverage((raw_rows.iloc[:1], raw_rows.iloc[1:]), fake_tiles))
 
@@ -72,6 +75,7 @@ def test_sourcewide_adapter_attempts_all_raw_rows_and_records_missing_geometry(m
     assert results[0].area_measurement == AREA_MEASUREMENT
     assert results[0].attempted_tiles == ("N00E000", "N00E003", "N03E000", "N03E003")
     assert results[0].missing_tiles == ("N00E000",)
+    assert results[0].class_evidence_ids == ((10, ("N00E003",)),)
     assert results[1].extraction_error == "geometry_unusable"
     assert results[2].extraction_error == "source_polygon_id_missing"
     assert coverage_calls == [box(2.9, 2.9, 3.1, 3.1).wkt]
@@ -83,8 +87,8 @@ def test_sourcewide_adapter_records_operational_failure_without_dropping_row(mon
     fake_tiles = FakeTiles(fail={"N00E000"})
     monkeypatch.setattr(
         pool_attempts,
-        "geodesic_class_coverage",
-        lambda _paths, _geometry: pytest.fail("measurement should not use a failed tile"),
+        "geodesic_class_coverage_with_tile_evidence",
+        lambda _tile_paths, _geometry: pytest.fail("measurement should not use a failed tile"),
     )
 
     result = next(iter_sourcewide_coverage(_rows().iloc[[0]], fake_tiles))
@@ -169,3 +173,19 @@ def test_geodesic_coverage_measures_boundary_and_multipart_geometry(tmp_path: Pa
     assert dict(class_areas)[10] == pytest.approx(_geod_area(first_part), rel=1e-12)
     assert dict(class_areas)[20] == pytest.approx(_geod_area(second_part), rel=1e-12)
     assert polygon_area == pytest.approx(_geod_area(polygon), rel=1e-12)
+
+
+def test_geodesic_coverage_reports_only_tiles_contributing_to_each_class(tmp_path: Path) -> None:
+    west = tmp_path / "west.tif"
+    east = tmp_path / "east.tif"
+    _write_raster(west, np.array([[10]], dtype=np.uint8), from_origin(0, 1, 1, 1))
+    _write_raster(east, np.array([[20]], dtype=np.uint8), from_origin(1, 1, 1, 1))
+
+    polygon_area, class_areas, class_evidence = geodesic_class_coverage_with_tile_evidence(
+        (("N00E000", west), ("N00E003", east)), box(0, 0, 2, 1)
+    )
+
+    assert polygon_area == pytest.approx(_geod_area(box(0, 0, 2, 1)), rel=1e-12)
+    assert dict(class_areas)[10] > 0.0
+    assert dict(class_areas)[20] > 0.0
+    assert class_evidence == ((10, ("N00E000",)), (20, ("N00E003",)))

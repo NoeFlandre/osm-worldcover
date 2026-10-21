@@ -54,52 +54,95 @@ def geodesic_class_coverage(
     physical area. The denominator is measured once from the unchanged source
     geometry, including any uncovered and NoData portion.
     """
+    polygon_area, class_areas, _class_evidence = _geodesic_class_coverage(
+        ((None, path) for path in raster_paths), geometry
+    )
+    return polygon_area, class_areas
+
+
+def geodesic_class_coverage_with_tile_evidence(
+    tile_paths: Iterable[tuple[str, Path]], geometry: shapely.Geometry
+) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+    """Measure class areas and identify the tiles that contribute to each class."""
+    return _geodesic_class_coverage(tile_paths, geometry)
+
+
+def _geodesic_class_coverage(
+    raster_sources: Iterable[tuple[str | None, Path]], geometry: shapely.Geometry
+) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
     if geometry.is_empty or not geometry.is_valid:
         raise ValueError("WorldCover geodesic coverage requires a valid non-empty polygon")
     polygon_area = _geodesic_area(geometry)
     if not math.isfinite(polygon_area) or polygon_area <= 0.0:
         raise ValueError("WorldCover source polygon has no positive WGS84 geodesic area")
 
-    totals: defaultdict[int, float] = defaultdict(float)
-    for path in raster_paths:
-        with rasterio.open(path) as dataset:
-            _validate_dataset(path, dataset)
-            pixel_geometry = _pixel_geometry(geometry, dataset.transform)
-            for pixel_chunk in _bounded_pixel_chunks(pixel_geometry, dataset.width, dataset.height):
-                geometry_chunk = _map_geometry(pixel_chunk, dataset.transform)
-                frame = gpd.GeoDataFrame(geometry=[geometry_chunk], crs=dataset.crs)
-                result = exact_extract(
-                    str(path),
-                    frame,
-                    list(_OPS),
-                    max_cells_in_memory=_MAX_CELLS_IN_MEMORY,
-                    output="pandas",
-                )
-                cell_ids = np.asarray(result["cell_id"].iloc[0], dtype=np.int64)
-                coverage = np.asarray(result["coverage"].iloc[0], dtype=float)
-                values = np.asarray(result["values"].iloc[0], dtype=float)
-                boundary_ids = _boundary_cell_ids(pixel_chunk, dataset.width, dataset.height)
-                boundary_mask = np.isin(cell_ids, boundary_ids, assume_unique=False)
-                _add_interior_cells(
-                    totals,
-                    cell_ids[~boundary_mask],
-                    coverage[~boundary_mask],
-                    values[~boundary_mask],
-                    dataset.transform,
-                    dataset.width,
-                )
-                _add_boundary_cells(
-                    totals,
-                    boundary_ids,
-                    geometry_chunk,
-                    dataset,
-                )
-
-    class_areas = tuple(sorted((code, area) for code, area in totals.items() if area > 0.0))
+    class_areas, class_evidence = _aggregate_tile_support(raster_sources, geometry)
     support_total = sum(area for _code, area in class_areas)
     if support_total > polygon_area * (1.0 + 1e-8):
         raise ValueError("WorldCover class support exceeds the full geodesic polygon area")
-    return polygon_area, class_areas
+    return polygon_area, class_areas, class_evidence
+
+
+def _aggregate_tile_support(
+    raster_sources: Iterable[tuple[str | None, Path]], geometry: shapely.Geometry
+) -> tuple[tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+    """Sum each tile's class areas and retain contributing source IDs."""
+    totals: defaultdict[int, float] = defaultdict(float)
+    evidence_by_class: defaultdict[int, set[str]] = defaultdict(set)
+    for source_id, path in raster_sources:
+        _merge_tile_support(totals, evidence_by_class, source_id, _measure_tile(path, geometry))
+    class_areas = tuple(sorted((code, area) for code, area in totals.items() if area > 0.0))
+    class_evidence = tuple(
+        (code, tuple(sorted(source_ids))) for code, source_ids in sorted(evidence_by_class.items())
+    )
+    return class_areas, class_evidence
+
+
+def _merge_tile_support(
+    totals: defaultdict[int, float],
+    evidence_by_class: defaultdict[int, set[str]],
+    source_id: str | None,
+    tile_totals: defaultdict[int, float],
+) -> None:
+    """Merge positive area from one tile and attribute its source ID."""
+    for code, area in tile_totals.items():
+        if area > 0.0:
+            totals[code] += area
+            if source_id is not None:
+                evidence_by_class[code].add(source_id)
+
+
+def _measure_tile(path: Path, geometry: shapely.Geometry) -> defaultdict[int, float]:
+    """Measure class areas in one raster tile without retaining cell records."""
+    tile_totals: defaultdict[int, float] = defaultdict(float)
+    with rasterio.open(path) as dataset:
+        _validate_dataset(path, dataset)
+        pixel_geometry = _pixel_geometry(geometry, dataset.transform)
+        for pixel_chunk in _bounded_pixel_chunks(pixel_geometry, dataset.width, dataset.height):
+            geometry_chunk = _map_geometry(pixel_chunk, dataset.transform)
+            frame = gpd.GeoDataFrame(geometry=[geometry_chunk], crs=dataset.crs)
+            result = exact_extract(
+                str(path),
+                frame,
+                list(_OPS),
+                max_cells_in_memory=_MAX_CELLS_IN_MEMORY,
+                output="pandas",
+            )
+            cell_ids = np.asarray(result["cell_id"].iloc[0], dtype=np.int64)
+            coverage = np.asarray(result["coverage"].iloc[0], dtype=float)
+            values = np.asarray(result["values"].iloc[0], dtype=float)
+            boundary_ids = _boundary_cell_ids(pixel_chunk, dataset.width, dataset.height)
+            boundary_mask = np.isin(cell_ids, boundary_ids, assume_unique=False)
+            _add_interior_cells(
+                tile_totals,
+                cell_ids[~boundary_mask],
+                coverage[~boundary_mask],
+                values[~boundary_mask],
+                dataset.transform,
+                dataset.width,
+            )
+            _add_boundary_cells(tile_totals, boundary_ids, geometry_chunk, dataset)
+    return tile_totals
 
 
 def _validate_dataset(path: Path, dataset: rasterio.DatasetReader) -> None:

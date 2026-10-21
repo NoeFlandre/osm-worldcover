@@ -14,7 +14,7 @@ from shapely.geometry.base import BaseGeometry
 
 from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     AREA_MEASUREMENT,
-    geodesic_class_coverage,
+    geodesic_class_coverage_with_tile_evidence,
 )
 from osm_worldcover.adapters.worldcover.tiles import TileNotPublishedError, TileSource
 from osm_worldcover.domain.geometry import is_usable_polygon
@@ -33,6 +33,7 @@ class SourceWideCoverageAttempt:
     attempted_tiles: tuple[str, ...]
     missing_tiles: tuple[str, ...]
     extraction_error: str | None = None
+    class_evidence_ids: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
 
 def iter_sourcewide_coverage(
@@ -97,11 +98,10 @@ def _measure_polygon(
     """Fetch each touched tile once for this row and retain every outcome."""
 
     tile_set = tuple(tiles_for_bbox(geometry.bounds))
-    paths: list[Path] = []
     attempted: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
     try:
-        paths, attempted, missing, errors = _fetch_tiles(tile_set, tile_source)
+        tile_paths, attempted, missing, errors = _fetch_tiles(tile_set, tile_source)
         if errors:
             return SourceWideCoverageAttempt(
                 source_polygon_id,
@@ -113,7 +113,7 @@ def _measure_polygon(
                 missing,
                 f"tile_read_failed:{','.join(sorted(set(errors)))}",
             )
-        polygon_area_m2, class_areas_m2 = _coverage_areas(geometry, paths)
+        polygon_area_m2, class_areas_m2, class_evidence_ids = _coverage_areas(geometry, tile_paths)
         return SourceWideCoverageAttempt(
             source_polygon_id,
             ordinal,
@@ -122,6 +122,7 @@ def _measure_polygon(
             AREA_MEASUREMENT,
             attempted,
             missing,
+            class_evidence_ids=class_evidence_ids,
         )
     except (OSError, RasterioError, RuntimeError, ValueError, ShapelyError) as error:
         return SourceWideCoverageAttempt(
@@ -142,17 +143,17 @@ def _measure_polygon(
 def _fetch_tiles(
     tile_set: tuple[Tile, ...],
     tile_source: TileSource,
-) -> tuple[list[Path], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[list[tuple[str, Path]], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Attempt every touched tile and report unavailable versus failed reads."""
 
-    paths: list[Path] = []
+    paths: list[tuple[str, Path]] = []
     attempted: list[str] = []
     missing: list[str] = []
     errors: list[str] = []
     for tile in tile_set:
         attempted.append(tile.name)
         try:
-            paths.append(tile_source.ensure(tile))
+            paths.append((tile.name, tile_source.ensure(tile)))
         except TileNotPublishedError:
             missing.append(tile.name)
         except (OSError, RasterioError, RuntimeError, ValueError) as error:
@@ -162,11 +163,11 @@ def _fetch_tiles(
 
 def _coverage_areas(
     geometry: BaseGeometry,
-    paths: list[Path],
-) -> tuple[float, tuple[tuple[int, float], ...]]:
+    tile_paths: list[tuple[str, Path]],
+) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
     """Measure square-metre support on the unchanged full source geometry."""
 
-    return geodesic_class_coverage(paths, geometry)
+    return geodesic_class_coverage_with_tile_evidence(tile_paths, geometry)
 
 
 def _decode_polygon(value: object) -> BaseGeometry | None:
