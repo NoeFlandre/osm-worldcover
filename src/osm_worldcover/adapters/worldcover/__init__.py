@@ -13,6 +13,7 @@ the sum over the tiles it touches.
 """
 
 from .extract import class_coverage
+from .pool_attempts import SourceWideCoverageAttempt, iter_sourcewide_coverage
 from .tiles import (
     DEFAULT_BASE_URL,
     DEFAULT_CACHED_TILES,
@@ -24,8 +25,10 @@ from .tiles import (
 __all__ = [
     "DEFAULT_BASE_URL",
     "DEFAULT_CACHED_TILES",
+    "SourceWideCoverageAttempt",
     "TileNotPublishedError",
     "TileSource",
     "WorldCoverTiles",
     "class_coverage",
+    "iter_sourcewide_coverage",
 ]
