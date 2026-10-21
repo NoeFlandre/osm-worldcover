@@ -347,10 +347,10 @@ def test_equal_area_mosaic_prevents_geodesic_false_positive_at_eighty_percent(
     old_geodesic_ratio = old_geodesic_numerator / old_geodesic_denominator
     equal_area_ratio = dict(class_areas)[10] / polygon_area
 
-    assert old_geodesic_ratio == pytest.approx(0.8003708190146516, rel=1e-12)
-    assert old_geodesic_ratio >= 0.8
-    assert equal_area_ratio == pytest.approx(0.79975, abs=1e-12)
-    assert equal_area_ratio < 0.8
+    assert (old_geodesic_ratio >= 0.8, equal_area_ratio < 0.8) == (True, True)
+    assert old_geodesic_ratio == pytest.approx(0.8003708190146516, rel=1e-12) and (
+        equal_area_ratio == pytest.approx(0.79975, abs=1e-12)
+    )
 
 
 def test_equal_area_uses_one_projected_boundary_across_tile_splits(tmp_path: Path) -> None:
@@ -443,11 +443,13 @@ def test_equal_area_refinement_records_observed_ratio_range(tmp_path: Path) -> N
         (("fixture", raster),), triangle
     )
 
-    assert evidence == ((10, ("fixture",)),)
-    assert diagnostics is not None
-    assert diagnostics.startswith("adaptive_cea_refinement;steps=0.01,0.001,0.0001;")
-    assert "class=10,range=" in diagnostics
-    assert "spread=" in diagnostics
+    assert (
+        evidence,
+        diagnostics is not None
+        and diagnostics.startswith("adaptive_cea_refinement;steps=0.01,0.001,0.0001;")
+        and "class=10,range=" in diagnostics
+        and "spread=" in diagnostics,
+    ) == (((10, ("fixture",)),), True)
 
 
 @pytest.mark.parametrize(

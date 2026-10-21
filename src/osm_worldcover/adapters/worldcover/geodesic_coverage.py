@@ -135,47 +135,87 @@ def _equal_area_class_coverage_detailed(
         sources, geometry, _AREA_DENSIFY_DEGREES
     )
     coarse_ratios = _support_ratios(polygon_area, class_areas)
-    diagnostics = None
-    if any(abs(ratio - 0.8) <= _AREA_REFINEMENT_TRIGGER for ratio in coarse_ratios.values()):
-        measurements: list[
-            tuple[
-                float,
-                tuple[tuple[int, float], ...],
-                tuple[tuple[int, tuple[str, ...]], ...],
-                dict[int, float],
-            ]
-        ] = [(polygon_area, class_areas, class_evidence, coarse_ratios)]
-        for step in _AREA_REFINEMENT_STEPS:
-            refined = _measure_at_step(sources, geometry, step)
-            measurements.append(
-                (refined[0], refined[1], refined[2], _support_ratios(refined[0], refined[1]))
-            )
-        class_codes = set().union(
-            *(ratios.keys() for _area, _supports, _evidence, ratios in measurements)
-        )
-        diagnostic_ranges = []
-        for code in sorted(class_codes):
-            ratios_by_step = tuple(
-                ratios.get(code, 0.0) for _area, _supports, _evidence, ratios in measurements
-            )
-            decisions = tuple(ratio >= 0.8 for ratio in ratios_by_step)
-            if any(decisions) and not all(decisions):
-                raise WorldCoverAreaMeasurementError(
-                    "coverage_numerically_unresolved_at_0.8:"
-                    f"class={code};steps=0.01,0.001,0.0001;"
-                    f"ratios={','.join(f'{ratio:.12g}' for ratio in ratios_by_step)}"
-                )
-            minimum = min(ratios_by_step)
-            maximum = max(ratios_by_step)
-            diagnostic_ranges.append(
-                f"class={code},range={minimum:.12g}:{maximum:.12g},spread={maximum - minimum:.12g}"
-            )
-        diagnostics = "adaptive_cea_refinement;steps=0.01,0.001,0.0001;" + ";".join(
-            diagnostic_ranges
-        )
-        polygon_area, class_areas, class_evidence, _ = measurements[-1]
+    measurements = _refinement_measurements(
+        sources, geometry, (polygon_area, class_areas, class_evidence, coarse_ratios)
+    )
+    diagnostics = _format_refinement_diagnostics(measurements) if measurements else None
+    if measurements:
+        polygon_area, class_areas, class_evidence, _ratios = measurements[-1]
     _validate_support_denominator(polygon_area, class_areas)
     return polygon_area, class_areas, class_evidence, diagnostics
+
+
+def _refinement_measurements(
+    sources: tuple[tuple[str | None, Path], ...],
+    geometry: shapely.Geometry,
+    initial: tuple[
+        float,
+        tuple[tuple[int, float], ...],
+        tuple[tuple[int, tuple[str, ...]], ...],
+        dict[int, float],
+    ],
+) -> list[
+    tuple[
+        float,
+        tuple[tuple[int, float], ...],
+        tuple[tuple[int, tuple[str, ...]], ...],
+        dict[int, float],
+    ]
+]:
+    if not _needs_area_refinement(initial[3]):
+        return []
+    measurements = [initial]
+    for step in _AREA_REFINEMENT_STEPS:
+        refined = _measure_at_step(sources, geometry, step)
+        measurements.append(
+            (refined[0], refined[1], refined[2], _support_ratios(refined[0], refined[1]))
+        )
+    return measurements
+
+
+def _needs_area_refinement(ratios: dict[int, float]) -> bool:
+    return any(abs(ratio - 0.8) <= _AREA_REFINEMENT_TRIGGER for ratio in ratios.values())
+
+
+def _format_refinement_diagnostics(
+    measurements: list[
+        tuple[
+            float,
+            tuple[tuple[int, float], ...],
+            tuple[tuple[int, tuple[str, ...]], ...],
+            dict[int, float],
+        ]
+    ],
+) -> str:
+    class_codes = sorted(set().union(*(measurement[3].keys() for measurement in measurements)))
+    ranges = tuple(_format_class_ratio_range(code, measurements) for code in class_codes)
+    return "adaptive_cea_refinement;steps=0.01,0.001,0.0001;" + ";".join(ranges)
+
+
+def _format_class_ratio_range(
+    code: int,
+    measurements: list[
+        tuple[
+            float,
+            tuple[tuple[int, float], ...],
+            tuple[tuple[int, tuple[str, ...]], ...],
+            dict[int, float],
+        ]
+    ],
+) -> str:
+    ratios = tuple(measurement[3].get(code, 0.0) for measurement in measurements)
+    minimum, maximum = min(ratios), max(ratios)
+    _validate_ratio_decisions_stable(code, ratios)
+    return f"class={code},range={minimum:.12g}:{maximum:.12g},spread={maximum - minimum:.12g}"
+
+
+def _validate_ratio_decisions_stable(code: int, ratios: tuple[float, ...]) -> None:
+    if min(ratios) < 0.8 <= max(ratios):
+        raise WorldCoverAreaMeasurementError(
+            "coverage_numerically_unresolved_at_0.8:"
+            f"class={code};steps=0.01,0.001,0.0001;"
+            f"ratios={','.join(f'{ratio:.12g}' for ratio in ratios)}"
+        )
 
 
 def _measure_at_step(
@@ -213,15 +253,37 @@ def _validate_source_geometry(geometry: shapely.Geometry) -> None:
 
 
 def _validate_polygon_global_domain(polygon: shapely.Polygon) -> None:
-    min_x, min_y, max_x, max_y = polygon.bounds
-    if min_x < -180.0 or max_x > 180.0 or min_y <= -89.999999 or max_y >= 89.999999:
+    _validate_ring_longitudes(polygon)
+    _validate_polygon_bounds(polygon.bounds)
+
+
+def _validate_polygon_bounds(bounds: tuple[float, float, float, float]) -> None:
+    min_x, min_y, max_x, max_y = bounds
+    _validate_longitude_bounds(min_x, max_x)
+    _validate_latitude_bounds(min_y, max_y)
+    _validate_antimeridian_span(min_x, max_x)
+
+
+def _validate_longitude_bounds(min_x: float, max_x: float) -> None:
+    if min_x < -180.0 or max_x > 180.0:
         raise WorldCoverAreaMeasurementError("worldcover_pole_or_crs_edge_unsupported")
+
+
+def _validate_latitude_bounds(min_y: float, max_y: float) -> None:
+    if min_y <= -89.999999 or max_y >= 89.999999:
+        raise WorldCoverAreaMeasurementError("worldcover_pole_or_crs_edge_unsupported")
+
+
+def _validate_antimeridian_span(min_x: float, max_x: float) -> None:
+    if max_x - min_x >= 180.0:
+        raise WorldCoverAreaMeasurementError("worldcover_antimeridian_span_unsupported")
+
+
+def _validate_ring_longitudes(polygon: shapely.Polygon) -> None:
     for ring in (polygon.exterior, *polygon.interiors):
         longitudes = shapely.get_coordinates(ring)[:, 0]
         if len(longitudes) > 1 and bool(np.any(np.abs(np.diff(longitudes)) > 180.0)):
             raise WorldCoverAreaMeasurementError("worldcover_longitude_wrapping_unsupported")
-    if max_x - min_x >= 180.0:
-        raise WorldCoverAreaMeasurementError("worldcover_antimeridian_span_unsupported")
 
 
 def _validate_polygon_area(polygon_area: float) -> None:
