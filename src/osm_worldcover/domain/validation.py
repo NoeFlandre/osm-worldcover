@@ -12,6 +12,8 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from numbers import Integral
+from operator import index
 from typing import Any
 
 from osm_worldcover.domain.dominance import DEFAULT_THRESHOLD
@@ -116,17 +118,33 @@ def _row_violations(
 ) -> Iterable[tuple[Check, str]]:
     """Yield the guarantees a single row breaks."""
     polygon_id = str(r["polygon_id"])
-    yield from _label_violations(r, threshold, polygon_id)
-    yield from _text_violations(r, min_words, seen_keys, polygon_id)
+    worldcover_code = _parse_worldcover_code(r["worldcover_code"])
+    yield from _label_violations(r, threshold, polygon_id, worldcover_code)
+    yield from _text_violations(r, min_words, seen_keys, polygon_id, worldcover_code)
+
+
+def _parse_worldcover_code(value: Any) -> int | None:
+    """Parse only integer class codes, leaving malformed raw values unobserved downstream."""
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        return None
+    try:
+        return index(value)
+    except Exception:
+        return None
+
+
+def _label_matches(code: int | None, label: Any) -> bool:
+    """Whether a parsed class code names the supplied label."""
+    return code is not None and CLASS_LABELS.get(code) == label
 
 
 def _label_violations(
-    r: Mapping[str, Any], threshold: float, polygon_id: str
+    r: Mapping[str, Any], threshold: float, polygon_id: str, worldcover_code: int | None
 ) -> Iterable[tuple[Check, str]]:
     """Yield violations of the split and label guarantees."""
     if str(r["split"]) not in _VALID_SPLITS:
         yield Check.INVALID_SPLIT, polygon_id
-    if CLASS_LABELS.get(int(r["worldcover_code"])) != r["worldcover_label"]:
+    if not _label_matches(worldcover_code, r["worldcover_label"]):
         yield Check.INVALID_LABEL, polygon_id
     fraction = float(r["dominant_fraction"])
     # Written as a positive range test so NaN, which fails every comparison, is rejected.
@@ -137,13 +155,19 @@ def _label_violations(
 
 
 def _text_violations(
-    r: Mapping[str, Any], min_words: int, seen_keys: set[tuple[str, str]], polygon_id: str
+    r: Mapping[str, Any],
+    min_words: int,
+    seen_keys: set[tuple[str, str]],
+    polygon_id: str,
+    worldcover_code: int | None,
 ) -> Iterable[tuple[Check, str]]:
     """Yield violations of the text guarantees, recording what has been seen."""
     text = str(r["text"])
     if not is_usable(text, min_words):
         yield Check.UNUSABLE_TEXT, polygon_id
-    key = (polygon_id, dedup_key(text, str(int(r["worldcover_code"]))))
+    if worldcover_code is None:
+        return
+    key = (polygon_id, dedup_key(text, str(worldcover_code)))
     if key in seen_keys:
         yield Check.DUPLICATE_EXAMPLE, polygon_id
     seen_keys.add(key)
