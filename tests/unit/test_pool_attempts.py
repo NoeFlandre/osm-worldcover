@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyproj
 import pytest
 import rasterio
 import shapely
@@ -320,3 +321,30 @@ def test_equal_area_boundary_measurement_densifies_sloped_high_latitude_edges(
     assert shapely.get_num_coordinates(_equal_area_geometry(polygon)) > (
         shapely.get_num_coordinates(polygon)
     )
+
+
+def test_equal_area_mosaic_prevents_geodesic_false_positive_at_eighty_percent(
+    tmp_path: Path,
+) -> None:
+    raster = tmp_path / "near-threshold-high-latitude.tif"
+    _write_raster(
+        raster,
+        np.array([[10, 10, 10, 10, 0, 0]], dtype=np.uint8),
+        from_origin(0, 61, 1, 1),
+    )
+    polygon = box(0, 60, 4 / 0.79975, 61)
+
+    polygon_area, class_areas = equal_area_class_coverage((raster,), polygon)
+
+    geod = pyproj.Geod(ellps="WGS84")
+    old_geodesic_denominator = abs(geod.geometry_area_perimeter(polygon)[0])
+    old_geodesic_numerator = sum(
+        abs(geod.geometry_area_perimeter(box(column, 60, column + 1, 61))[0]) for column in range(4)
+    )
+    old_geodesic_ratio = old_geodesic_numerator / old_geodesic_denominator
+    equal_area_ratio = dict(class_areas)[10] / polygon_area
+
+    assert old_geodesic_ratio == pytest.approx(0.8003708190146516, rel=1e-12)
+    assert old_geodesic_ratio >= 0.8
+    assert equal_area_ratio == pytest.approx(0.79975, abs=1e-12)
+    assert equal_area_ratio < 0.8
