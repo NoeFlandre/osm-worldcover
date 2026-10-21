@@ -16,6 +16,7 @@ from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     _equal_area_geometry,
     equal_area_class_coverage,
     equal_area_class_coverage_with_tile_evidence,
+    equal_area_class_coverage_with_tile_evidence_detailed,
 )
 from osm_worldcover.adapters.worldcover.pool_attempts import (
     SourceWideCoverageAttempt,
@@ -64,10 +65,12 @@ def _run_sourcewide_adapter(
 
     def fake_geodesic_coverage(_tile_paths, geometry):
         coverage_calls.append(geometry.wkt)
-        return 100.0, ((10, 80.0),), ((10, ("N00E003",)),)
+        return 100.0, ((10, 80.0),), ((10, ("N00E003",)),), None
 
     monkeypatch.setattr(
-        pool_attempts, "equal_area_class_coverage_with_tile_evidence", fake_geodesic_coverage
+        pool_attempts,
+        "equal_area_class_coverage_with_tile_evidence_detailed",
+        fake_geodesic_coverage,
     )
     results = tuple(iter_sourcewide_coverage((raw_rows.iloc[:1], raw_rows.iloc[1:]), fake_tiles))
     return results, coverage_calls
@@ -127,7 +130,7 @@ def test_sourcewide_adapter_records_operational_failure_without_dropping_row(mon
     fake_tiles = FakeTiles(fail={"N00E000"})
     monkeypatch.setattr(
         pool_attempts,
-        "equal_area_class_coverage_with_tile_evidence",
+        "equal_area_class_coverage_with_tile_evidence_detailed",
         lambda _tile_paths, _geometry: pytest.fail("measurement should not use a failed tile"),
     )
 
@@ -348,3 +351,112 @@ def test_equal_area_mosaic_prevents_geodesic_false_positive_at_eighty_percent(
     assert old_geodesic_ratio >= 0.8
     assert equal_area_ratio == pytest.approx(0.79975, abs=1e-12)
     assert equal_area_ratio < 0.8
+
+
+def test_equal_area_uses_one_projected_boundary_across_tile_splits(tmp_path: Path) -> None:
+    triangle = shapely.Polygon(
+        (
+            (0, 48.6101096268196),
+            (0.586477465912616, 50.83405932025402),
+            (0.586477465912616, 50.83410816213973),
+            (0, 48.6101096268196),
+        )
+    )
+    midpoint = 0.293238732956308
+    west = tmp_path / "west-half.tif"
+    east = tmp_path / "east-half.tif"
+    _write_raster(west, np.array([[10]], dtype=np.uint8), from_origin(0, 51, midpoint, 3))
+    _write_raster(
+        east,
+        np.array([[10]], dtype=np.uint8),
+        from_origin(midpoint, 51, midpoint, 3),
+    )
+
+    polygon_area, class_areas = equal_area_class_coverage((west, east), triangle)
+
+    assert dict(class_areas)[10] == pytest.approx(polygon_area, rel=1e-8)
+
+
+def test_equal_area_deduplicates_boundary_cells_across_forced_chunks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    triangle = shapely.Polygon(
+        (
+            (0, 48.6101096268196),
+            (0.586477465912616, 50.83405932025402),
+            (0.586477465912616, 50.83410816213973),
+            (0, 48.6101096268196),
+        )
+    )
+    raster = tmp_path / "single-cell.tif"
+    _write_raster(raster, np.array([[10]], dtype=np.uint8), from_origin(0, 51, 1, 3))
+
+    def forced_chunks(pixel_geometry, _width: int, height: int):
+        yield shapely.intersection(pixel_geometry, box(-1, -1, 0.5, height + 1))
+        yield shapely.intersection(pixel_geometry, box(0.5, -1, 2, height + 1))
+
+    monkeypatch.setattr(area_coverage, "_bounded_pixel_chunks", forced_chunks)
+    polygon_area, class_areas = equal_area_class_coverage((raster,), triangle)
+
+    assert dict(class_areas)[10] == pytest.approx(polygon_area, rel=1e-8)
+
+
+def test_equal_area_refinement_fails_closed_when_coverage_brackets_eighty_percent(
+    tmp_path: Path,
+) -> None:
+    triangle = shapely.Polygon(
+        (
+            (0, 48.6101096268196),
+            (0.586477465912616, 50.83405932025402),
+            (0.586477465912616, 50.83410816213973),
+            (0, 48.6101096268196),
+        )
+    )
+    raster = tmp_path / "near-threshold-triangle.tif"
+    _write_raster(
+        raster,
+        np.array([[10]], dtype=np.uint8),
+        from_origin(0, 51, 0.5237018676079037, 3),
+    )
+
+    with pytest.raises(ValueError, match=r"coverage_numerically_unresolved_at_0\.8"):
+        equal_area_class_coverage((raster,), triangle)
+
+
+def test_equal_area_refinement_records_observed_ratio_range(tmp_path: Path) -> None:
+    triangle = shapely.Polygon(
+        (
+            (0, 48.6101096268196),
+            (0.586477465912616, 50.83405932025402),
+            (0.586477465912616, 50.83410816213973),
+            (0, 48.6101096268196),
+        )
+    )
+    raster = tmp_path / "stable-refined-triangle.tif"
+    _write_raster(
+        raster,
+        np.array([[10]], dtype=np.uint8),
+        from_origin(0, 51, 0.5237, 3),
+    )
+
+    _area, _supports, _evidence, diagnostics = (
+        equal_area_class_coverage_with_tile_evidence_detailed((("fixture", raster),), triangle)
+    )
+
+    assert diagnostics is not None
+    assert diagnostics.startswith("adaptive_cea_refinement;steps=0.01,0.001,0.0001;")
+    assert "class=10,range=" in diagnostics
+    assert "spread=" in diagnostics
+
+
+@pytest.mark.parametrize(
+    "polygon, message",
+    (
+        (shapely.Polygon(((179, 0), (-179, 0), (-179, 1), (179, 1))), "longitude_wrapping"),
+        (box(-90, 80, 90, 85), "antimeridian"),
+        (box(0, 89.999999, 1, 90), "pole_or_crs_edge"),
+    ),
+)
+def test_equal_area_rejects_unsupported_global_wraps(polygon, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        equal_area_class_coverage((), polygon)

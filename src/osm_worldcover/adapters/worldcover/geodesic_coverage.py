@@ -30,7 +30,12 @@ from osm_worldcover.adapters.worldcover.geometry import (
     _pixel_geometry,
 )
 
-AREA_MEASUREMENT = "WGS84 ellipsoidal CEA (lat_ts=30); geographic edges densified <=0.01deg; v2"
+AREA_MEASUREMENT = (
+    "WGS84 ellipsoidal CEA (lat_ts=30, lon_0=0, EPSG:4326 input); "
+    "canonical full-polygon boundary reused for clipping; geographic edges densified "
+    "<=0.01deg, refined at <=0.001/0.0001deg when abs(ratio-0.8)<=0.001; "
+    "unresolved threshold brackets fail closed; v3"
+)
 AREA_UNIT = "m^2"
 _OPS = ("cell_id", "coverage", "values")
 _MAX_CELLS_IN_MEMORY = 2_000_000
@@ -44,6 +49,16 @@ _AREA_CRS = pyproj.CRS.from_proj4(
 )
 _AREA_TRANSFORMER = pyproj.Transformer.from_crs(_GEOGRAPHIC_CRS, _AREA_CRS, always_xy=True)
 _AREA_DENSIFY_DEGREES = 0.01
+
+
+class WorldCoverAreaMeasurementError(ValueError):
+    """A geometry or threshold could not be measured within declared limits."""
+
+
+_AREA_REFINEMENT_STEPS = (0.001, 0.0001)
+_AREA_REFINEMENT_TRIGGER = 0.001
+_MAX_DENSIFIED_COORDINATES = 1_000_000
+_MAX_BOUNDARY_CELL_IDS = 2_000_000
 
 
 def equal_area_class_coverage(
@@ -71,6 +86,18 @@ def equal_area_class_coverage_with_tile_evidence(
     return _equal_area_class_coverage(tile_paths, geometry)
 
 
+def equal_area_class_coverage_with_tile_evidence_detailed(
+    tile_paths: Iterable[tuple[str, Path]], geometry: shapely.Geometry
+) -> tuple[
+    float,
+    tuple[tuple[int, float], ...],
+    tuple[tuple[int, tuple[str, ...]], ...],
+    str | None,
+]:
+    """Measure support plus the observed near-threshold refinement envelope."""
+    return _equal_area_class_coverage_detailed(tile_paths, geometry)
+
+
 def geodesic_class_coverage(
     raster_paths: Iterable[Path], geometry: shapely.Geometry
 ) -> tuple[float, tuple[tuple[int, float], ...]]:
@@ -88,17 +115,102 @@ def geodesic_class_coverage_with_tile_evidence(
 def _equal_area_class_coverage(
     raster_sources: Iterable[tuple[str | None, Path]], geometry: shapely.Geometry
 ) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+    area, supports, evidence, _diagnostics = _equal_area_class_coverage_detailed(
+        raster_sources, geometry
+    )
+    return area, supports, evidence
+
+
+def _equal_area_class_coverage_detailed(
+    raster_sources: Iterable[tuple[str | None, Path]], geometry: shapely.Geometry
+) -> tuple[
+    float,
+    tuple[tuple[int, float], ...],
+    tuple[tuple[int, tuple[str, ...]], ...],
+    str | None,
+]:
     _validate_source_geometry(geometry)
-    polygon_area = _equal_area_m2(geometry)
+    sources = tuple(raster_sources)
+    polygon_area, class_areas, class_evidence = _measure_at_step(
+        sources, geometry, _AREA_DENSIFY_DEGREES
+    )
+    coarse_ratios = _support_ratios(polygon_area, class_areas)
+    diagnostics = None
+    if any(abs(ratio - 0.8) <= _AREA_REFINEMENT_TRIGGER for ratio in coarse_ratios.values()):
+        measurements = [(polygon_area, class_areas, coarse_ratios)]
+        for step in _AREA_REFINEMENT_STEPS:
+            refined = _measure_at_step(sources, geometry, step)
+            measurements.append((refined[0], refined[1], _support_ratios(refined[0], refined[1])))
+        class_codes = set().union(*(ratios.keys() for _area, _supports, ratios in measurements))
+        diagnostic_ranges = []
+        for code in sorted(class_codes):
+            ratios_by_step = tuple(
+                ratios.get(code, 0.0) for _area, _supports, ratios in measurements
+            )
+            decisions = tuple(ratio >= 0.8 for ratio in ratios_by_step)
+            if any(decisions) and not all(decisions):
+                raise WorldCoverAreaMeasurementError(
+                    "coverage_numerically_unresolved_at_0.8:"
+                    f"class={code};steps=0.01,0.001,0.0001;"
+                    f"ratios={','.join(f'{ratio:.12g}' for ratio in ratios_by_step)}"
+                )
+            minimum = min(ratios_by_step)
+            maximum = max(ratios_by_step)
+            diagnostic_ranges.append(
+                f"class={code},range={minimum:.12g}:{maximum:.12g},spread={maximum - minimum:.12g}"
+            )
+        diagnostics = "adaptive_cea_refinement;steps=0.01,0.001,0.0001;" + ";".join(
+            diagnostic_ranges
+        )
+        polygon_area, class_areas, class_evidence = measurements[-1]
+    _validate_support_denominator(polygon_area, class_areas)
+    return polygon_area, class_areas, class_evidence, diagnostics
+
+
+def _measure_at_step(
+    raster_sources: tuple[tuple[str | None, Path], ...],
+    geometry: shapely.Geometry,
+    densify_degrees: float,
+) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+    area_geometry = _equal_area_geometry(geometry, densify_degrees=densify_degrees)
+    polygon_area = float(shapely.area(area_geometry))
     _validate_polygon_area(polygon_area)
-    class_areas, class_evidence = _aggregate_tile_support(raster_sources, geometry)
+    class_areas, class_evidence = _aggregate_tile_support(
+        raster_sources,
+        geometry,
+        area_geometry=area_geometry,
+    )
     _validate_support_denominator(polygon_area, class_areas)
     return polygon_area, class_areas, class_evidence
 
 
+def _support_ratios(
+    polygon_area: float, class_areas: tuple[tuple[int, float], ...]
+) -> dict[int, float]:
+    return {code: area / polygon_area for code, area in class_areas}
+
+
 def _validate_source_geometry(geometry: shapely.Geometry) -> None:
-    if geometry.is_empty or not geometry.is_valid:
-        raise ValueError("WorldCover area coverage requires a valid non-empty polygon")
+    if (
+        geometry.is_empty
+        or not geometry.is_valid
+        or geometry.geom_type not in {"Polygon", "MultiPolygon"}
+    ):
+        raise WorldCoverAreaMeasurementError("worldcover_polygon_invalid_or_unsupported_type")
+    for polygon in shapely.get_parts(geometry):
+        _validate_polygon_global_domain(polygon)
+
+
+def _validate_polygon_global_domain(polygon: shapely.Polygon) -> None:
+    min_x, min_y, max_x, max_y = polygon.bounds
+    if min_x < -180.0 or max_x > 180.0 or min_y <= -89.999999 or max_y >= 89.999999:
+        raise WorldCoverAreaMeasurementError("worldcover_pole_or_crs_edge_unsupported")
+    for ring in (polygon.exterior, *polygon.interiors):
+        longitudes = shapely.get_coordinates(ring)[:, 0]
+        if len(longitudes) > 1 and bool(np.any(np.abs(np.diff(longitudes)) > 180.0)):
+            raise WorldCoverAreaMeasurementError("worldcover_longitude_wrapping_unsupported")
+    if max_x - min_x >= 180.0:
+        raise WorldCoverAreaMeasurementError("worldcover_antimeridian_span_unsupported")
 
 
 def _validate_polygon_area(polygon_area: float) -> None:
@@ -116,13 +228,25 @@ def _validate_support_denominator(
 
 
 def _aggregate_tile_support(
-    raster_sources: Iterable[tuple[str | None, Path]], geometry: shapely.Geometry
+    raster_sources: Iterable[tuple[str | None, Path]],
+    geometry: shapely.Geometry,
+    *,
+    area_geometry: shapely.Geometry,
 ) -> tuple[tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
     """Sum each tile's class areas and retain contributing source IDs."""
     totals: defaultdict[int, float] = defaultdict(float)
     evidence_by_class: defaultdict[int, set[str]] = defaultdict(set)
     for source_id, path in raster_sources:
-        _merge_tile_support(totals, evidence_by_class, source_id, _measure_tile(path, geometry))
+        _merge_tile_support(
+            totals,
+            evidence_by_class,
+            source_id,
+            _measure_tile(
+                path,
+                geometry,
+                area_geometry=area_geometry,
+            ),
+        )
     class_areas = tuple(sorted((code, area) for code, area in totals.items() if area > 0.0))
     class_evidence = tuple(
         (code, tuple(sorted(source_ids))) for code, source_ids in sorted(evidence_by_class.items())
@@ -144,12 +268,18 @@ def _merge_tile_support(
                 evidence_by_class[code].add(source_id)
 
 
-def _measure_tile(path: Path, geometry: shapely.Geometry) -> defaultdict[int, float]:
+def _measure_tile(
+    path: Path,
+    geometry: shapely.Geometry,
+    *,
+    area_geometry: shapely.Geometry,
+) -> defaultdict[int, float]:
     """Measure class areas in one raster tile without retaining cell records."""
     tile_totals: defaultdict[int, float] = defaultdict(float)
     with rasterio.open(path) as dataset:
         _validate_dataset(path, dataset)
         pixel_geometry = _pixel_geometry(geometry, dataset.transform)
+        seen_boundary_cells: set[int] = set()
         for pixel_chunk in _bounded_pixel_chunks(pixel_geometry, dataset.width, dataset.height):
             geometry_chunk = _map_geometry(pixel_chunk, dataset.transform)
             frame = gpd.GeoDataFrame(geometry=[geometry_chunk], crs=dataset.crs)
@@ -175,10 +305,11 @@ def _measure_tile(path: Path, geometry: shapely.Geometry) -> defaultdict[int, fl
                 dataset.transform,
                 dataset.width,
             )
+            boundary_ids = _unseen_boundary_cells(boundary_ids, seen_boundary_cells)
             _add_boundary_cells(
                 tile_totals,
                 boundary_ids,
-                _equal_area_geometry(geometry_chunk),
+                area_geometry,
                 dataset,
             )
     return tile_totals
@@ -199,14 +330,25 @@ def _validate_dataset_transform(path: Path, transform: rasterio.Affine) -> None:
         raise ValueError(f"WorldCover pool raster must be a north-up geographic grid: {path}")
 
 
-def _equal_area_geometry(geometry: shapely.Geometry) -> shapely.Geometry:
+def _equal_area_geometry(
+    geometry: shapely.Geometry, *, densify_degrees: float = _AREA_DENSIFY_DEGREES
+) -> shapely.Geometry:
     """Densify lon/lat edges, then transform them into the pinned equal-area CRS."""
-    densified = shapely.segmentize(geometry, max_segment_length=_AREA_DENSIFY_DEGREES)
+    existing_coordinates = int(np.asarray(shapely.get_num_coordinates(geometry)).sum())
+    total_length = float(np.asarray(shapely.length(geometry)).sum())
+    estimated_coordinates = existing_coordinates + math.ceil(total_length / densify_degrees)
+    if estimated_coordinates > _MAX_DENSIFIED_COORDINATES:
+        raise WorldCoverAreaMeasurementError(
+            "worldcover_area_boundary_densification_coordinate_limit_exceeded"
+        )
+    densified = shapely.segmentize(geometry, max_segment_length=densify_degrees)
     return shapely.transform(densified, _AREA_TRANSFORMER.transform, interleaved=False)
 
 
-def _equal_area_m2(geometry: shapely.Geometry) -> float:
-    return float(shapely.area(_equal_area_geometry(geometry)))
+def _equal_area_m2(
+    geometry: shapely.Geometry, *, densify_degrees: float = _AREA_DENSIFY_DEGREES
+) -> float:
+    return float(shapely.area(_equal_area_geometry(geometry, densify_degrees=densify_degrees)))
 
 
 def _add_interior_cells(
@@ -230,12 +372,20 @@ def _add_interior_cells(
                 totals[int(code)] += cell_count * area
 
 
-def _cell_area(row: int, transform: rasterio.Affine) -> float:
+def _cell_area(
+    row: int,
+    transform: rasterio.Affine,
+) -> float:
     left = transform.c
     right = transform.c + transform.a
     top = transform.f + row * transform.e
     bottom = top + transform.e
-    return _equal_area_m2(box(left, bottom, right, top))
+    return float(shapely.area(_equal_area_cell_geometry(box(left, bottom, right, top))))
+
+
+def _equal_area_cell_geometry(cells: shapely.Geometry) -> shapely.Geometry:
+    """Transform axis-aligned geographic cells exactly under cylindrical equal-area."""
+    return shapely.transform(cells, _AREA_TRANSFORMER.transform, interleaved=False)
 
 
 def _boundary_cell_ids(pixel_geometry: shapely.Geometry, width: int, height: int) -> np.ndarray:
@@ -299,7 +449,10 @@ def _add_boundary_cells(
 ) -> None:
     for start in range(0, len(cell_ids), _BOUNDARY_CELL_CHUNK):
         _add_boundary_cell_chunk(
-            totals, cell_ids[start : start + _BOUNDARY_CELL_CHUNK], area_geometry, dataset
+            totals,
+            cell_ids[start : start + _BOUNDARY_CELL_CHUNK],
+            area_geometry,
+            dataset,
         )
 
 
@@ -317,7 +470,7 @@ def _add_boundary_cell_chunk(
     top = dataset.transform.f + rows * dataset.transform.e
     bottom = top + dataset.transform.e
     cells = shapely.box(left, bottom, right, top)
-    area_cells = _equal_area_geometry(cells)
+    area_cells = _equal_area_cell_geometry(cells)
     intersections = shapely.intersection(area_geometry, area_cells)
     for intersection, value in zip(intersections[valid], values[valid], strict=True):
         if intersection.is_empty:
@@ -325,6 +478,22 @@ def _add_boundary_cell_chunk(
         area = float(shapely.area(intersection))
         if area > 0.0:
             totals[int(value)] += area
+
+
+def _unseen_boundary_cells(cell_ids: np.ndarray, seen: set[int]) -> np.ndarray:
+    """Deduplicate chunks before measuring full-polygon cell intersections."""
+    if not len(cell_ids):
+        return cell_ids
+    fresh = []
+    for raw_id in cell_ids:
+        cell_id = int(raw_id)
+        if cell_id in seen:
+            continue
+        if len(seen) >= _MAX_BOUNDARY_CELL_IDS:
+            raise ValueError("WorldCover tile boundary-cell deduplication limit exceeded")
+        seen.add(cell_id)
+        fresh.append(cell_id)
+    return np.asarray(fresh, dtype=np.int64)
 
 
 def _read_cell_values(

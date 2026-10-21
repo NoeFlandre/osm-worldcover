@@ -14,7 +14,8 @@ from shapely.geometry.base import BaseGeometry
 
 from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     AREA_MEASUREMENT,
-    equal_area_class_coverage_with_tile_evidence,
+    WorldCoverAreaMeasurementError,
+    equal_area_class_coverage_with_tile_evidence_detailed,
 )
 from osm_worldcover.adapters.worldcover.tiles import TileNotPublishedError, TileSource
 from osm_worldcover.domain.geometry import is_usable_polygon
@@ -34,6 +35,7 @@ class SourceWideCoverageAttempt:
     missing_tiles: tuple[str, ...]
     extraction_error: str | None = None
     class_evidence_ids: tuple[tuple[int, tuple[str, ...]], ...] = ()
+    measurement_diagnostics: str | None = None
 
 
 def iter_sourcewide_coverage(
@@ -130,7 +132,12 @@ def _measure_polygon(
                 missing,
                 f"tile_read_failed:{','.join(sorted(set(errors)))}",
             )
-        polygon_area_m2, class_areas_m2, class_evidence_ids = _coverage_areas(geometry, tile_paths)
+        (
+            polygon_area_m2,
+            class_areas_m2,
+            class_evidence_ids,
+            measurement_diagnostics,
+        ) = _coverage_areas(geometry, tile_paths)
         return SourceWideCoverageAttempt(
             source_polygon_id,
             ordinal,
@@ -140,6 +147,18 @@ def _measure_polygon(
             attempted,
             missing,
             class_evidence_ids=class_evidence_ids,
+            measurement_diagnostics=measurement_diagnostics,
+        )
+    except WorldCoverAreaMeasurementError as error:
+        return SourceWideCoverageAttempt(
+            source_polygon_id,
+            ordinal,
+            None,
+            (),
+            AREA_MEASUREMENT,
+            attempted,
+            missing,
+            f"area_measurement_rejected:{error}",
         )
     except (OSError, RasterioError, RuntimeError, ValueError, ShapelyError) as error:
         return SourceWideCoverageAttempt(
@@ -181,10 +200,15 @@ def _fetch_tiles(
 def _coverage_areas(
     geometry: BaseGeometry,
     tile_paths: list[tuple[str, Path]],
-) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+) -> tuple[
+    float,
+    tuple[tuple[int, float], ...],
+    tuple[tuple[int, tuple[str, ...]], ...],
+    str | None,
+]:
     """Measure square-metre support on the unchanged full source geometry."""
 
-    return equal_area_class_coverage_with_tile_evidence(tile_paths, geometry)
+    return equal_area_class_coverage_with_tile_evidence_detailed(tile_paths, geometry)
 
 
 def _decode_polygon(value: object) -> BaseGeometry | None:
