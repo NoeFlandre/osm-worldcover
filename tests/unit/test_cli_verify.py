@@ -69,6 +69,25 @@ def test_verify_rejects_a_build_that_breaks_a_guarantee(tmp_path) -> None:
     assert outcome.output.splitlines() == ["rows: 2", "FAILED below_threshold: 2 ('p0', 'p1')"]
 
 
+@pytest.mark.parametrize(
+    "code",
+    [10.5, 10.0, None, float("nan"), float("inf"), float("-inf"), "10", "bad", True],
+)
+def test_verify_rejects_non_integer_worldcover_codes(tmp_path, code) -> None:
+    build = tmp_path / "v1.0.0"
+    build.mkdir()
+    rows = frame(1)
+    rows["worldcover_code"] = [code]
+    rows.to_parquet(build / "train.parquet", index=False)
+    _seed_release_lock(build)
+
+    outcome = runner.invoke(cli.app, ["verify", str(build)])
+
+    assert outcome.exit_code == 1, outcome.output
+    assert "FAILED invalid_label: 1 ('p0',)" in outcome.output
+    assert "every guarantee holds" not in outcome.output
+
+
 def test_verify_enforces_the_manifest_dominance_threshold(tmp_path) -> None:
     rows = frame(2)
     rows["dominant_fraction"] = 0.85
