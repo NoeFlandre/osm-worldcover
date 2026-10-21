@@ -1,6 +1,7 @@
 """Dataset-level invariants checked before anything is published."""
 
 import pytest
+from numbers import Integral
 
 from osm_worldcover.domain.validation import (
     REQUIRED_COLUMNS,
@@ -67,6 +68,24 @@ def test_non_integer_worldcover_codes_are_reported_as_invalid_labels(code: objec
 
     assert report.rows == 1
     assert Check.INVALID_LABEL in {violation.check for violation in report.violations}
+
+
+def test_malformed_integer_scalar_and_unusable_text_both_report_violations() -> None:
+    class BrokenIntegral:
+        def __index__(self) -> int:
+            raise ValueError("cannot read integer code")
+
+        def __str__(self) -> str:
+            raise AssertionError("malformed class codes must not be stringified")
+
+    Integral.register(BrokenIntegral)
+
+    report = validate([row(worldcover_code=BrokenIntegral(), text="tiny")])
+
+    assert {violation.check for violation in report.violations} == {
+        Check.INVALID_LABEL,
+        Check.UNUSABLE_TEXT,
+    }
 
 
 def test_label_not_matching_its_code_is_rejected() -> None:
