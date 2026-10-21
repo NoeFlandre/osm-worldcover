@@ -13,6 +13,8 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 import geopandas as gpd
@@ -32,9 +34,10 @@ from osm_worldcover.adapters.worldcover.geometry import (
 
 AREA_MEASUREMENT = (
     "WGS84 ellipsoidal CEA (lat_ts=30, lon_0=0, EPSG:4326 input); "
-    "canonical full-polygon boundary reused for clipping; geographic edges densified "
-    "<=0.01deg, refined at <=0.001/0.0001deg when abs(ratio-0.8)<=0.001; "
-    "unresolved threshold brackets fail closed; v3"
+    "straight lon/lat source edges; canonical full-polygon boundary reused for clipping; "
+    "CEA curve-to-chord boundary area envelope controls the ratio decision; invalid coarse "
+    "projections refine or fail closed; GEOS overlay and floating-point accumulation error "
+    "are excluded; unresolved enclosures fail closed; v4"
 )
 AREA_UNIT = "m^2"
 _OPS = ("cell_id", "coverage", "values")
@@ -56,9 +59,21 @@ class WorldCoverAreaMeasurementError(ValueError):
 
 
 _AREA_REFINEMENT_STEPS = (0.001, 0.0001)
-_AREA_REFINEMENT_TRIGGER = 0.001
 _MAX_DENSIFIED_COORDINATES = 1_000_000
 _MAX_BOUNDARY_CELL_IDS = 2_000_000
+_WGS84_SEMI_MAJOR_METRES = 6_378_137.0
+_WGS84_ECCENTRICITY_SQUARED = 0.0066943799901413165
+
+
+@dataclass(frozen=True, slots=True)
+class _AreaMeasurement:
+    densify_step_degrees: float
+    polygon_area_m2: float
+    class_areas_m2: tuple[tuple[int, float], ...]
+    class_evidence: tuple[tuple[int, tuple[str, ...]], ...]
+    ratios: dict[int, float]
+    projected_chord_boundary_error_bound_m2: float
+    class_support_error_bound_m2: float
 
 
 def equal_area_class_coverage(
@@ -94,7 +109,7 @@ def equal_area_class_coverage_with_tile_evidence_detailed(
     tuple[tuple[int, tuple[str, ...]], ...],
     str | None,
 ]:
-    """Measure support plus the observed near-threshold refinement envelope."""
+    """Measure support and return diagnostics for the CEA boundary error bound."""
     return _equal_area_class_coverage_detailed(tile_paths, geometry)
 
 
@@ -131,99 +146,139 @@ def _equal_area_class_coverage_detailed(
 ]:
     _validate_source_geometry(geometry)
     sources = tuple(raster_sources)
-    polygon_area, class_areas, class_evidence = _measure_at_step(
-        sources, geometry, _AREA_DENSIFY_DEGREES
+    measurements = _refinement_measurements(sources, geometry)
+    selected = measurements[-1]
+    diagnostics = _format_refinement_diagnostics(measurements)
+    _validate_support_denominator(selected.polygon_area_m2, selected.class_areas_m2)
+    return (
+        selected.polygon_area_m2,
+        selected.class_areas_m2,
+        selected.class_evidence,
+        diagnostics,
     )
-    coarse_ratios = _support_ratios(polygon_area, class_areas)
-    measurements = _refinement_measurements(
-        sources, geometry, (polygon_area, class_areas, class_evidence, coarse_ratios)
-    )
-    diagnostics = _format_refinement_diagnostics(measurements) if measurements else None
-    if measurements:
-        polygon_area, class_areas, class_evidence, _ratios = measurements[-1]
-    _validate_support_denominator(polygon_area, class_areas)
-    return polygon_area, class_areas, class_evidence, diagnostics
 
 
 def _refinement_measurements(
     sources: tuple[tuple[str | None, Path], ...],
     geometry: shapely.Geometry,
-    initial: tuple[
-        float,
-        tuple[tuple[int, float], ...],
-        tuple[tuple[int, tuple[str, ...]], ...],
-        dict[int, float],
-    ],
-) -> list[
-    tuple[
-        float,
-        tuple[tuple[int, float], ...],
-        tuple[tuple[int, tuple[str, ...]], ...],
-        dict[int, float],
-    ]
-]:
-    if not _needs_area_refinement(initial[3]):
-        return []
-    measurements = [initial]
-    for step in _AREA_REFINEMENT_STEPS:
-        refined = _measure_at_step(sources, geometry, step)
-        measurements.append(
-            (refined[0], refined[1], refined[2], _support_ratios(refined[0], refined[1]))
-        )
+) -> list[_AreaMeasurement]:
+    measurements = _collect_area_measurements(sources, geometry)
+    _validate_area_measurements(measurements)
     return measurements
 
 
-def _needs_area_refinement(ratios: dict[int, float]) -> bool:
-    return any(abs(ratio - 0.8) <= _AREA_REFINEMENT_TRIGGER for ratio in ratios.values())
+def _collect_area_measurements(
+    sources: tuple[tuple[str | None, Path], ...],
+    geometry: shapely.Geometry,
+) -> list[_AreaMeasurement]:
+    measurements = []
+    for step in (_AREA_DENSIFY_DEGREES, *_AREA_REFINEMENT_STEPS):
+        if measurements and not _needs_area_refinement(tuple(measurements)):
+            break
+        measurement = _measure_valid_projected_step(sources, geometry, step)
+        if measurement is not None:
+            measurements.append(measurement)
+    return measurements
+
+
+def _validate_area_measurements(measurements: list[_AreaMeasurement]) -> None:
+    if not measurements:
+        raise WorldCoverAreaMeasurementError("worldcover_projected_boundary_invalid_at_all_steps")
+    if _needs_area_refinement(tuple(measurements)):
+        _raise_unresolved_threshold_error(tuple(measurements))
+
+
+def _measure_valid_projected_step(
+    sources: tuple[tuple[str | None, Path], ...], geometry: shapely.Geometry, step: float
+) -> _AreaMeasurement | None:
+    try:
+        return _measure_at_step(sources, geometry, step)
+    except WorldCoverAreaMeasurementError as error:
+        if str(error) != "worldcover_projected_boundary_invalid":
+            raise
+        return None
+
+
+def _raise_unresolved_threshold_error(measurements: tuple[_AreaMeasurement, ...]) -> None:
+    measurement = measurements[-1]
+    code = min(_unresolved_threshold_codes(measurements))
+    lower, upper = _class_ratio_enclosure(measurement, code)
+    raise WorldCoverAreaMeasurementError(
+        "coverage_accuracy_bound_unresolved_at_0.8:"
+        f"class={code};step={measurement.densify_step_degrees:g};"
+        f"ratio_enclosure={lower:.12g}:{upper:.12g};"
+        "projected_chord_boundary_error_m2="
+        f"{measurement.projected_chord_boundary_error_bound_m2:.12g}"
+    )
+
+
+def _unresolved_threshold_codes(measurements: tuple[_AreaMeasurement, ...]) -> tuple[int, ...]:
+    codes = set().union(*(measurement.ratios.keys() for measurement in measurements))
+    latest = measurements[-1]
+    return tuple(
+        code
+        for code in sorted(codes)
+        if _ratio_enclosure_crosses_threshold(*_class_ratio_enclosure(latest, code))
+    )
+
+
+def _needs_area_refinement(measurements: tuple[_AreaMeasurement, ...]) -> bool:
+    return bool(_unresolved_threshold_codes(measurements))
+
+
+def _ratio_enclosure_crosses_threshold(lower: float, upper: float) -> bool:
+    return lower < 0.8 <= upper
+
+
+def _class_ratio_enclosure(measurement: _AreaMeasurement, code: int) -> tuple[float, float]:
+    area = measurement.polygon_area_m2
+    area_error = measurement.projected_chord_boundary_error_bound_m2
+    support_error = measurement.class_support_error_bound_m2
+    if area <= area_error:
+        return -math.inf, math.inf
+    support = dict(measurement.class_areas_m2).get(code, 0.0)
+    return (
+        (support - support_error) / (area + area_error),
+        (support + support_error) / (area - area_error),
+    )
 
 
 def _format_refinement_diagnostics(
-    measurements: list[
-        tuple[
-            float,
-            tuple[tuple[int, float], ...],
-            tuple[tuple[int, tuple[str, ...]], ...],
-            dict[int, float],
-        ]
-    ],
+    measurements: list[_AreaMeasurement],
 ) -> str:
-    class_codes = sorted(set().union(*(measurement[3].keys() for measurement in measurements)))
-    ranges = tuple(_format_class_ratio_range(code, measurements) for code in class_codes)
-    return "adaptive_cea_refinement;steps=0.01,0.001,0.0001;" + ";".join(ranges)
+    class_codes = sorted(set().union(*(measurement.ratios.keys() for measurement in measurements)))
+    step_values = ",".join(f"{measurement.densify_step_degrees:g}" for measurement in measurements)
+    classes = tuple(_format_class_ratio_bounds(code, measurements) for code in class_codes)
+    return (
+        "cea_chord_area_envelope;steps="
+        f"{step_values};projected_chord_boundary_error_bound_m2="
+        f"{measurements[-1].projected_chord_boundary_error_bound_m2:.12g};"
+        f"class_support_error_m2={measurements[-1].class_support_error_bound_m2:.12g};"
+        + ";".join(classes)
+    )
 
 
-def _format_class_ratio_range(
+def _format_class_ratio_bounds(
     code: int,
-    measurements: list[
-        tuple[
-            float,
-            tuple[tuple[int, float], ...],
-            tuple[tuple[int, tuple[str, ...]], ...],
-            dict[int, float],
-        ]
-    ],
+    measurements: list[_AreaMeasurement],
 ) -> str:
-    ratios = tuple(measurement[3].get(code, 0.0) for measurement in measurements)
+    ratios = tuple(measurement.ratios.get(code, 0.0) for measurement in measurements)
     minimum, maximum = min(ratios), max(ratios)
-    _validate_ratio_decisions_stable(code, ratios)
-    return f"class={code},range={minimum:.12g}:{maximum:.12g},spread={maximum - minimum:.12g}"
-
-
-def _validate_ratio_decisions_stable(code: int, ratios: tuple[float, ...]) -> None:
-    if min(ratios) < 0.8 <= max(ratios):
-        raise WorldCoverAreaMeasurementError(
-            "coverage_numerically_unresolved_at_0.8:"
-            f"class={code};steps=0.01,0.001,0.0001;"
-            f"ratios={','.join(f'{ratio:.12g}' for ratio in ratios)}"
-        )
+    lower, upper = _class_ratio_enclosure(measurements[-1], code)
+    return (
+        f"class={code},observed_range={minimum:.12g}:{maximum:.12g},"
+        f"ratio_enclosure={lower:.12g}:{upper:.12g}"
+    )
 
 
 def _measure_at_step(
     raster_sources: tuple[tuple[str | None, Path], ...],
     geometry: shapely.Geometry,
     densify_degrees: float,
-) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+) -> _AreaMeasurement:
     area_geometry = _equal_area_geometry(geometry, densify_degrees=densify_degrees)
+    if not area_geometry.is_valid:
+        raise WorldCoverAreaMeasurementError("worldcover_projected_boundary_invalid")
     polygon_area = float(shapely.area(area_geometry))
     _validate_polygon_area(polygon_area)
     class_areas, class_evidence = _aggregate_tile_support(
@@ -232,7 +287,70 @@ def _measure_at_step(
         area_geometry=area_geometry,
     )
     _validate_support_denominator(polygon_area, class_areas)
-    return polygon_area, class_areas, class_evidence
+    boundary_error = _projected_chord_area_error_bound(geometry, densify_degrees)
+    return _AreaMeasurement(
+        densify_step_degrees=densify_degrees,
+        polygon_area_m2=polygon_area,
+        class_areas_m2=class_areas,
+        class_evidence=class_evidence,
+        ratios=_support_ratios(polygon_area, class_areas),
+        projected_chord_boundary_error_bound_m2=boundary_error,
+        class_support_error_bound_m2=(
+            math.nextafter(boundary_error * len(raster_sources), math.inf)
+            if boundary_error
+            else 0.0
+        ),
+    )
+
+
+def _projected_chord_area_error_bound(geometry: shapely.Geometry, densify_degrees: float) -> float:
+    """Bound projected area between straight lon/lat edges and their CEA chords.
+
+    In ellipsoidal CEA, x is linear in longitude and y is a function q(latitude).
+    For each densified subsegment, the interpolation error of y is bounded by
+    max(abs(q'')) * dlat**2 / 8; integrating the sharper t*(1-t)/2 envelope
+    gives the area term below. The global WGS84 bound is 2/(1-e**2). This bounds
+    only curve-to-chord area; it is not a certified bound on GEOS overlay or
+    floating-point accumulation error.
+    """
+    q_second_derivative_bound = math.nextafter(2.0 / (1.0 - _WGS84_ECCENTRICITY_SQUARED), math.inf)
+    area_factor = math.nextafter(
+        _WGS84_SEMI_MAJOR_METRES**2 * q_second_derivative_bound / 24.0,
+        math.inf,
+    )
+    error_bound = 0.0
+    for polygon in shapely.get_parts(geometry):
+        for ring in (polygon.exterior, *polygon.interiors):
+            coordinates = shapely.get_coordinates(ring)
+            for start, end in pairwise(coordinates):
+                segment_bound = _projected_segment_chord_area_error_bound(
+                    start, end, densify_degrees, area_factor
+                )
+                if segment_bound:
+                    error_bound = math.nextafter(error_bound + segment_bound, math.inf)
+    return error_bound
+
+
+def _projected_segment_chord_area_error_bound(
+    start: np.ndarray,
+    end: np.ndarray,
+    densify_degrees: float,
+    area_factor: float,
+) -> float:
+    delta_lon_degrees = float(end[0] - start[0])
+    delta_lat_degrees = float(end[1] - start[1])
+    if delta_lon_degrees == 0.0 or delta_lat_degrees == 0.0:
+        return 0.0
+    segment_count = max(
+        1,
+        math.ceil(math.hypot(delta_lon_degrees, delta_lat_degrees) / densify_degrees),
+    )
+    delta_lon = math.radians(abs(delta_lon_degrees))
+    delta_lat = math.radians(delta_lat_degrees)
+    segment_bound = (
+        area_factor * delta_lon * delta_lat * delta_lat / (segment_count * segment_count)
+    )
+    return math.nextafter(segment_bound * (1.0 + 32.0 * math.ulp(1.0)), math.inf)
 
 
 def _support_ratios(

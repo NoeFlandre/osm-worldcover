@@ -14,6 +14,8 @@ from osm_worldcover.adapters.worldcover import pool_attempts
 from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     AREA_MEASUREMENT,
     _equal_area_geometry,
+    _projected_chord_area_error_bound,
+    _ratio_enclosure_crosses_threshold,
     equal_area_class_coverage,
     equal_area_class_coverage_with_tile_evidence,
     equal_area_class_coverage_with_tile_evidence_detailed,
@@ -220,6 +222,22 @@ def test_equal_area_coverage_weights_high_latitude_rows_physically(tmp_path: Pat
     assert by_code[20] / polygon_area < 0.5
 
 
+def test_equal_area_keeps_uncovered_and_nodata_area_in_the_denominator(tmp_path: Path) -> None:
+    polygon = box(0, 0, 1, 1)
+    uncovered = tmp_path / "uncovered-half.tif"
+    nodata = tmp_path / "nodata-half.tif"
+    _write_raster(uncovered, np.array([[10]], dtype=np.uint8), from_origin(0, 1, 0.5, 1))
+    _write_raster(nodata, np.array([[10, 0]], dtype=np.uint8), from_origin(0, 1, 0.5, 1))
+
+    uncovered_area, uncovered_support = equal_area_class_coverage((uncovered,), polygon)
+    nodata_area, nodata_support = equal_area_class_coverage((nodata,), polygon)
+
+    assert uncovered_area == pytest.approx(_equal_area_area(polygon), rel=1e-12)
+    assert nodata_area == pytest.approx(uncovered_area, rel=1e-12)
+    assert dict(uncovered_support)[10] / uncovered_area == pytest.approx(0.5, abs=1e-12)
+    assert dict(nodata_support)[10] / nodata_area == pytest.approx(0.5, abs=1e-12)
+
+
 def test_equal_area_coverage_measures_boundary_and_multipart_geometry(tmp_path: Path) -> None:
     raster = tmp_path / "boundary-multipart.tif"
     _write_raster(
@@ -401,7 +419,7 @@ def test_equal_area_deduplicates_boundary_cells_across_forced_chunks(
     assert dict(class_areas)[10] == pytest.approx(polygon_area, rel=1e-8)
 
 
-def test_equal_area_refinement_fails_closed_when_coverage_brackets_eighty_percent(
+def test_equal_area_bound_resolves_observed_ratio_crossing_below_threshold(
     tmp_path: Path,
 ) -> None:
     triangle = shapely.Polygon(
@@ -419,11 +437,60 @@ def test_equal_area_refinement_fails_closed_when_coverage_brackets_eighty_percen
         from_origin(0, 51, 0.5237018676079037, 3),
     )
 
-    with pytest.raises(ValueError, match=r"coverage_numerically_unresolved_at_0\.8"):
+    polygon_area, class_areas, _evidence, diagnostics = (
+        equal_area_class_coverage_with_tile_evidence_detailed((("fixture", raster),), triangle)
+    )
+
+    assert dict(class_areas)[10] / polygon_area < 0.8
+    assert diagnostics is not None
+    observed_range = diagnostics.split("observed_range=", maxsplit=1)[1].split(",", maxsplit=1)[0]
+    ratio_enclosure = diagnostics.split("ratio_enclosure=", maxsplit=1)[1].split(";", maxsplit=1)[0]
+    assert float(observed_range.split(":", maxsplit=1)[1]) > 0.8
+    assert float(ratio_enclosure.split(":", maxsplit=1)[1]) < 0.8
+
+
+def test_equal_area_coarse_trigger_case_refines_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    triangle = shapely.Polygon(
+        (
+            (0, 48.61),
+            (0.6, 50.83036030522075),
+            (0.6, 50.83036040522075),
+        )
+    )
+    raster = tmp_path / "coarse-trigger-miss.tif"
+    _write_raster(
+        raster,
+        np.array([[10]], dtype=np.uint8),
+        from_origin(0, 51, 0.5357458982172827, 3),
+    )
+
+    with pytest.raises(ValueError, match=r"coverage_accuracy_bound_unresolved_at_0\.8"):
         equal_area_class_coverage((raster,), triangle)
 
 
-def test_equal_area_refinement_records_observed_ratio_range(tmp_path: Path) -> None:
+def test_projected_chord_bound_contains_observed_area_difference() -> None:
+    triangle = shapely.Polygon(
+        (
+            (0, 48.61),
+            (0.6, 50.83036030522075),
+            (0.6, 50.83036040522075),
+        )
+    )
+    coarse_area = float(shapely.area(_equal_area_geometry(triangle, densify_degrees=0.001)))
+    fine_area = float(shapely.area(_equal_area_geometry(triangle, densify_degrees=0.00001)))
+
+    assert abs(coarse_area - fine_area) <= _projected_chord_area_error_bound(triangle, 0.001)
+
+
+def test_eighty_percent_boundary_is_inclusive_without_an_epsilon() -> None:
+    assert not _ratio_enclosure_crosses_threshold(0.8, 0.8)
+    assert _ratio_enclosure_crosses_threshold(np.nextafter(0.8, 0.0), 0.8)
+    assert not _ratio_enclosure_crosses_threshold(0.79, np.nextafter(0.8, 0.0))
+
+
+def test_equal_area_refinement_records_ratio_enclosure(tmp_path: Path) -> None:
     triangle = shapely.Polygon(
         (
             (0, 48.6101096268196),
@@ -446,9 +513,10 @@ def test_equal_area_refinement_records_observed_ratio_range(tmp_path: Path) -> N
     assert (
         evidence,
         diagnostics is not None
-        and diagnostics.startswith("adaptive_cea_refinement;steps=0.01,0.001,0.0001;")
-        and "class=10,range=" in diagnostics
-        and "spread=" in diagnostics,
+        and diagnostics.startswith("cea_chord_area_envelope;steps=")
+        and "projected_chord_boundary_error_bound_m2=" in diagnostics
+        and "ratio_enclosure=" in diagnostics
+        and "class=10,observed_range=" in diagnostics,
     ) == (((10, ("fixture",)),), True)
 
 
