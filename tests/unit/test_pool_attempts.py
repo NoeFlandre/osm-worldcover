@@ -2,18 +2,19 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyproj
 import pytest
 import rasterio
 import shapely
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
+from osm_worldcover.adapters.worldcover import geodesic_coverage as area_coverage
 from osm_worldcover.adapters.worldcover import pool_attempts
 from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     AREA_MEASUREMENT,
-    geodesic_class_coverage,
-    geodesic_class_coverage_with_tile_evidence,
+    _equal_area_geometry,
+    equal_area_class_coverage,
+    equal_area_class_coverage_with_tile_evidence,
 )
 from osm_worldcover.adapters.worldcover.pool_attempts import (
     SourceWideCoverageAttempt,
@@ -65,7 +66,7 @@ def _run_sourcewide_adapter(
         return 100.0, ((10, 80.0),), ((10, ("N00E003",)),)
 
     monkeypatch.setattr(
-        pool_attempts, "geodesic_class_coverage_with_tile_evidence", fake_geodesic_coverage
+        pool_attempts, "equal_area_class_coverage_with_tile_evidence", fake_geodesic_coverage
     )
     results = tuple(iter_sourcewide_coverage((raw_rows.iloc[:1], raw_rows.iloc[1:]), fake_tiles))
     return results, coverage_calls
@@ -125,7 +126,7 @@ def test_sourcewide_adapter_records_operational_failure_without_dropping_row(mon
     fake_tiles = FakeTiles(fail={"N00E000"})
     monkeypatch.setattr(
         pool_attempts,
-        "geodesic_class_coverage_with_tile_evidence",
+        "equal_area_class_coverage_with_tile_evidence",
         lambda _tile_paths, _geometry: pytest.fail("measurement should not use a failed tile"),
     )
 
@@ -181,13 +182,11 @@ def _write_raster(path: Path, values: np.ndarray, transform) -> None:
         dataset.write(values, 1)
 
 
-def _geod_area(geometry) -> float:
-    geod = pyproj.Geod(ellps="WGS84")
-    oriented = shapely.orient_polygons(geometry, exterior_cw=False)
-    return abs(geod.geometry_area_perimeter(oriented)[0])
+def _equal_area_area(geometry) -> float:
+    return float(shapely.area(_equal_area_geometry(geometry)))
 
 
-def test_geodesic_coverage_weights_high_latitude_rows_physically(tmp_path: Path) -> None:
+def test_equal_area_coverage_weights_high_latitude_rows_physically(tmp_path: Path) -> None:
     raster = tmp_path / "high-latitude.tif"
     _write_raster(
         raster,
@@ -206,10 +205,10 @@ def test_geodesic_coverage_weights_high_latitude_rows_physically(tmp_path: Path)
     )
     polygon = box(0, 80, 1, 82)
 
-    polygon_area, class_areas = geodesic_class_coverage([raster], polygon)
+    polygon_area, class_areas = equal_area_class_coverage([raster], polygon)
     by_code = dict(class_areas)
-    expected_north = _geod_area(box(0, 81, 1, 82))
-    expected_south = _geod_area(box(0, 80, 1, 81))
+    expected_north = _equal_area_area(box(0, 81, 1, 82))
+    expected_south = _equal_area_area(box(0, 80, 1, 81))
 
     assert polygon_area == pytest.approx(expected_north + expected_south, rel=1e-12)
     assert by_code[20] == pytest.approx(expected_north, rel=1e-12)
@@ -217,7 +216,7 @@ def test_geodesic_coverage_weights_high_latitude_rows_physically(tmp_path: Path)
     assert by_code[20] / polygon_area < 0.5
 
 
-def test_geodesic_coverage_measures_boundary_and_multipart_geometry(tmp_path: Path) -> None:
+def test_equal_area_coverage_measures_boundary_and_multipart_geometry(tmp_path: Path) -> None:
     raster = tmp_path / "boundary-multipart.tif"
     _write_raster(
         raster,
@@ -231,31 +230,31 @@ def test_geodesic_coverage_measures_boundary_and_multipart_geometry(tmp_path: Pa
         )
     )
 
-    polygon_area, class_areas = geodesic_class_coverage([raster], polygon)
+    polygon_area, class_areas = equal_area_class_coverage([raster], polygon)
     first_part, second_part = polygon.geoms
 
-    assert dict(class_areas)[10] == pytest.approx(_geod_area(first_part), rel=1e-12)
-    assert dict(class_areas)[20] == pytest.approx(_geod_area(second_part), rel=1e-12)
-    assert polygon_area == pytest.approx(_geod_area(polygon), rel=1e-12)
+    assert dict(class_areas)[10] == pytest.approx(_equal_area_area(first_part), rel=1e-12)
+    assert dict(class_areas)[20] == pytest.approx(_equal_area_area(second_part), rel=1e-12)
+    assert polygon_area == pytest.approx(_equal_area_area(polygon), rel=1e-12)
 
 
-def test_geodesic_coverage_reports_only_tiles_contributing_to_each_class(tmp_path: Path) -> None:
+def test_equal_area_coverage_reports_only_tiles_contributing_to_each_class(tmp_path: Path) -> None:
     west = tmp_path / "west.tif"
     east = tmp_path / "east.tif"
     _write_raster(west, np.array([[10]], dtype=np.uint8), from_origin(0, 1, 1, 1))
     _write_raster(east, np.array([[20]], dtype=np.uint8), from_origin(1, 1, 1, 1))
 
-    polygon_area, class_areas, class_evidence = geodesic_class_coverage_with_tile_evidence(
+    polygon_area, class_areas, class_evidence = equal_area_class_coverage_with_tile_evidence(
         (("N00E000", west), ("N00E003", east)), box(0, 0, 2, 1)
     )
 
-    assert polygon_area == pytest.approx(_geod_area(box(0, 0, 2, 1)), rel=1e-12)
+    assert polygon_area == pytest.approx(_equal_area_area(box(0, 0, 2, 1)), rel=1e-12)
     assert dict(class_areas)[10] > 0.0
     assert dict(class_areas)[20] > 0.0
     assert class_evidence == ((10, ("N00E000",)), (20, ("N00E003",)))
 
 
-def test_geodesic_coverage_weights_interior_cells_by_physical_row_area(tmp_path: Path) -> None:
+def test_equal_area_coverage_weights_interior_cells_by_physical_row_area(tmp_path: Path) -> None:
     raster = tmp_path / "interior-cells.tif"
     values = np.array(
         [
@@ -270,13 +269,54 @@ def test_geodesic_coverage_weights_interior_cells_by_physical_row_area(tmp_path:
     _write_raster(raster, values, from_origin(0, 5, 1, 1))
     geometry = box(0, 0, 5, 5)
 
-    polygon_area, class_areas = geodesic_class_coverage((raster,), geometry)
+    polygon_area, class_areas = equal_area_class_coverage((raster,), geometry)
 
-    assert polygon_area == pytest.approx(_geod_area(geometry), rel=1e-12)
+    assert polygon_area == pytest.approx(_equal_area_area(geometry), rel=1e-12)
     expected_class_20 = (
-        3 * _geod_area(box(1, 3, 2, 4))
-        + 2 * _geod_area(box(1, 2, 2, 3))
-        + 3 * _geod_area(box(1, 1, 2, 2))
+        3 * _equal_area_area(box(1, 3, 2, 4))
+        + 2 * _equal_area_area(box(1, 2, 2, 3))
+        + 3 * _equal_area_area(box(1, 1, 2, 2))
     )
     assert dict(class_areas)[20] == pytest.approx(expected_class_20, rel=1e-12)
     assert sum(area for _code, area in class_areas) <= polygon_area
+
+
+def test_equal_area_coverage_is_additive_for_high_latitude_cell_mosaics(tmp_path: Path) -> None:
+    raster = tmp_path / "homogeneous-high-latitude-mosaic.tif"
+    _write_raster(
+        raster,
+        np.full((3, 3), 10, dtype=np.uint8),
+        from_origin(0, 63, 1, 1),
+    )
+    polygon = box(0, 60, 3, 63)
+
+    polygon_area, class_areas = equal_area_class_coverage((raster,), polygon)
+
+    assert dict(class_areas)[10] == pytest.approx(polygon_area, rel=1e-12)
+    assert dict(class_areas)[10] / polygon_area >= 0.8
+    assert polygon_area == pytest.approx(_equal_area_area(polygon), rel=1e-12)
+
+
+def test_equal_area_boundary_measurement_densifies_sloped_high_latitude_edges(
+    tmp_path: Path, monkeypatch
+) -> None:
+    raster = tmp_path / "sloped-high-latitude.tif"
+    _write_raster(
+        raster,
+        np.full((4, 4), 10, dtype=np.uint8),
+        from_origin(0, 64, 1, 1),
+    )
+    polygon = shapely.Polygon(((0.2, 60.2), (3.4, 60.4), (3.1, 63.5), (0.4, 63.2), (0.2, 60.2)))
+    monkeypatch.setattr(
+        area_coverage,
+        "_boundary_cell_ids",
+        lambda *_args: np.array([], dtype=np.int64),
+    )
+
+    polygon_area, class_areas = equal_area_class_coverage((raster,), polygon)
+
+    assert dict(class_areas)[10] == pytest.approx(polygon_area, rel=1e-12)
+    assert polygon_area == pytest.approx(_equal_area_area(polygon), rel=1e-12)
+    assert shapely.get_num_coordinates(_equal_area_geometry(polygon)) > (
+        shapely.get_num_coordinates(polygon)
+    )

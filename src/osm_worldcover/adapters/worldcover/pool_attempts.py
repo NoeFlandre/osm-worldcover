@@ -14,7 +14,7 @@ from shapely.geometry.base import BaseGeometry
 
 from osm_worldcover.adapters.worldcover.geodesic_coverage import (
     AREA_MEASUREMENT,
-    geodesic_class_coverage_with_tile_evidence,
+    equal_area_class_coverage_with_tile_evidence,
 )
 from osm_worldcover.adapters.worldcover.tiles import TileNotPublishedError, TileSource
 from osm_worldcover.domain.geometry import is_usable_polygon
@@ -184,7 +184,7 @@ def _coverage_areas(
 ) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
     """Measure square-metre support on the unchanged full source geometry."""
 
-    return geodesic_class_coverage_with_tile_evidence(tile_paths, geometry)
+    return equal_area_class_coverage_with_tile_evidence(tile_paths, geometry)
 
 
 def _decode_polygon(value: object) -> BaseGeometry | None:
