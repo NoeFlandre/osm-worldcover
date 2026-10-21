@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-import geopandas as gpd
 import pandas as pd
 import shapely
 from rasterio.errors import RasterioError
 from shapely.errors import ShapelyError
 from shapely.geometry.base import BaseGeometry
 
-from osm_worldcover.adapters.worldcover.extract import class_coverage
+from osm_worldcover.adapters.worldcover.geodesic_coverage import (
+    AREA_MEASUREMENT,
+    geodesic_class_coverage,
+)
 from osm_worldcover.adapters.worldcover.tiles import TileNotPublishedError, TileSource
 from osm_worldcover.domain.geometry import is_usable_polygon
 from osm_worldcover.domain.tiling import Tile, tiles_for_bbox
@@ -25,56 +27,65 @@ class SourceWideCoverageAttempt:
 
     source_polygon_id: str
     source_row_ordinal: int
-    class_fractions: tuple[tuple[int, float], ...]
+    polygon_area_m2: float | None
+    class_areas_m2: tuple[tuple[int, float], ...]
+    area_measurement: str
     attempted_tiles: tuple[str, ...]
     missing_tiles: tuple[str, ...]
     extraction_error: str | None = None
 
 
 def iter_sourcewide_coverage(
-    polygons: pd.DataFrame,
+    polygons: pd.DataFrame | Iterable[pd.DataFrame],
     tiles: TileSource,
 ) -> Iterator[SourceWideCoverageAttempt]:
     """Measure every raw polygon row, before document or label eligibility joins.
 
-    ``polygons`` must be the unfiltered source polygon table with ``polygon_id``
-    and GeoJSON ``geometry`` columns. The iterator yields exactly one result per
-    row, including malformed or unusable geometries. Missing ESA tiles remain
-    uncovered support in the extractor's full-polygon denominator; operational
-    tile or raster errors are recorded as exclusions by downstream adapters.
+    ``polygons`` must be the unfiltered source table, either as one DataFrame
+    or as an iterator of bounded DataFrame row groups. Each frame has
+    ``polygon_id`` and GeoJSON ``geometry`` columns. The iterator yields exactly
+    one result per raw row, including malformed or unusable geometries. Missing
+    ESA tiles remain uncovered support in the full-polygon denominator;
+    operational tile or raster errors are recorded by downstream adapters.
     """
 
-    if "polygon_id" not in polygons or "geometry" not in polygons:
-        raise ValueError("raw WorldCover input requires polygon_id and geometry columns")
-    seen_ids: set[str] = set()
-    for ordinal, row in enumerate(polygons[["polygon_id", "geometry"]].itertuples(index=False)):
-        raw_id = row.polygon_id
-        source_polygon_id = "" if raw_id is None or pd.isna(raw_id) else str(raw_id).strip()
-        if not source_polygon_id:
-            yield SourceWideCoverageAttempt(
-                source_polygon_id=f"row:{ordinal}",
-                source_row_ordinal=ordinal,
-                class_fractions=(),
-                attempted_tiles=(),
-                missing_tiles=(),
-                extraction_error="source_polygon_id_missing",
-            )
-            continue
-        if source_polygon_id in seen_ids:
-            raise ValueError(f"raw WorldCover input repeats polygon_id {source_polygon_id!r}")
-        seen_ids.add(source_polygon_id)
-        geometry = _decode_polygon(row.geometry)
-        if geometry is None or not is_usable_polygon(geometry):
-            yield SourceWideCoverageAttempt(
-                source_polygon_id=source_polygon_id,
-                source_row_ordinal=ordinal,
-                class_fractions=(),
-                attempted_tiles=(),
-                missing_tiles=(),
-                extraction_error="geometry_unusable",
-            )
-            continue
-        yield _measure_polygon(source_polygon_id, ordinal, geometry, tiles)
+    frames = (polygons,) if isinstance(polygons, pd.DataFrame) else polygons
+    ordinal = 0
+    for frame in frames:
+        if "polygon_id" not in frame or "geometry" not in frame:
+            raise ValueError("raw WorldCover input requires polygon_id and geometry columns")
+        for row in frame[["polygon_id", "geometry"]].itertuples(index=False):
+            raw_id = row.polygon_id
+            source_polygon_id = "" if raw_id is None or pd.isna(raw_id) else str(raw_id).strip()
+            if not source_polygon_id:
+                yield SourceWideCoverageAttempt(
+                    source_polygon_id=f"row:{ordinal}",
+                    source_row_ordinal=ordinal,
+                    polygon_area_m2=None,
+                    class_areas_m2=(),
+                    area_measurement=AREA_MEASUREMENT,
+                    attempted_tiles=(),
+                    missing_tiles=(),
+                    extraction_error="source_polygon_id_missing",
+                )
+                ordinal += 1
+                continue
+            geometry = _decode_polygon(row.geometry)
+            if geometry is None or not is_usable_polygon(geometry):
+                yield SourceWideCoverageAttempt(
+                    source_polygon_id=source_polygon_id,
+                    source_row_ordinal=ordinal,
+                    polygon_area_m2=None,
+                    class_areas_m2=(),
+                    area_measurement=AREA_MEASUREMENT,
+                    attempted_tiles=(),
+                    missing_tiles=(),
+                    extraction_error="geometry_unusable",
+                )
+                ordinal += 1
+                continue
+            yield _measure_polygon(source_polygon_id, ordinal, geometry, tiles)
+            ordinal += 1
 
 
 def _measure_polygon(
@@ -95,16 +106,20 @@ def _measure_polygon(
             return SourceWideCoverageAttempt(
                 source_polygon_id,
                 ordinal,
+                None,
                 (),
+                AREA_MEASUREMENT,
                 attempted,
                 missing,
                 f"tile_read_failed:{','.join(sorted(set(errors)))}",
             )
-        fractions = _coverage_fractions(geometry, paths)
+        polygon_area_m2, class_areas_m2 = _coverage_areas(geometry, paths)
         return SourceWideCoverageAttempt(
             source_polygon_id,
             ordinal,
-            fractions,
+            polygon_area_m2,
+            class_areas_m2,
+            AREA_MEASUREMENT,
             attempted,
             missing,
         )
@@ -112,7 +127,9 @@ def _measure_polygon(
         return SourceWideCoverageAttempt(
             source_polygon_id,
             ordinal,
+            None,
             (),
+            AREA_MEASUREMENT,
             attempted,
             missing,
             f"raster_measurement_failed:{type(error).__name__}",
@@ -143,17 +160,13 @@ def _fetch_tiles(
     return paths, tuple(attempted), tuple(missing), tuple(sorted(set(errors)))
 
 
-def _coverage_fractions(
+def _coverage_areas(
     geometry: BaseGeometry,
     paths: list[Path],
-) -> tuple[tuple[int, float], ...]:
-    """Measure class fractions on the unchanged full source geometry."""
+) -> tuple[float, tuple[tuple[int, float], ...]]:
+    """Measure square-metre support on the unchanged full source geometry."""
 
-    if not paths:
-        return ()
-    frame = gpd.GeoDataFrame(geometry=[geometry], crs="EPSG:4326")
-    measured = class_coverage(paths, frame)[0]
-    return tuple(sorted((int(code), float(value)) for code, value in measured.items()))
+    return geodesic_class_coverage(paths, geometry)
 
 
 def _decode_polygon(value: object) -> BaseGeometry | None:
