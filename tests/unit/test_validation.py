@@ -1,7 +1,8 @@
 """Dataset-level invariants checked before anything is published."""
 
-import pytest
 from numbers import Integral
+
+import pytest
 
 from osm_worldcover.domain.validation import (
     REQUIRED_COLUMNS,
