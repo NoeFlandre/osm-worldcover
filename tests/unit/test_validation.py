@@ -58,6 +58,17 @@ def test_unknown_worldcover_code_is_rejected() -> None:
     assert Check.INVALID_LABEL in checks_in([row(worldcover_code=0)])
 
 
+@pytest.mark.parametrize(
+    "code",
+    [10.5, 10.0, None, float("nan"), float("inf"), float("-inf"), "10", "bad", True],
+)
+def test_non_integer_worldcover_codes_are_reported_as_invalid_labels(code: object) -> None:
+    report = validate([row(worldcover_code=code)])
+
+    assert report.rows == 1
+    assert Check.INVALID_LABEL in {violation.check for violation in report.violations}
+
+
 def test_label_not_matching_its_code_is_rejected() -> None:
     assert Check.INVALID_LABEL in checks_in([row(worldcover_label="Cropland")])
 
