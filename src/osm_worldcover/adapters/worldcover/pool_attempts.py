@@ -50,43 +50,60 @@ def iter_sourcewide_coverage(
     operational tile or raster errors are recorded by downstream adapters.
     """
 
-    frames = (polygons,) if isinstance(polygons, pd.DataFrame) else polygons
     ordinal = 0
-    for frame in frames:
-        if "polygon_id" not in frame or "geometry" not in frame:
-            raise ValueError("raw WorldCover input requires polygon_id and geometry columns")
+    for frame in _source_frames(polygons):
+        _validate_raw_frame(frame)
         for row in frame[["polygon_id", "geometry"]].itertuples(index=False):
-            raw_id = row.polygon_id
-            source_polygon_id = "" if raw_id is None or pd.isna(raw_id) else str(raw_id).strip()
-            if not source_polygon_id:
-                yield SourceWideCoverageAttempt(
-                    source_polygon_id=f"row:{ordinal}",
-                    source_row_ordinal=ordinal,
-                    polygon_area_m2=None,
-                    class_areas_m2=(),
-                    area_measurement=AREA_MEASUREMENT,
-                    attempted_tiles=(),
-                    missing_tiles=(),
-                    extraction_error="source_polygon_id_missing",
-                )
-                ordinal += 1
-                continue
-            geometry = _decode_polygon(row.geometry)
-            if geometry is None or not is_usable_polygon(geometry):
-                yield SourceWideCoverageAttempt(
-                    source_polygon_id=source_polygon_id,
-                    source_row_ordinal=ordinal,
-                    polygon_area_m2=None,
-                    class_areas_m2=(),
-                    area_measurement=AREA_MEASUREMENT,
-                    attempted_tiles=(),
-                    missing_tiles=(),
-                    extraction_error="geometry_unusable",
-                )
-                ordinal += 1
-                continue
-            yield _measure_polygon(source_polygon_id, ordinal, geometry, tiles)
+            yield _sourcewide_row_attempt(row, ordinal, tiles)
             ordinal += 1
+
+
+def _source_frames(polygons: pd.DataFrame | Iterable[pd.DataFrame]) -> Iterable[pd.DataFrame]:
+    return (polygons,) if isinstance(polygons, pd.DataFrame) else polygons
+
+
+def _validate_raw_frame(frame: pd.DataFrame) -> None:
+    if "polygon_id" not in frame or "geometry" not in frame:
+        raise ValueError("raw WorldCover input requires polygon_id and geometry columns")
+
+
+def _sourcewide_row_attempt(
+    row: tuple[object, object],
+    ordinal: int,
+    tiles: TileSource,
+) -> SourceWideCoverageAttempt:
+    raw_id = row[0]
+    source_polygon_id = _source_polygon_id(raw_id)
+    if source_polygon_id is None:
+        return _excluded_attempt(f"row:{ordinal}", ordinal, "source_polygon_id_missing")
+    geometry = _decode_polygon(row[1])
+    if geometry is None or not is_usable_polygon(geometry):
+        return _excluded_attempt(source_polygon_id, ordinal, "geometry_unusable")
+    return _measure_polygon(source_polygon_id, ordinal, geometry, tiles)
+
+
+def _source_polygon_id(raw_id: object) -> str | None:
+    if raw_id is None or pd.isna(raw_id):
+        return None
+    source_polygon_id = str(raw_id).strip()
+    return source_polygon_id or None
+
+
+def _excluded_attempt(
+    source_polygon_id: str,
+    ordinal: int,
+    reason: str,
+) -> SourceWideCoverageAttempt:
+    return SourceWideCoverageAttempt(
+        source_polygon_id=source_polygon_id,
+        source_row_ordinal=ordinal,
+        polygon_area_m2=None,
+        class_areas_m2=(),
+        area_measurement=AREA_MEASUREMENT,
+        attempted_tiles=(),
+        missing_tiles=(),
+        extraction_error=reason,
+    )
 
 
 def _measure_polygon(

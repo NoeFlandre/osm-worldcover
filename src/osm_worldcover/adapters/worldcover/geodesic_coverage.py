@@ -70,17 +70,31 @@ def geodesic_class_coverage_with_tile_evidence(
 def _geodesic_class_coverage(
     raster_sources: Iterable[tuple[str | None, Path]], geometry: shapely.Geometry
 ) -> tuple[float, tuple[tuple[int, float], ...], tuple[tuple[int, tuple[str, ...]], ...]]:
+    _validate_source_geometry(geometry)
+    polygon_area = _geodesic_area(geometry)
+    _validate_polygon_area(polygon_area)
+    class_areas, class_evidence = _aggregate_tile_support(raster_sources, geometry)
+    _validate_support_denominator(polygon_area, class_areas)
+    return polygon_area, class_areas, class_evidence
+
+
+def _validate_source_geometry(geometry: shapely.Geometry) -> None:
     if geometry.is_empty or not geometry.is_valid:
         raise ValueError("WorldCover geodesic coverage requires a valid non-empty polygon")
-    polygon_area = _geodesic_area(geometry)
+
+
+def _validate_polygon_area(polygon_area: float) -> None:
     if not math.isfinite(polygon_area) or polygon_area <= 0.0:
         raise ValueError("WorldCover source polygon has no positive WGS84 geodesic area")
 
-    class_areas, class_evidence = _aggregate_tile_support(raster_sources, geometry)
+
+def _validate_support_denominator(
+    polygon_area: float,
+    class_areas: tuple[tuple[int, float], ...],
+) -> None:
     support_total = sum(area for _code, area in class_areas)
     if support_total > polygon_area * (1.0 + 1e-8):
         raise ValueError("WorldCover class support exceeds the full geodesic polygon area")
-    return polygon_area, class_areas, class_evidence
 
 
 def _aggregate_tile_support(
@@ -146,9 +160,16 @@ def _measure_tile(path: Path, geometry: shapely.Geometry) -> defaultdict[int, fl
 
 
 def _validate_dataset(path: Path, dataset: rasterio.DatasetReader) -> None:
+    _validate_dataset_crs(path, dataset)
+    _validate_dataset_transform(path, dataset.transform)
+
+
+def _validate_dataset_crs(path: Path, dataset: rasterio.DatasetReader) -> None:
     if dataset.crs is None or not pyproj.CRS.from_user_input(dataset.crs).equals(_GEOGRAPHIC_CRS):
         raise ValueError(f"WorldCover pool raster must use EPSG:4326: {path}")
-    transform = dataset.transform
+
+
+def _validate_dataset_transform(path: Path, transform: rasterio.Affine) -> None:
     if transform.b != 0.0 or transform.d != 0.0 or transform.a <= 0.0 or transform.e >= 0.0:
         raise ValueError(f"WorldCover pool raster must be a north-up geographic grid: {path}")
 
@@ -215,6 +236,18 @@ def _boundary_cell_ids(pixel_geometry: shapely.Geometry, width: int, height: int
     bottom = min(height, math.ceil(max_y) + 1)
     if left >= right or top >= bottom:
         return np.array([], dtype=np.int64)
+    return _rasterize_boundary(pixel_geometry, left, top, right, bottom, width, height)
+
+
+def _rasterize_boundary(
+    pixel_geometry: shapely.Geometry,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    width: int,
+    height: int,
+) -> np.ndarray:
     boundary = shapely.buffer(pixel_geometry.boundary, _BOUNDARY_HALO_PIXELS)
     ids: list[np.ndarray] = []
     for row in range(top, bottom, _BOUNDARY_ROW_CHUNK):
@@ -237,6 +270,10 @@ def _boundary_cell_ids(pixel_geometry: shapely.Geometry, width: int, height: int
         )
         rows, columns = np.nonzero(mask)
         ids.append((rows + part_top) * width + columns + part_left)
+    return _unique_boundary_ids(ids)
+
+
+def _unique_boundary_ids(ids: list[np.ndarray]) -> np.ndarray:
     if not ids:
         return np.array([], dtype=np.int64)
     return np.unique(np.concatenate(ids).astype(np.int64, copy=False))
@@ -249,20 +286,32 @@ def _add_boundary_cells(
     dataset: rasterio.DatasetReader,
 ) -> None:
     for start in range(0, len(cell_ids), _BOUNDARY_CELL_CHUNK):
-        ids = cell_ids[start : start + _BOUNDARY_CELL_CHUNK]
-        rows, columns, values, valid = _read_cell_values(ids, dataset)
-        if not np.any(valid):
+        _add_boundary_cell_chunk(
+            totals, cell_ids[start : start + _BOUNDARY_CELL_CHUNK], geometry, dataset
+        )
+
+
+def _add_boundary_cell_chunk(
+    totals: defaultdict[int, float],
+    cell_ids: np.ndarray,
+    geometry: shapely.Geometry,
+    dataset: rasterio.DatasetReader,
+) -> None:
+    rows, columns, values, valid = _read_cell_values(cell_ids, dataset)
+    if not np.any(valid):
+        return
+    left = dataset.transform.c + columns * dataset.transform.a
+    right = left + dataset.transform.a
+    top = dataset.transform.f + rows * dataset.transform.e
+    bottom = top + dataset.transform.e
+    cells = shapely.box(left, bottom, right, top)
+    intersections = shapely.intersection(geometry, cells)
+    for intersection, value in zip(intersections[valid], values[valid], strict=True):
+        if intersection.is_empty:
             continue
-        left = dataset.transform.c + columns * dataset.transform.a
-        right = left + dataset.transform.a
-        top = dataset.transform.f + rows * dataset.transform.e
-        bottom = top + dataset.transform.e
-        cells = shapely.box(left, bottom, right, top)
-        intersections = shapely.intersection(geometry, cells)
-        for intersection, value in zip(intersections[valid], values[valid], strict=True):
-            area = _geodesic_area(intersection) if not intersection.is_empty else 0.0
-            if area > 0.0:
-                totals[int(value)] += area
+        area = _geodesic_area(intersection)
+        if area > 0.0:
+            totals[int(value)] += area
 
 
 def _read_cell_values(
