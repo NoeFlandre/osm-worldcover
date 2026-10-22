@@ -470,6 +470,29 @@ def test_equal_area_coarse_trigger_case_refines_and_fails_closed(
         equal_area_class_coverage((raster,), triangle)
 
 
+def test_unobserved_class_with_uncertain_threshold_enclosure_fails_closed(
+    tmp_path: Path,
+) -> None:
+    thin_polygon = shapely.Polygon(((0.1, 0.1), (0.9, 0.9), (0.9, 0.9 + 1e-14), (0.1, 0.1 + 1e-14)))
+    nodata_raster = tmp_path / "all-nodata.tif"
+    _write_raster(
+        nodata_raster,
+        np.zeros((1, 1), dtype=np.uint8),
+        from_origin(0, 1, 1, 1),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"coverage_accuracy_bound_unresolved_at_0\.8:class=10;"
+            r".*class_support_error_bound_m2="
+        ),
+    ):
+        equal_area_class_coverage_with_tile_evidence_detailed(
+            (("fixture", nodata_raster),), thin_polygon
+        )
+
+
 def test_projected_chord_bound_contains_observed_area_difference() -> None:
     triangle = shapely.Polygon(
         (

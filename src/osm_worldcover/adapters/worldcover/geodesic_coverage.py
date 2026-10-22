@@ -31,6 +31,7 @@ from osm_worldcover.adapters.worldcover.geometry import (
     _map_geometry,
     _pixel_geometry,
 )
+from osm_worldcover.domain.nomenclature import CLASS_LABELS
 
 AREA_MEASUREMENT = (
     "WGS84 ellipsoidal CEA (lat_ts=30, lon_0=0, EPSG:4326 input); "
@@ -207,13 +208,16 @@ def _raise_unresolved_threshold_error(measurements: tuple[_AreaMeasurement, ...]
         "coverage_accuracy_bound_unresolved_at_0.8:"
         f"class={code};step={measurement.densify_step_degrees:g};"
         f"ratio_enclosure={lower:.12g}:{upper:.12g};"
-        "projected_chord_boundary_error_m2="
-        f"{measurement.projected_chord_boundary_error_bound_m2:.12g}"
+        "projected_chord_boundary_error_bound_m2="
+        f"{measurement.projected_chord_boundary_error_bound_m2:.12g};"
+        "class_support_error_bound_m2="
+        f"{measurement.class_support_error_bound_m2:.12g}"
     )
 
 
 def _unresolved_threshold_codes(measurements: tuple[_AreaMeasurement, ...]) -> tuple[int, ...]:
-    codes = set().union(*(measurement.ratios.keys() for measurement in measurements))
+    codes = set(CLASS_LABELS)
+    codes.update(code for measurement in measurements for code in measurement.ratios)
     latest = measurements[-1]
     return tuple(
         code
