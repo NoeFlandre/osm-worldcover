@@ -10,9 +10,21 @@ one and the dominance rule can refuse the polygon.
 Because shares are relative to the polygon, contributions from several tiles
 add up directly: a polygon straddling a tile boundary needs no mosaic, just
 the sum over the tiles it touches.
+
+``class_coverage`` and published dataset builders keep their degree-based
+legacy semantics. The source-wide polygon-pool adapter uses
+``equal_area_class_coverage`` to report physical WGS84 square-metre evidence;
+those values must not be confused with existing released fractions.
 """
 
 from .extract import class_coverage
+from .geodesic_coverage import (
+    AREA_MEASUREMENT,
+    AREA_UNIT,
+    equal_area_class_coverage,
+    geodesic_class_coverage,
+)
+from .pool_attempts import SourceWideCoverageAttempt, iter_sourcewide_coverage
 from .tiles import (
     DEFAULT_BASE_URL,
     DEFAULT_CACHED_TILES,
@@ -22,10 +34,16 @@ from .tiles import (
 )
 
 __all__ = [
+    "AREA_MEASUREMENT",
+    "AREA_UNIT",
     "DEFAULT_BASE_URL",
     "DEFAULT_CACHED_TILES",
+    "SourceWideCoverageAttempt",
     "TileNotPublishedError",
     "TileSource",
     "WorldCoverTiles",
     "class_coverage",
+    "equal_area_class_coverage",
+    "geodesic_class_coverage",
+    "iter_sourcewide_coverage",
 ]
